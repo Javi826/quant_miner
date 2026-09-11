@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  mt5:
+    image: gmag11/metatrader5_vnc
+    container_name: quant_mt5
+    restart: unless-stopped
+    volumes:
+      - mt5_config:/config
+    ports:
+      - "3000:3000"
+      - "8001:8001"
+    environment:
+      - CUSTOM_USER=javi
+      - PASSWORD=javi
+      - VNC_PW=
+
+volumes:
+  mt5_config:

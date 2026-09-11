@@ -1,0 +1,687 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+<!-- dashboard.html Account-specific gradient colors (inline because they use Jinja2 variables) -->
+<style>
+    {% if account == '00' %}
+    #loading-splash {
+        background: linear-gradient(135deg, #1e3a5f 0%, #0a1929 100%);
+    }
+    .header {
+        background: linear-gradient(135deg, #1e3a5f 0%, #0a1929 100%);
+    }
+    .account-badge {
+        background: rgba(37, 99, 235, 0.25);
+        border: 1px solid rgba(59, 130, 246, 0.4);
+        color: #93c5fd;
+    }
+    {% elif account == 'E1' %}
+    #loading-splash {
+        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 50%, #0f0f0f 100%);
+    }
+    .header {
+        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 50%, #0f0f0f 100%);
+    }
+    .account-badge {
+        font-size: 13px;
+        background: rgba(255, 255, 255, 0.15);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        color: #e0e0e0;
+    }
+    {% elif account == '01' %}
+    #loading-splash {
+        background: linear-gradient(135deg, #4b5563 0%, #6b7280 100%);
+    }
+    .header {
+        background: linear-gradient(135deg, #4b5563 0%, #6b7280 100%);
+    }
+    .account-badge {
+        background: rgba(156, 163, 175, 0.25);
+        border: 1px solid rgba(209, 213, 219, 0.4);
+        color: #d1d5db;
+    }
+    {% else %}
+    #loading-splash {
+        background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+    }
+    .header {
+        background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%);
+    }
+    .account-badge {
+        background: rgba(37, 99, 235, 0.25);
+        border: 1px solid rgba(59, 130, 246, 0.4);
+        color: #93c5fd;
+    }
+    {% endif %}
+    
+    /* Badge styles for strategy status */
+    .badge {
+        padding: 6px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .badge-active {
+        background: rgba(74, 222, 128, 0.15);
+        border: 1px solid rgba(74, 222, 128, 0.3);
+        color: #4ade80;
+    }
+    .badge-deprecating {
+        background: rgba(139, 148, 158, 0.15);
+        border: 1px solid rgba(139, 148, 158, 0.3);
+        color: #8b949e;
+    }
+    .badge-not-implemented {
+        background: rgba(210, 153, 34, 0.15);
+        border: 1px solid rgba(210, 153, 34, 0.3);
+        color: #d29922;
+    }
+    
+    /* Exit reason badges (Recent Trades table) - LARGER */
+    .badge-tp {
+        padding: 6px 14px;
+        font-size: 13px;
+        background: rgba(74, 222, 128, 0.25);
+        border: 1px solid rgba(74, 222, 128, 0.5);
+        color: #4ade80;
+    }
+    .badge-sl {
+        padding: 6px 14px;
+        font-size: 13px;
+        background: rgba(239, 68, 68, 0.25);
+        border: 1px solid rgba(239, 68, 68, 0.5);
+        color: #ef4444;
+    }
+    .badge-timeout {
+        padding: 6px 14px;
+        font-size: 13px;
+        background: rgba(139, 148, 158, 0.25);
+        border: 1px solid rgba(139, 148, 158, 0.5);
+        color: #8b949e;
+    }
+
+    
+    /* Alinear columnas de tablas de estrategias */
+    #strategies-table th:nth-child(1) {
+        width: 50px;
+        min-width: 50px;
+    }
+    
+    #strategies-table th:nth-child(2) {
+        width: 250px;
+        min-width: 250px;
+    }
+</style>
+{% endblock %}
+{% block content %}
+<div id="loading-splash">
+    <div class="loading-content">
+        <h1 class="loading-title">Trading Bot Dashboard</h1>
+        <p class="loading-subtitle">Connecting to backend...</p>
+        <div class="loading-spinner"></div>
+        <p class="loading-status" id="loading-status">Attempt <span id="attempt-count">1</span> of 30</p>
+        <div class="loading-error" id="loading-error">
+            <div class="loading-error-title">⚠️ Connection Timeout</div>
+            <div class="loading-error-text">
+                Backend is taking longer than expected to respond.<br>
+                The bot might still be starting up. Please wait...
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="dashboard-container">
+    <div class="header">
+        <h1>
+            BOT_trading
+            <span class="account-badge">ACC: {{ account }}</span>
+        </h1>
+        <div class="header-right">
+            <div class="status-badge">Running</div>
+            <button class="btn-stop" onclick="stopBot()">⛔ Stop Bot</button>
+        </div>
+    </div>
+    
+    <div class="logs-panel">
+        <div class="logs-header">
+            <h2>Execution Logs</h2>
+            <div class="logs-controls">
+                <button class="btn-small" onclick="toggleAutoScroll()" id="auto-scroll-btn">Auto</button>
+                <button class="btn-small danger" onclick="clearLogs()">Clear</button>
+            </div>
+        </div>
+        <div class="logs-content" id="logs-content">
+            <div class="log-line default">Waiting for bot output...</div>
+        </div>
+    </div>
+    
+    <div class="main-panel">
+        <div class="stats-grid">
+            <!-- Card 1: CLOSED PnL -->
+            <div class="stat-card">
+                <div class="stat-label" style="text-transform: none;">CLOSED PnL</div>
+                <div class="stat-value positive" id="total-profit">$-</div>
+            </div>
+            
+            <!-- Card 2: OPEN PnL -->
+            <div class="stat-card">
+                <div class="stat-label" style="text-transform: none;">OPEN PnL</div>
+                <div class="stat-value positive" id="open-pnl">$-</div>
+            </div>
+            
+            <!-- Card 3: Profit % -->
+            <div class="stat-card">
+                <div class="stat-label">Profit %</div>
+                <div class="stat-value positive" id="profit-pct">-%</div>
+            </div>
+            
+            <!-- Card 4: Trades & Positions -->
+            <!-- Card 4: Trades -->
+            <div class="stat-card">
+                <div class="stat-label">Trades</div>
+                <div class="stat-value neutral" id="trades-num" style="color: #58a6ff;">-</div>
+            </div>
+            
+            <!-- Card 5: Positions -->
+            <div class="stat-card">
+                <div class="stat-label">Positions</div>
+                <div class="stat-value neutral" id="total-positions" style="color: #58a6ff;">-</div>
+            </div>  
+            <!-- Card: Win Rate -->
+            <div class="stat-card">
+                <div class="stat-label">Win Rate</div>
+                <div class="stat-value neutral" id="trades-pct" style="color: #58a6ff;">-%</div>
+            </div>         
+            <!-- Card 8: Gross & Net Exposure -->
+            <div class="stat-card">
+                <div style="display: flex; justify-content: space-around; gap: 20px; width: 100%;">
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <span class="stat-label">Gross Exp</span>
+                        <span class="stat-value neutral" id="exposure-gross">-%</span>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: center;">
+                        <span class="stat-label">Net Exp</span>
+                        <span class="stat-value neutral" id="exposure-net">-%</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Card 7: BTC Price -->
+            <div class="stat-card">
+                <div class="stat-label" id="ref-symbol-label">REF Price</div>
+                <div class="stat-value warning" id="btc-price">$-</div>
+            </div>       
+        </div>
+        
+        <div class="tabs-container">
+            <button class="tab-btn active" onclick="switchTab('positions')">Positions</button>
+            <button class="tab-btn" onclick="switchTab('analysis')">Strategy Analysis</button>
+            <button class="tab-btn" onclick="switchTab('trades')">Recent Trades</button>
+            <button class="tab-btn" onclick="switchTab('equity')">Analytics</button>
+            <button class="tab-btn" onclick="switchTab('risk')">Risk Control</button>
+            <button class="tab-btn" onclick="switchTab('quality')">Quality Control</button>
+            <button class="tab-btn" onclick="switchTab('config')">Configuration</button>
+            <div id="live-clock" style="margin-left: auto; color: #58a6ff; font-size: 20px; font-weight: 600; font-family: 'Courier New', monospace; letter-spacing: 1px;">--:--:--</div>
+        </div>
+        
+        <div id="tab-positions" class="tab-content active">
+            <div class="content-section">
+                <h2>
+                    <span>Active Positions</span>
+                    <div class="view-selector">
+                        <button class="view-btn active" onclick="setPositionsView('compact')">Compact</button>
+                        <button class="view-btn" onclick="setPositionsView('detailed')">Detailed</button>
+                        <button class="view-btn" onclick="setPositionsView('symbols')">Symbols</button>
+                    </div>
+                </h2>
+                <div id="positions-container"></div>
+            </div>
+        </div>
+        
+        <div id="tab-analysis" class="tab-content">
+            <div class="content-section">
+                <h2>Strategy Analysis</h2>
+                
+                <!-- Date Filter for Strategy Analysis -->
+                <div class="date-filter-container">
+                    <div class="date-filter-group">
+                        <label>From:</label>
+                        <input type="date" id="analysis-date-from">
+                    </div>
+                    <div class="date-filter-group">
+                        <label>To:</label>
+                        <input type="date" id="analysis-date-to">
+                    </div>
+                    <button class="btn-clear-dates" onclick="clearAnalysisDates()">Clear</button>
+                    <button class="btn-clear-dates" style="background: #388bfd; color: white; border-color: #388bfd;" onclick="loadStrategyAnalysis()">🔄 Update</button>
+                </div>
+                
+                <div id="analysis-container">Loading...</div>
+            </div>
+        </div>
+        
+        <div id="tab-trades" class="tab-content">
+            <div class="content-section">
+                <h2>Recent Closed Trades</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Closed At</th>
+                            <th>Strategy</th>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th>Amount</th>
+                            <th>Entry</th>
+                            <th>Close</th>
+                            <th>Profit</th>
+                            <th>Profit %</th>
+                            <th>Exit</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trades-body">
+                        <tr><td colspan="10" style="text-align: center;">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div id="tab-equity" class="tab-content">
+            <div class="content-section">
+                <h2>Analytics</h2>
+                
+                <div class="tabs-container" style="margin-top: 20px;">
+                    <button class="tab-btn active" onclick="switchEquitySubTab('curves')">Curves</button>
+                    <button class="tab-btn" onclick="switchEquitySubTab('period')">Period</button>
+                </div>
+                
+                <div id="equity-subtab-curves" class="tab-content active">
+                    <!-- Date Filter for Curves -->
+                    <div class="date-filter-container">
+                        <div class="date-filter-group">
+                            <label>From:</label>
+                            <input type="date" id="curves-date-from">
+                        </div>
+                        <div class="date-filter-group">
+                            <label>To:</label>
+                            <input type="date" id="curves-date-to">
+                        </div>
+                        <button class="btn-clear-dates" onclick="clearCurvesDates()">Clear</button>
+                        <button class="btn-clear-dates" style="background: #388bfd; color: white; border-color: #388bfd;" onclick="updateEquityChart()">🔄 Update Chart</button>
+                    </div>
+                    
+                    <div class="strategy-checkboxes" id="strategy-checkboxes">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="strat-all" value="ALL" checked>
+                            <label for="strat-all">ALL STRATEGIES</label>
+                        </div>
+                    </div>
+                    
+                    <div id="equity-metrics" style="display: none; background: #1c2128; padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #21262d;">
+                        <div style="display: flex; gap: 27px; align-items: center; flex-wrap: wrap;">
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">#trades:</span>
+                                <span id="metric-num-trades" style="color: #c9d1d9; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Profit_%:</span>
+                                <span id="metric-profit-pct" style="color: #3fb950; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Profit_$:</span>
+                                <span id="metric-profit-usd" style="color: #3fb950; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Profit Factor:</span>
+                                <span id="metric-profit-factor" style="color: #3fb950; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Weekly_%:</span>
+                                <span id="metric-weekly-win" style="color: #58a6ff; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Win Rate:</span>
+                                <span id="metric-win-rate" style="color: #c9d1d9; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Max DD:</span>
+                                <span id="metric-max-dd" style="color: #f85149; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">R²:</span>
+                                <span id="metric-r-squared" style="color: #c9d1d9; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                            <div>
+                                <span style="color: #8b949e; font-size: 17px; font-weight: 600;">Sharpe:</span>
+                                <span id="metric-sharpe" style="color: #22d3ee; font-size: 23px; font-weight: 700; margin-left: 8px;">-</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="chart-container">
+                        <canvas id="equityChart"></canvas>
+                    </div>
+                    
+                    <div class="chart-container">
+                        <canvas id="drawdownChart"></canvas>
+                    </div>
+                </div>
+
+                <div id="equity-subtab-period" class="tab-content">
+                    <h3 style="margin-bottom: 16px; color: #c9d1d9;">Period Analysis</h3>
+
+                    <!-- Inner subtabs: Monthly / Weekly -->
+                    <div class="tabs-container" style="margin-bottom: 20px;">
+                        <button class="tab-btn active" id="period-inner-btn-monthly" onclick="switchPeriodInnerTab('monthly')">Monthly</button>
+                        <button class="tab-btn"        id="period-inner-btn-weekly"  onclick="switchPeriodInnerTab('weekly')">Weekly</button>
+                    </div>
+
+                    <!-- MONTHLY inner tab -->
+                    <div id="period-inner-monthly" class="period-inner-tab active">
+
+                        <div class="strategy-checkboxes" id="monthly-strategy-checkboxes">
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="monthly-strat-all" value="ALL" checked>
+                                <label for="monthly-strat-all">ALL STRATEGIES</label>
+                            </div>
+                        </div>
+
+                        <div class="date-filter-container" style="margin-top: 16px;">
+                            <div class="date-filter-group">
+                                <label>From:</label>
+                                <input type="date" id="monthly-date-from">
+                            </div>
+                            <div class="date-filter-group">
+                                <label>To:</label>
+                                <input type="date" id="monthly-date-to">
+                            </div>
+                            <button class="btn-clear-dates" onclick="clearMonthlyDates()">✕ Clear</button>
+                            <button class="btn-clear-dates" style="background: #388bfd; color: white; border-color: #388bfd;"
+                                    onclick="loadMonthlyAnalysis()">🔄 Update</button>
+                        </div>
+
+                        <!-- Chart -->
+                        <div id="monthly-chart-wrapper" style="position: relative; height: 420px; margin-top: 20px;">
+                            <canvas id="monthlyPeriodChart"></canvas>
+                        </div>
+
+                        <!-- Cards -->
+                        <div id="monthly-container" style="margin-top: 24px;">
+                            <div style="text-align: center; color: #8b949e; padding: 40px;">
+                                Select strategies and click "Update"
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- WEEKLY inner tab -->
+                    <div id="period-inner-weekly" class="period-inner-tab" style="display:none;">
+
+                        <div class="strategy-checkboxes" id="weekly-strategy-checkboxes">
+                            <div class="checkbox-item">
+                                <input type="checkbox" id="weekly-strat-all" value="ALL" checked>
+                                <label for="weekly-strat-all">ALL STRATEGIES</label>
+                            </div>
+                        </div>
+
+                        <div class="date-filter-container" style="margin-top: 16px;">
+                            <div class="date-filter-group">
+                                <label>From:</label>
+                                <input type="date" id="weekly-date-from">
+                            </div>
+                            <div class="date-filter-group">
+                                <label>To:</label>
+                                <input type="date" id="weekly-date-to">
+                            </div>
+                            <button class="btn-clear-dates" onclick="clearWeeklyDates()">✕ Clear</button>
+                            <button class="btn-clear-dates" style="background: #388bfd; color: white; border-color: #388bfd;"
+                                    onclick="loadWeeklyAnalysis()">🔄 Update</button>
+                        </div>
+
+                        <!-- Chart -->
+                        <div id="weekly-chart-wrapper" style="position: relative; height: 420px; margin-top: 20px;">
+                            <canvas id="weeklyPeriodChart"></canvas>
+                        </div>
+
+                        <!-- Cards -->
+                        <div id="weekly-container" style="margin-top: 24px;">
+                            <div style="text-align: center; color: #8b949e; padding: 40px;">
+                                Select strategies and click "Update"
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>  
+        </div>
+        
+        <div id="tab-risk" class="tab-content">
+            <div class="content-section">
+                <h2>Risk Control</h2>
+                
+                <!-- Section A: Total Exposure Cards -->
+                <!-- Section A: Total Exposure Cards -->
+                <div style="margin-bottom: 15px;">
+                    <h3 style="font-size: 14px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Total Exposure</h3>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;">
+                        <div class="stat-card">
+                            <div class="stat-label">Gross Exposure</div>
+                            <div class="stat-value" id="risk-gross-exp">-%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Net Exposure</div>
+                            <div class="stat-value" id="risk-net-exp">-%</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Section B: Directional Breakdown Cards -->
+                <div style="margin-bottom: 30px;">
+                    <h3 style="font-size: 14px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Directional Breakdown</h3>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px;">
+                        <div class="stat-card">
+                            <div class="stat-label">Long Exposure</div>
+                            <div class="stat-value" id="risk-long-exp" style="color: #3fb950;">-%</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Short Exposure</div>
+                            <div class="stat-value" id="risk-short-exp" style="color: #f85149;">-%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sección D: Risk Limits Configuration -->
+                <div class="config-card" style="margin-top: 20px;">
+                    <h3>Risk Limits Configuration</h3>
+                    <div class="config-row">
+                        <span class="config-label">Max Gross Exposure:</span>
+                        <span class="config-value" id="risk-config-max-gross">-%</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Max Net Exposure:</span>
+                        <span class="config-value" id="risk-config-max-net">-%</span>
+                    </div>
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(139, 148, 158, 0.1); border-radius: 6px; border-left: 3px solid #8b949e;">
+                        <div style="font-size: 12px; color: #8b949e; margin-bottom: 4px;">COLOR THRESHOLDS</div>
+                        <div style="font-size: 13px; color: #c9d1d9; line-height: 1.6;">
+                            <span style="color: #3fb950;">●</span> Green: &lt;60% of limit<br>
+                            <span style="color: #d29922;">●</span> Yellow: 60-80% of limit<br>
+                            <span style="color: #f85149;">●</span> Red: ≥80% of limit
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="tab-quality" class="tab-content">
+            <div class="content-section">
+                <h2>Quality Control</h2>
+
+                <!-- Win Rate Evolution Chart -->
+                <div class="config-card" style="margin-top: 20px;">
+                    <h3>Win Rate Evolution</h3>
+                    
+                    <!-- Date Filter -->
+                    <div class="date-filter-container">
+                        <div class="date-filter-group">
+                            <label>From:</label>
+                            <input type="date" id="winrate-date-from">
+                        </div>
+                        <div class="date-filter-group">
+                            <label>To:</label>
+                            <input type="date" id="winrate-date-to">
+                        </div>
+                        <button class="btn-clear-dates" onclick="clearWinRateDates()">Clear</button>
+                        <button class="btn-clear-dates" style="background: #388bfd; color: white; border-color: #388bfd;" onclick="updateWinRateChart()">📊 Update Chart</button>
+                    </div>
+                    
+                    <!-- Strategy Checkboxes -->
+                    <div class="strategy-checkboxes" id="winrate-strategy-checkboxes">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="winrate-strat-all" value="ALL" checked>
+                            <label for="winrate-strat-all">ALL STRATEGIES</label>
+                        </div>
+                    </div>
+                    
+                    <!-- Chart Canvas -->
+                    <div class="chart-container">
+                        <canvas id="winRateChart"></canvas>
+                    </div>
+                </div>
+                <!-- Tabla 2: Execution Quality by Strategy -->
+                <div class="config-card" style="margin-top: 20px;">
+                    <h3>Execution Quality by Strategy</h3>
+                    <div id="execution-table-container">
+                        <div style="text-align: center; color: #8b949e; padding: 40px;">Loading...</div>
+                    </div>
+                    <!-- Legend -->
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(139, 148, 158, 0.1); border-radius: 6px; border-left: 3px solid #8b949e;">
+                        <div style="font-size: 12px; color: #8b949e; margin-bottom: 8px; font-weight: 600;">LEGEND</div>
+                        <div style="font-size: 12px; color: #c9d1d9; line-height: 1.8;">
+                            <strong>SLIPPAGE:</strong> Average difference between order price and execution price<br>
+                            - HEALTHY: Low slippage | WARNING: Moderate slippage | DANGER: High slippage<br>
+                            <strong>LATENCY:</strong> Average time between order submission and execution confirmation<br>
+                            - HEALTHY: Fast execution | WARNING: Moderate delay | DANGER: Slow execution
+                        </div>
+                    </div>
+                </div>
+                <!-- Tabla 3: Target Deviation Analysis -->
+                <div class="config-card" style="margin-top: 20px;">
+                    <h3>Target Deviation Analysis</h3>
+                    <div id="deviation-table-container">
+                        <div style="text-align: center; color: #8b949e; padding: 40px;">Loading...</div>
+                    </div>
+                    
+                    <!-- Leyenda para Analytics → Symbols -->
+                    <div style="margin-top: 15px; padding: 12px; background: rgba(139, 148, 158, 0.1); border-radius: 6px; border-left: 3px solid #8b949e;">
+                        <div style="font-size: 12px; color: #8b949e; margin-bottom: 8px; font-weight: 600;">SLIPPAGE COLOR LEGEND</div>
+                        <div style="font-size: 12px; color: #c9d1d9; line-height: 1.8;">
+                            <strong>SLIPPAGE:</strong> Difference between order price and execution price<br>
+                            - <span style="color: #3fb950;">●</span> GREEN: Positive slippage or low magnitude (excellent execution)<br>
+                            - <span style="color: #d29922;">●</span> YELLOW: Moderate negative slippage (acceptable execution)<br>
+                            - <span style="color: #f85149;">●</span> RED: High negative slippage (poor execution quality)
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    
+        <div id="tab-config" class="tab-content">        
+            <div class="content-section">
+                <h2>Bot Configuration & Status</h2>
+                
+                <!-- 1. STRATEGIES LIST (✅ MODIFICADO: Añadida columna Dir Mode) -->
+                <div class="config-card">
+                    <h3>Strategies List</h3>
+                    <div style="overflow-x: auto;">
+                        <table id="strategies-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>ID</th>
+                                    <th>TF</th>
+                                    <th>Side</th>
+                                    <th>Symbols</th>
+                                    <th>TP%</th>
+                                    <th>SL%</th>
+                                    <th>Amount</th>
+                                    <th>Candles</th>
+                                    <th>Params</th>
+                                    <th>Dir Mode</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="strategies-body">
+                                <tr><td colspan="12" style="text-align: center;">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- 4. WEBSOCKET (moved here) -->
+                <div class="config-card">
+                    <h3>WebSocket Connections</h3>
+                    <div class="config-row">
+                        <span class="config-label">Public Channel:</span>
+                        <span class="ws-indicator" id="ws-public">
+                            <span class="ws-dot disconnected"></span>
+                            <span>Connecting...</span>
+                        </span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Private Channel:</span>
+                        <span class="ws-indicator" id="ws-private">
+                            <span class="ws-dot disconnected"></span>
+                            <span>Connecting...</span>
+                        </span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Authentication:</span>
+                        <span class="ws-indicator" id="ws-auth">
+                            <span class="ws-dot disconnected"></span>
+                            <span>Pending...</span>
+                        </span>
+                    </div>
+                </div>
+                
+                <!-- 5. CONFIGURATION (moved here) -->
+                <div class="config-card">
+                    <h3>Configuration</h3>
+                    <div class="config-row">
+                        <span class="config-label">Account:</span>
+                        <span class="config-value" id="config-account">-</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Initial Capital:</span>
+                        <span class="config-value" id="config-capital">-</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Total Strategies:</span>
+                        <span class="config-value" id="config-total-strat">-</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Active:</span>
+                        <span class="config-value" id="config-active-strat">-</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Deprecating:</span>
+                        <span class="config-value" id="config-deprecating-strat">-</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-label">Not Implemented:</span>
+                        <span class="config-value" id="config-not-implemented-strat">-</span>
+                    </div>
+                </div>
+                
+                <!-- TIMEFRAMES SECTION ELIMINATED -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="stop-overlay" id="stop-overlay">
+    <div class="stop-box">
+        <h2 id="stop-title">⛔ STOPPING BOT</h2>
+        <div class="stop-status" id="stop-status">
+            <div class="stop-status-line">Initializing stop sequence...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}

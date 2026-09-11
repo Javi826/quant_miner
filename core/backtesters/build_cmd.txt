@@ -1,0 +1,3 @@
+rm -f ZX_compute_BT_NPY.c ZX_compute_BT_NPY.cpython-312-x86_64-linux-gnu.so
+rm -f ZX_compute_BT_YPY.c ZX_compute_BT_YPY.cpython-312-x86_64-linux-gnu.so
+source ~/projects/quant/env_quant/bin/activate && cd ~/projects/quant/quant_miner/core/backtesters && python3 setup.py build_ext --inplace

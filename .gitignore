@@ -1,0 +1,55 @@
+# Virtual environment
+env_quant/
+
+# Data files
+*.parquet
+*.xlsx
+*.h5
+*.pt
+*.csv
+
+# Logs
+*.log
+
+# State files
+*.json
+
+# Python cache
+__pycache__/
+**/__pycache__/
+
+# Credentials (IMPORTANT)
+.env
+**/connect_pass.py
+**/mt5/config/mt5.ini
+
+# System files
+.DS_Store
+**/.DS_Store
+._.DS_Store
+**/._.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
+**/.pytest_cache/
+
+# Bot persistence (logs, state, trades)
+**/BOT_crypto/persistence/
+**/BOT_forex/persistence/
+
+# MT5 logs
+**/mt5/logs/
+
+# Docker local volumes
+.docker/
+*.so

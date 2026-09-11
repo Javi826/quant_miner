@@ -1,0 +1,7 @@
+[Common]
+Login=TU_LOGIN
+Password=TU_PASSWORD
+Server=Darwinex-Demo
+
+[Charts]
+MaxBars=50000

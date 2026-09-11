@@ -1,0 +1,7 @@
+MetaTrader5>=5.0.45
+pandas>=2.2.0
+numpy>=1.26.0
+pyzmq>=26.0.0
+python-dotenv>=1.0.0
+loguru>=0.7.0
+schedule>=1.2.0
