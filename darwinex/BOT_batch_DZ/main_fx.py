@@ -1,4 +1,4 @@
-#core.py
+#BOT_batch_BZ/main_fx.py (forex)
 import os
 import sys
 import time
@@ -25,8 +25,8 @@ MODULE_LOG_LEVELS = {
     "BOT_batch.pipeline.correlation":       logging.INFO,
     "BOT_batch.pipeline.multiverse":        logging.INFO,
     "BOT_batch.runs.run_best_wfo_portfolio":logging.INFO,
-    "BOT_batch.rule_mining.writter":        logging.DEBUG,
-    "BOT_batch.runs.run_deploy":            logging.DEBUG,
+    "BOT_batch.rule_mining.writter":        logging.INFO,
+    "BOT_batch.runs.run_deploy":            logging.INFO,
     "BOT_batch.utils.reporting":            logging.INFO,
 }
 for module_name, level in MODULE_LOG_LEVELS.items():
@@ -46,6 +46,7 @@ from pipeline.signal_cleaning import JACCARD_SIMILARITY_TH
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from setup.config_backtest import ORDER_AMOUNT
 from rule_mining.rule_runner import run_rule_mining_pipeline
+from setup.config_core import settings
 
 # =============================================================================
 # RUNS + OUTPUTS — portfolio construction and output stages
@@ -61,95 +62,42 @@ DATASET_MINING, DATASET_VALIDATION = ("IS", "OOS") if SPLIT_MODE else ("MERGED",
 # =============================================================================
 TIMEFRAMES = ["1H","4H"]
 
-# =============================================================================
-# SYMBOL_COMBOS_BY_TIMEFRAME = {
-#     "4H": [
-#         ["CHFJPY"],
-#         ["EURCHF"],
-#         ["EURAUD"],
-#         ["GBPCHF"],
-#         ["EURUSD", "GBPCHF"],
-#         ["GBPCHF", "EURCHF"],
-#         ["GBPCHF", "NZDUSD"],
-#         ["EURUSD", "EURCHF"],
-#         ["CHFJPY", "EURAUD"],
-#         ["EURCHF", "GBPCAD"],
-#         ["NZDUSD", "EURCHF"],
-#         ["USDJPY", "EURAUD"],
-#         ["USDCHF", "EURCHF"],
-#         ["USDJPY", "EURUSD"],
-#         ["EURGBP", "CHFJPY"],
-#         ["EURUSD", "NZDUSD"],
-#         ["USDJPY", "CHFJPY"],
-#         ["USDCAD", "GBPCHF"],
-#         ["USDJPY", "EURGBP"],
-#         ["EURUSD", "EURAUD"],
-#         ["EURUSD", "CHFJPY"],
-#         ["AUDUSD", "EURCHF"],
-#         ["USDCAD", "EURCHF"],
-#         ["USDCAD", "CHFJPY"],
-#         ["USDCAD", "EURUSD"],
-#         ["EURCHF", "AUDCAD"],
-#         ["GBPCHF", "USDCHF"],
-#     ],
-#     "1H": [
-#         ["CHFJPY"],
-#         ["AUDCAD"],
-#         ["EURJPY"],
-#         ["USDCHF"],
-#         ["EURJPY", "EURAUD"],
-#         ["CHFJPY", "EURAUD"],
-#         ["EURJPY", "CHFJPY"],
-#         ["USDCHF", "AUDCAD"],
-#         ["GBPCHF", "AUDCAD"],
-#         ["EURJPY", "GBPJPY"],
-#         ["GBPJPY", "EURAUD"],
-#         ["GBPCHF", "USDCHF"],
-#         ["USDCAD", "CHFJPY"],
-#         ["CHFJPY", "GBPCAD"],
-#         ["GBPJPY", "CHFJPY"],
-#         ["CHFJPY", "EURCAD"],
-#         ["USDJPY", "CHFJPY"],
-#         ["NZDUSD", "AUDCAD"],
-#         ["CHFJPY", "NZDUSD"],
-#         ["USDJPY", "EURAUD"],
-#         ["EURAUD", "CADJPY"],
-#         ["EURGBP", "CHFJPY"],
-#     ],
-# }
-# =============================================================================
-
 SYMBOL_COMBOS_BY_TIMEFRAME = {
-    "4H": [
-        ["CHFJPY", "EURAUD"],
-        ["EURGBP", "CHFJPY"],
-        ["EURUSD", "CHFJPY"],
-        ["USDCAD", "CHFJPY"],
-        ["USDJPY", "EURAUD"],
-        ["NZDJPY", "EURAUD"],
-        ["GBPCHF", "EURCHF"],
-        ["GBPJPY", "EURAUD"],
-
-    ],
     "1H": [
+        ["CHFJPY"],
         ["CHFJPY", "EURAUD"],
-        ["CHFJPY", "NZDUSD"],
-        ["EURGBP", "CHFJPY"],
-        ["EURJPY", "CHFJPY"],
         ["USDCAD", "CHFJPY"],
-        ["USDCHF", "AUDCAD"],
-        ["EURJPY", "EURAUD"],
-        ["NZDJPY", "EURAUD"],
-        ["EURJPY", "GBPJPY"],
-        ["GBPJPY", "CHFJPY"],
-        ["GBPJPY", "EURAUD"],
+        ["AUDJPY"],
+        ["AUDJPY", "CADJPY"],
+        ["AUDJPY", "CHFJPY"],
+        ["EURJPY", "AUDJPY"],
     ],
+    "4H": [
+        ["CHFJPY"],
+        ["CHFJPY", "EURAUD"],
+        ["EURGBP", "CHFJPY"],
+        ["GBPJPY", "CHFJPY"],
+        ["EURJPY", "GBPJPY"],
+        ["EURJPY", "CHFJPY"],
+        ["USDJPY", "CHFJPY"],
+        ["AUDJPY", "CHFJPY"],
+        ["EURJPY", "AUDJPY"],
+        ["EURJPY", "EURCHF"],
+        ["GBPJPY", "AUDJPY"],
+    ]
 }
 
-PARAM_GRID = {
-    "SELL_AFTER": [0],
-    "TP_PCT":     [1.0,1.2,1.4],
-    "SL_PCT":     [1.0,1.2,1.4],
+PARAM_GRID_BY_TIMEFRAME = {
+    "1H": {
+        "SELL_AFTER": [0],
+        "TP_PCT":     [0.5],
+        "SL_PCT":     [0.5],
+    },
+    "4H": {
+        "SELL_AFTER":[0],
+        "TP_PCT":    [0.5],
+        "SL_PCT":    [0.5],
+    },
 }
 
 # =============================================================================
@@ -166,7 +114,7 @@ DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_DZ_FOLDER, "rules_files", "rules_
 # =============================================================================
 # RUN CONFIG — single source of truth: printed at startup AND persisted
 # =============================================================================
-run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, "PARAM_GRID": PARAM_GRID, "WFO_WINDOW_CONFIG": {tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES}, "EMA_ALPHA": EMA_ALPHA, "PIPELINE_WFO": PIPELINE_WFO, "PIPELINE_CORRELATION": PIPELINE_CORRELATION, "PIPELINE_MULTIVERSE": PIPELINE_MULTIVERSE,
+run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME, "WFO_WINDOW_CONFIG": {tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES}, "EMA_ALPHA": EMA_ALPHA, "PIPELINE_WFO": PIPELINE_WFO, "PIPELINE_CORRELATION": PIPELINE_CORRELATION, "PIPELINE_MULTIVERSE": PIPELINE_MULTIVERSE,
               "WFO_NET_GAIN_TH": WFO_NET_GAIN_TH, "WFO_DD_TH": WFO_DD_TH, "WFO_R2_TH": WFO_R2_TH, "WFO_WFR_TH": WFO_WFR_TH, "CORRELATION_DD_TH": CORRELATION_DD_TH, "MULTIVERSE_PVALUE_TH": MULTIVERSE_PVALUE_TH, "STEPM_K_ESIME": {tf: STEPM_K_ESIME_TF[tf] for tf in TIMEFRAMES}, "JACCARD_SIMILARITY_TH": JACCARD_SIMILARITY_TH}
 # =============================================================================
 # COMBOS — each timeframe can be mined with several independent symbol baskets
@@ -226,8 +174,9 @@ def log_run_config() -> None:
     for combo in build_combos():
         logger.info(f"    {combo['combo_key']:<12}({len(combo['symbols'])}) {combo['symbols']}")
     logger.info(f"  TIMEFRAMES  : {TIMEFRAMES}")
+    logger.info(f"  BACKTEST    : {settings.BACKTEST_MODE}")
     logger.debug(f"  MAX DEPTH  : {RULE_MAX_DEPTH}")
-    logger.info(f"  PARAM GRID  : {PARAM_GRID}")
+    logger.info(f"  PARAM GRID  : {PARAM_GRID_BY_TIMEFRAME}")
     logger.info(f"  WFO WINDOWS : {_format_wfo_windows({tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES})} | EMA_ALPHA: {EMA_ALPHA}")
     logger.info(
         f"  PIPELINES   : WFO: {_pipeline_icon(PIPELINE_WFO)}  "
@@ -284,7 +233,7 @@ if __name__ == "__main__":
             ohlcv_data_validation_by_combo     = ohlcv_data_validation_by_combo,
             ohlcv_arr_validation_by_combo      = ohlcv_arr_validation_by_combo,
             combos                             = combos,
-            param_grid                         = PARAM_GRID,
+            param_grid                         = PARAM_GRID_BY_TIMEFRAME,
             order_amount                       = ORDER_AMOUNT,
             data_folder                        = DATA_FOLDER_BY_DATASET[DATASET_VALIDATION],
             max_depth                          = RULE_MAX_DEPTH,

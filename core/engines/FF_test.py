@@ -238,7 +238,7 @@ def pipe_FF_test(
     n_replicas = int(studentized_deviations.shape[0])
 
     logger.info(
-        f"FF BOOTSTRAP ── {timeframe} ── {_format_thousands(n_dropped)} degenerate "
+        f"FF BOOTSTRAP    {timeframe}: {_format_thousands(n_dropped)} degenerate "
         f"columns dropped ── {_format_thousands(n_kept)} columns remain"
     )
 

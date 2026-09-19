@@ -11,7 +11,7 @@ from setup.config_backtest import INITIAL_BALANCE
 from runs.run_portfolio import find_best_portfolio_combination_wfo
 from rule_mining.rule_generator import generate_all_rules, MAX_DEPTH
 from rule_mining.rule_writter import run_deploy_rule, save_rule_deploy_batch
-from utils.reporting import print_rule_mining_ranking, print_rule_mining_min_by_group
+from utils.reporting import print_rule_mining_ranking, print_rule_mining_min_by_group, print_rule_mining_min_by_group_train
 from pipeline.multiverse import pipe_multiverse
 logger = logging.getLogger("BOT_batch.rule_mining.runner")
 
@@ -28,6 +28,7 @@ def _slugify_label(label: str) -> str:
 
 def _build_rule_id(i: int, combo_key: str, rule: dict) -> str:
     return f"{i:06d}_{combo_key}_{rule['side']}_{_slugify_label(rule['label'])}"
+
 
 def _build_rule_dicts(ohlcv_data: dict, combo_key: str, timeframe: str, max_depth: int) -> list:
 
@@ -66,6 +67,7 @@ def _empty_wfo_fields() -> dict:
         "calmar":          0.0,
         "r_squared":       0.0,
         "wfr":             0.0,
+        "duration_d":      0.0,
         "best_params":     None,
         "wfo_test_trades": None,
     }
@@ -78,7 +80,7 @@ def run_rule_mining_pipeline(
     ohlcv_data_validation_by_combo: dict,
     ohlcv_arr_validation_by_combo: dict,
     combos: list,
-    param_grid: dict,
+    param_grid: dict,   # dict keyed by timeframe: {"1H": {...}, "4H": {...}}
     order_amount: int,
     data_folder: str,
     show_progress: bool = False,
@@ -105,9 +107,9 @@ def run_rule_mining_pipeline(
         rules = _build_rule_dicts(
             ohlcv_data_mining_by_combo[combo_key], combo_key, timeframe, max_depth,
         )
-        logger.info(f"\n\033[36m{'=' * 70}")
-        logger.info(f"======== RULE MINING ── {combo_key} {combo['symbols']} ── rules: {format(len(rules), ',').replace(',', '.')}")
-        logger.info(f"{'=' * 70}\033[0m")
+        logger.info(f"\n\033[36m{'─' * 70}")
+        logger.info(f"─ RULE MINING ── {combo_key} {combo['symbols']} ── rules: {format(len(rules), ',').replace(',', '.')}")
+        logger.info(f"{'─' * 70}\033[0m")
 
         rules = pipe_signal_cleaning_jaccard(
             rules     = rules,
@@ -118,7 +120,7 @@ def run_rule_mining_pipeline(
         raw_results, n_combos, matrix_arr, col_names = pipe_backtesting(
             rules        = rules,
             ohlcv_arr    = ohlcv_arr_mining_by_combo[combo_key],
-            param_grid   = param_grid,
+            param_grid   = param_grid[timeframe],
             order_amount = order_amount,
             timeframe    = timeframe,
         )
@@ -137,6 +139,9 @@ def run_rule_mining_pipeline(
     passed_mbias_ids = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"]}
 
     print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-MBIAS", survivor_ids=list(passed_mbias_ids))
+    print_rule_mining_min_by_group_train(
+        [r for r in all_mbias_results if r["passed_mbias"]], "POST-MBIAS (pre-WFO)",
+    )
     wfo_by_id = {}
     for combo in combos:
         combo_key, timeframe = combo["combo_key"], combo["timeframe"]
@@ -148,7 +153,7 @@ def run_rule_mining_pipeline(
         wfo_results = pipe_wfo(
             rules               = rules_this_combo,
             ohlcv_arr           = ohlcv_arr_validation_by_combo[combo_key],
-            param_grid          = param_grid,
+            param_grid          = param_grid[timeframe],
             order_amount        = order_amount,
             timeframe           = timeframe,
             combo_key           = combo_key,
@@ -211,7 +216,7 @@ def run_rule_mining_pipeline(
         mv_results = pipe_multiverse(
             rules               = rules_for_mv,
             ohlcv_data_by_combo = ohlcv_data_validation_by_combo,
-            param_grid          = param_grid,
+            param_grid          = param_grid,   # dict keyed by timeframe, resolved inside
             order_amount        = order_amount,
             enabled             = pipeline_multiverse,
         )
@@ -276,7 +281,7 @@ def run_rule_mining_pipeline(
                     timeframe           = rule_tf,
                     ohlcv_is            = ohlcv_data_validation_by_combo[rule_info["combo_key"]],
                     signal_fn           = rule_info["signal_fn"],
-                    param_grid          = param_grid,
+                    param_grid          = param_grid[rule_tf],
                     order_amount        = order_amount,
                     approved            = rule_info["approved"],
                     deploy_map          = deploy_map,

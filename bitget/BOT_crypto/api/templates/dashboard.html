@@ -117,7 +117,7 @@
 {% block content %}
 <div id="loading-splash">
     <div class="loading-content">
-        <h1 class="loading-title">Trading Bot Dashboard</h1>
+        <h1 class="loading-title">BOT_crypto Dashboard</h1>
         <p class="loading-subtitle">Connecting to backend...</p>
         <div class="loading-spinner"></div>
         <p class="loading-status" id="loading-status">Attempt <span id="attempt-count">1</span> of 30</p>
@@ -134,7 +134,7 @@
 <div class="dashboard-container">
     <div class="header">
         <h1>
-            BOT_trading
+            BOT_crypto
             <span class="account-badge">ACC: {{ account }}</span>
         </h1>
         <div class="header-right">
@@ -514,37 +514,6 @@
             <div class="content-section">
                 <h2>Quality Control</h2>
 
-                <!-- Win Rate Evolution Chart -->
-                <div class="config-card" style="margin-top: 20px;">
-                    <h3>Win Rate Evolution</h3>
-                    
-                    <!-- Date Filter -->
-                    <div class="date-filter-container">
-                        <div class="date-filter-group">
-                            <label>From:</label>
-                            <input type="date" id="winrate-date-from">
-                        </div>
-                        <div class="date-filter-group">
-                            <label>To:</label>
-                            <input type="date" id="winrate-date-to">
-                        </div>
-                        <button class="btn-clear-dates" onclick="clearWinRateDates()">Clear</button>
-                        <button class="btn-clear-dates" style="background: #388bfd; color: white; border-color: #388bfd;" onclick="updateWinRateChart()">📊 Update Chart</button>
-                    </div>
-                    
-                    <!-- Strategy Checkboxes -->
-                    <div class="strategy-checkboxes" id="winrate-strategy-checkboxes">
-                        <div class="checkbox-item">
-                            <input type="checkbox" id="winrate-strat-all" value="ALL" checked>
-                            <label for="winrate-strat-all">ALL STRATEGIES</label>
-                        </div>
-                    </div>
-                    
-                    <!-- Chart Canvas -->
-                    <div class="chart-container">
-                        <canvas id="winRateChart"></canvas>
-                    </div>
-                </div>
                 <!-- Tabla 2: Execution Quality by Strategy -->
                 <div class="config-card" style="margin-top: 20px;">
                     <h3>Execution Quality by Strategy</h3>

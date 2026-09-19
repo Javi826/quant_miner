@@ -1,4 +1,4 @@
-#core/backtesters/ZX_compute_BT_NPY.pyx (HEAP_SIZE==0,nopyramid)
+#core/backtesters/ZX_compute_BT_NPY.pyx (NO_PYRAMID-crytpo)
 #cython: language_level=3
 #cython: boundscheck=False
 #cython: wraparound=False
@@ -727,10 +727,13 @@ def _run_core_from_arrays_light(arrays, sell_after, tp_pct, sl_pct, order_amount
         int(sell_after), float(tp_pct), float(sl_pct)
     )
 
+    exit_reason_names = np.array(['SELL_AFTER', 'TP', 'SL', 'END_OF_DATA'], dtype=object)
+
     trade_log = pd.DataFrame({
-        'buy_time':  tl_buy_time.astype('datetime64[ns]'),
-        'sell_time': tl_sell_time.astype('datetime64[ns]'),
-        'profit':    tl_profit,
+        'buy_time':    tl_buy_time.astype('datetime64[ns]'),
+        'sell_time':   tl_sell_time.astype('datetime64[ns]'),
+        'profit':      tl_profit,
+        'exit_reason': exit_reason_names[tl_exit_reason],
     })
 
     return {

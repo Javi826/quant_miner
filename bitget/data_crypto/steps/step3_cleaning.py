@@ -15,7 +15,7 @@ logger = logging.getLogger("pipeline.step3")
 # CONSTANTS
 # =============================================================================
 OHLC_COLS   = ["open", "high", "low", "close"]
-VOLUME_COLS = ["volume_base", "volume_quote"]
+VOLUME_COLS = ["volume"]
 
 # =============================================================================
 # CLEANING

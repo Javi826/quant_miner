@@ -15,17 +15,19 @@ logger = logging.getLogger("BOT_batch.pipeline.multiverse")
 # MCPT EXECUTION CONFIG
 # =============================================================================
 MULTIVERSE_PVALUE_TH    = 0.1
-BLOCK_SIZE_BY_TIMEFRAME = {
-    "1H":     150,
-    "4H":     120,
-    "6Hutc":  70,
-    "12Hutc": 30,
-}
+
+# =============================================================================
+# BLOCK_SIZE_BY_TIMEFRAME = {
+#     "1H":     150,
+#     "4H":     120,
+#     "6Hutc":  70,
+#     "12Hutc": 30,
+# }
+# =============================================================================
 
 BLOCK_SIZE_BY_TIMEFRAME = {
     "1H":     400,
     "4H":     100,
-
 }
 
 N_PERMUTATIONS = 1000
@@ -464,7 +466,7 @@ def _empty_multiverse_fields() -> dict:
 def pipe_multiverse(
     rules: list,
     ohlcv_data_by_combo: dict,
-    param_grid: dict,
+    param_grid: dict,   # dict keyed by timeframe: {"1H": {...}, "4H": {...}}
     order_amount: int,
     p_value_th: float = None,
     enabled: bool = True,
@@ -505,7 +507,7 @@ def pipe_multiverse(
         combo_p_values, combo_approved = _evaluate_multiverse_batch(
             ohlcv_data    = ohlcv_data_by_combo[combo_key],
             rules         = combo_rules,
-            param_grid    = param_grid,
+            param_grid    = param_grid[timeframe],
             order_amount  = order_amount,
             p_value_th    = p_value_th,
             block_size    = resolved_block_size,

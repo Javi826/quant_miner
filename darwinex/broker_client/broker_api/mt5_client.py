@@ -166,3 +166,17 @@ def get_last_closed_bar_time(symbol: str, timeframe: str):
         return None
 
     return int(df.index[-1].timestamp())
+
+
+def count_closed_bars_since(symbol: str, timeframe: str, from_ts: int, n: int = 500) -> int | None:
+
+    df = get_rates(symbol, timeframe=timeframe, n=n)
+
+    if df.empty:
+        return None
+
+    bar_seconds  = TIMEFRAME_MINUTES[timeframe] * 60
+    bar_open_ts  = (df.index.astype("int64") // 10**9).to_numpy()
+    closed_after = bar_open_ts + bar_seconds > from_ts
+
+    return int(closed_after.sum())

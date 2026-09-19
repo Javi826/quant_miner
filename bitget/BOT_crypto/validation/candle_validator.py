@@ -158,7 +158,7 @@ class CandleValidator(BitgetWSManager):
         self._resubscribe_public()
 
         state = "connected" if self._is_public_connected() else "not connected"
-        logger.info(
+        logger.debug(
             f"[VERIFY] validator started | symbol={self.symbol} "
             f"| timeframes={', '.join(self.timeframes)} | WS {state}"
         )
@@ -176,7 +176,7 @@ class CandleValidator(BitgetWSManager):
         self._channels). Without this override, every reconnect leaves the
         socket open but silently unsubscribed, freezing detection forever.
         """
-        logger.info("[VERIFY] public WS (re)connected")
+        logger.debug("[VERIFY] public WS (re)connected")
         self._resubscribe_public()
 
     # ----------------------------------------------------------------------
@@ -257,7 +257,7 @@ class CandleValidator(BitgetWSManager):
         real_close_epoch = closed['open_time_ms'] / 1000 + timeframe_to_seconds(timeframe)
         push_lag         = closed['detected_epoch'] - real_close_epoch
 
-        logger.info(
+        logger.debug(
             f"[VERIFY] {timeframe} close detected via WS "
             f"| bar_open={_epoch_to_utc_str(closed['open_time_ms'] / 1000)} "
             f"| push_lag={push_lag:+.1f}s {_mark(abs(push_lag) <= WS_DETECTION_TOLERANCE_SECONDS)}"
@@ -281,7 +281,7 @@ class CandleValidator(BitgetWSManager):
                 closed = dict(closed) if closed else None
 
             if closed is None:
-                logger.info(
+                logger.debug(
                     f"[VERIFY] {timeframe} | clock triggered at "
                     f"{_epoch_to_utc_str(trigger_epoch)} | no WS close recorded yet | skipped"
                 )
@@ -307,7 +307,7 @@ class CandleValidator(BitgetWSManager):
         buffer_drift  = trigger_epoch - expected_epoch
         detection_gap = trigger_epoch - closed['detected_epoch']
 
-        logger.info(
+        logger.debug(
             f"[VERIFY] {timeframe} | detection:"
             f"{_mark(abs(buffer_drift) <= CANDLE_TRIGGER_TOLERANCE_SECONDS)} "
             f"| real_close={_epoch_to_utc_str(real_close_epoch)} "
@@ -333,7 +333,7 @@ class CandleValidator(BitgetWSManager):
         rest_open_time_ms = int(row[0])
         identity_match     = closed['open_time_ms'] == rest_open_time_ms
 
-        logger.info(
+        logger.debug(
             f"[VERIFY] {timeframe} | identity:{_mark(identity_match)} "
             f"| WS_bar_open={_epoch_to_utc_str(closed['open_time_ms'] / 1000)} "
             f"REST_bar_open={_epoch_to_utc_str(rest_open_time_ms / 1000)} "
@@ -391,7 +391,7 @@ def stop_candle_validator() -> None:
 
     try:
         _validator.stop()
-        logger.info("[VERIFY] validator stopped")
+        logger.debug("[VERIFY] validator stopped")
     except Exception as e:
         logger.error(f"[VERIFY] validator shutdown failed: {e}")
     finally:

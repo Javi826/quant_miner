@@ -70,8 +70,6 @@ class DashboardServer:
         self.server_thread = None
         self.running = False
         
-        self.snapshot_thread = None
-        self.snapshot_running = False
         self.dashboard_port = None
         
     def get_precision_for_price(self, price):
@@ -803,7 +801,7 @@ class DashboardServer:
 
                     results.append({
                         'week':         str(week),
-                        'week_label':   f"{actual_start.strftime('%d %b')} – {actual_end.strftime('%d %b %Y')}",
+                        'week_label':   f"{week_start.strftime('%d %b')} – {week_end.strftime('%d %b %Y')}",
                         'num_trades':   num_trades,
                         'profit_usd':   round(float(total_profit), 2),
                         'profit_pct':   round(float(profit_pct), 2),
@@ -1014,53 +1012,7 @@ class DashboardServer:
         # BTC DATA ENDPOINTS
         # ==============================================================================
         
-        @self.app.route('/api/ref/history')
-        def get_ref_history():
 
-            try:
-                date_from = request.args.get('date_from')
-                date_to   = request.args.get('date_to')
-
-                query  = """
-                    SELECT date, price
-                    FROM ref_history
-                    WHERE symbol = %s
-                """
-                params = [self.reference_symbol]
-
-                if date_from:
-                    query += " AND date >= %s"
-                    params.append(date_from)
-
-                if date_to:
-                    query += " AND date <= %s"
-                    params.append(date_to)
-
-                query += " ORDER BY date"
-
-                conn   = psycopg2.connect(**self.postgres_config)
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                rows   = cursor.fetchall()
-                cursor.close()
-                conn.close()
-
-                if not rows:
-                    return jsonify({'success': True, 'dates': [], 'prices': []})
-
-                dates  = [row[0].strftime('%Y-%m-%d') for row in rows]
-                prices = [float(row[1]) if row[1] else None for row in rows]
-
-                return jsonify({
-                    'success': True,
-                    'dates':   dates,
-                    'prices':  prices,
-                    'symbol':  self.reference_symbol
-                })
-
-            except Exception as e:
-                logger.error(f"Error getting ref history: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
             
         @self.app.route('/api/risk/exposure')
         def get_risk_exposure():
@@ -1141,257 +1093,7 @@ class DashboardServer:
                     'error': str(e),
                     'data': {}
                 }), 500
-            
-        @self.app.route('/api/quality/winrate-evolution')
-        def get_winrate_evolution():
-
-            try:
-                # Get parameters
-                strategies_param = request.args.get('strategies', '')
-                selected_strategies = [s.strip() for s in strategies_param.split(',') if s.strip()]
-                date_from = request.args.get('date_from', None)
-                date_to = request.args.get('date_to', None)
                 
-                if not selected_strategies:
-                    return jsonify({
-                        'success': False,
-                        'error': 'No strategies selected'
-                    }), 400
-                
-                # Load trades
-                df = self._load_trades_dataframe()
-                if df is None or df.empty:
-                    return jsonify({
-                        'success': True,
-                        'dates': [],
-                        'winrate': []
-                    })
-                
-                # Filter by strategies
-                df = df[df['STRATEGY'].isin(selected_strategies)].copy()
-                
-                if df.empty:
-                    return jsonify({
-                        'success': True,
-                        'dates': [],
-                        'winrate': []
-                    })
-                
-                # Prepare and filter by dates
-                df = self._prepare_trades_dataframe(df)
-                df = self._filter_df_by_dates(df, date_from, date_to)
-                
-                if df.empty:
-                    return jsonify({
-                        'success': True,
-                        'dates': [],
-                        'winrate': []
-                    })
-                
-                # Sort by close date
-                df = df.sort_values('CLOSE_AT')
-                
-                # Group by date and calculate cumulative win rate
-                df['date'] = df['CLOSE_AT'].dt.date
-                df['is_winner'] = (df['PROFIT'] > 0).astype(int)
-                
-                # Calculate cumulative stats
-                df['cumulative_wins'] = df['is_winner'].cumsum()
-                df['cumulative_trades'] = range(1, len(df) + 1)
-                df['cumulative_winrate'] = (df['cumulative_wins'] / df['cumulative_trades']) * 100
-                
-                # Get one value per day (last trade of the day)
-                daily = df.groupby('date').last().reset_index()
-                
-                # Format output
-                dates = [d.strftime('%Y-%m-%d') for d in daily['date']]
-                winrate = [round(wr, 2) for wr in daily['cumulative_winrate']]
-                
-                return jsonify({
-                    'success': True,
-                    'dates': dates,
-                    'winrate': winrate,
-                    'total_trades': int(len(df))
-                })
-                
-            except Exception as e:
-                logger.error(f"Error in winrate evolution: {e}")
-                import traceback
-                traceback.print_exc()
-                return jsonify({
-                    'success': False,
-                    'error': str(e)
-                }), 500
-        
-        @self.app.route('/api/ref/snapshot')
-        def capture_ref_snapshot():
-
-            try:
-                from datetime import date
-
-                today  = date.today()
-                symbol = self.reference_symbol
-
-                conn   = psycopg2.connect(**self.postgres_config)
-                cursor = conn.cursor()
-
-                cursor.execute("""
-                    SELECT price FROM ref_history
-                    WHERE date = %s AND symbol = %s
-                """, [today, symbol])
-
-                existing = cursor.fetchone()
-
-                if existing:
-                    cursor.close()
-                    conn.close()
-                    return jsonify({
-                        'success': True,
-                        'message': 'Snapshot already exists for today',
-                        'price':   float(existing[0]),
-                        'symbol':  symbol,
-                        'date':    today.isoformat()
-                    })
-
-                try:
-                    ref_price = float(self.get_current_price(symbol))
-                except Exception as e:
-                    cursor.close()
-                    conn.close()
-                    logger.error(f"[REF SNAPSHOT] Error getting {symbol} price: {e}")
-                    return jsonify({
-                        'success': False,
-                        'error':   f'Failed to get {symbol} price: {str(e)}'
-                    }), 500
-
-                cursor.execute("""
-                    INSERT INTO ref_history (date, symbol, price)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (date, symbol) DO NOTHING
-                """, [today, symbol, ref_price])
-
-                conn.commit()
-                cursor.close()
-                conn.close()
-
-                logger.info(f"[REF SNAPSHOT] Captured: {today} {symbol} -> ${ref_price:.2f}")
-
-                return jsonify({
-                    'success': True,
-                    'message': 'Ref snapshot captured successfully',
-                    'price':   ref_price,
-                    'symbol':  symbol,
-                    'date':    today.isoformat()
-                })
-
-            except Exception as e:
-                logger.error(f"[REF SNAPSHOT] Error: {e}")
-                return jsonify({'success': False, 'error': str(e)}), 500
-    
-    # ==========================================================================
-    # DAILY SNAPSHOT SCHEDULER METHODS (CLASS LEVEL)
-    # ==========================================================================
-    
-    def _capture_snapshot(self):
-        """
-        Capture daily exposure snapshot by calling internal endpoint.
-        Triggered by scheduler at 23:55 UTC daily.
-        """
-        try:
-            if not self.dashboard_port:
-                logger.warning("[SNAPSHOT] Port not set, skipping")
-                return
-            
-            url = f'http://localhost:{self.dashboard_port}/api/risk/exposure-history?days=1'
-            response = requests.get(url, timeout=10)
-            
-            if response.ok:
-                data = response.json()
-                if data.get('success'):
-                    logger.info(f"[SNAPSHOT] Daily exposure captured for {self.account_number}")
-                else:
-                    logger.warning(f"[SNAPSHOT] Endpoint returned error: {data.get('error')}")
-            else:
-                logger.warning(f"[SNAPSHOT] HTTP {response.status_code}: {response.text[:100]}")
-                
-        except requests.exceptions.Timeout:
-            logger.error("[SNAPSHOT] Request timeout (>10s)")
-        except Exception as e:
-            logger.error(f"[SNAPSHOT] Error capturing snapshot: {e}")
-    
-    def _capture_ref_snapshot(self):
-        """
-        Capture daily reference symbol price snapshot by calling internal endpoint.
-        Triggered by scheduler at 00:05 UTC daily.
-        """
-        try:
-            if not self.dashboard_port:
-                logger.warning("[REF SNAPSHOT] Port not set, skipping")
-                return
-
-            url      = f'http://localhost:{self.dashboard_port}/api/ref/snapshot'
-            response = requests.get(url, timeout=10)
-
-            if response.ok:
-                data = response.json()
-                if data.get('success'):
-                    logger.info(f"[REF SNAPSHOT] Daily {self.reference_symbol} price captured: ${data.get('price')}")
-                else:
-                    logger.warning(f"[REF SNAPSHOT] Endpoint returned error: {data.get('error')}")
-            else:
-                logger.warning(f"[REF SNAPSHOT] HTTP {response.status_code}: {response.text[:100]}")
-
-        except requests.exceptions.Timeout:
-            logger.error("[REF SNAPSHOT] Request timeout (>10s)")
-        except Exception as e:
-            logger.error(f"[REF SNAPSHOT] Error capturing snapshot: {e}")
-
-    def _schedule_daily_snapshot(self):
-        """
-        Scheduler loop that runs in separate thread.
-        Captures reference symbol price snapshot daily at 00:05 UTC.
-        """
-        if self.reference_symbol:
-            logger.info(f"[SNAPSHOT] Scheduler started - captures {self.reference_symbol} price daily at 00:05 UTC")
-        else:
-            logger.info("[SNAPSHOT] Scheduler started - no reference symbol configured, nothing to capture")
-    
-        triggered_today = False
-    
-        while self.snapshot_running:
-            now_utc = datetime.utcnow()
-            if now_utc.hour == 0 and now_utc.minute == 5:
-                if not triggered_today:
-                    if self.reference_symbol:
-                        self._capture_ref_snapshot()
-                    triggered_today = True
-            else:
-                triggered_today = False
-            time_module.sleep(30)
-    
-        logger.info("[SNAPSHOT] Scheduler stopped")
-    
-    def _start_snapshot_scheduler(self):
-        """Start snapshot scheduler thread"""
-        if self.snapshot_thread and self.snapshot_thread.is_alive():
-            logger.warning("[SNAPSHOT] Scheduler already running")
-            return
-        
-        self.snapshot_running = True
-        self.snapshot_thread = threading.Thread(
-            target=self._schedule_daily_snapshot,
-            daemon=True,
-            name=f'SnapshotScheduler-{self.account_number}'
-        )
-        self.snapshot_thread.start()
-    
-    def _stop_snapshot_scheduler(self):
-        """Stop snapshot scheduler thread"""
-        if self.snapshot_running:
-            self.snapshot_running = False
-            if self.snapshot_thread:
-                self.snapshot_thread.join(timeout=2)
-    
     def start(self, host='0.0.0.0', port=5000):
         """Inicia el servidor del dashboard"""
         if self.running:
@@ -1428,13 +1130,10 @@ class DashboardServer:
         logger.info(f"Local:   http://localhost:{port}")
         logger.info(f"Network: http://127.0.0.1:{port}")
         logger.info(f"LAN:     http://<your-ip>:{port}")
-        
-        # Start snapshot scheduler AFTER Flask is running
-        self._start_snapshot_scheduler()
+
     
     def stop(self):
         """Detiene el servidor"""
-        self._stop_snapshot_scheduler()  # Stop scheduler first
         self.running = False
         logger.info("Dashboard server stopped")
 

@@ -11,20 +11,11 @@ logger = logging.getLogger("BOT_batch.rule_mining.writter")
 
 
 def _fmt_spec(spec: dict) -> str:
-    if "sma_period" in spec:
-        return (
-            f'{{"type": "{spec["type"]}", "period": {spec["period"]}, '
-            f'"op": "{spec["op"]}", "sma_period": {spec["sma_period"]}}}'
-        )
-    if "period" in spec:
-        return (
-            f'{{"type": "{spec["type"]}", "period": {spec["period"]}, '
-            f'"op": "{spec["op"]}", "value": {spec["value"]}}}'
-        )
+    params_str = ", ".join(f'"{k}": {v}' for k, v in spec["params"].items())
     return (
-        f'{{"type": "{spec["type"]}", "op": "{spec["op"]}", "value": {spec["value"]}}}'
+        f'{{"indicator": "{spec["indicator"]}", "params": {{{params_str}}}, '
+        f'"op": "{spec["op"]}", "threshold": {spec["threshold"]}}}'
     )
-
 
 def _fmt_custom_value(value, index: int) -> str:
     if value == "AUTO_INCREMENT":

@@ -1,4 +1,4 @@
-#quant_d/darwinex/BOT_forex/darwinex/live/mt5_connection.py
+#quant_miner/darwinex/BOT_forex/darwinex/live/mt5_connection.py
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
@@ -20,11 +20,27 @@ __all__ = [
     "get_client", "get_rates", "get_last_closed_bar_time",
     "sync_server_offset", "get_server_time",
     "send_order", "resume", "run",
+    "has_open_position", "get_open_positions", "close_position",
 ]
 
 def _truncate_comment(comment):
     """MT5 rejects order comments longer than 31 characters."""
     return str(comment)[:MAX_COMMENT_LEN]
+
+def get_open_positions(magic: int | None = None) -> list:
+    """Open positions, optionally filtered by magic."""
+    client    = get_client()
+    positions = list(client.positions_get() or [])
+
+    if magic is None:
+        return positions
+
+    return [p for p in positions if p.magic == magic]
+
+
+def has_open_position(magic: int) -> bool:
+    """True if the given magic has any open position, regardless of symbol."""
+    return bool(get_open_positions(magic))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ORDER EXECUTION
@@ -152,3 +168,94 @@ def run(symbol, buy, sell, lot, pct_tp=2.0, pct_sl=2.0, comment="", magic=0):
 
     if sell:
         send_order(symbol, lot, False, True, pct_tp=pct_tp, pct_sl=pct_sl, comment=comment, magic=magic)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POSITION CLOSING
+# ─────────────────────────────────────────────────────────────────────────────
+def _build_close_request(position, comment):
+
+    client = get_client()
+    tick   = client.symbol_info_tick(position.symbol)
+
+    if tick is None:
+        return None
+
+    is_long = int(position.type) == int(client.ORDER_TYPE_BUY)
+
+    return {
+        "action"      : client.TRADE_ACTION_DEAL,
+        "symbol"      : position.symbol,
+        "volume"      : position.volume,
+        "type"        : client.ORDER_TYPE_SELL if is_long else client.ORDER_TYPE_BUY,
+        "position"    : position.ticket,
+        "price"       : tick.bid if is_long else tick.ask,
+        "deviation"   : 10,
+        "magic"       : position.magic,
+        "comment"     : comment,
+        "type_filling": 0,
+        "type_time"   : client.ORDER_TIME_GTC,
+    }
+
+
+def close_position(position, comment="") -> bool:
+    """Closes a single position by ticket with an opposite market order."""
+    client            = get_client()
+    label             = "CLOSE LONG" if int(position.type) == int(client.ORDER_TYPE_BUY) else "CLOSE SHORT"
+    comment           = _truncate_comment(comment)
+    retryable_retcode = int(client.TRADE_RETCODE_MARKET_CLOSED)
+    retcode_done      = int(client.TRADE_RETCODE_DONE)
+
+    for attempt in (1, 2):
+        try:
+            request = _build_close_request(position, comment)
+
+            if request is None:
+                logger.error(
+                    f"{label} {position.symbol} | ticket={position.ticket} | no tick "
+                    f"available to price the close | position left open"
+                )
+                return False
+
+            result = client.order_send(request)
+
+            if result is None:
+                logger.error(
+                    f"{label} {position.symbol} | ticket={position.ticket} | "
+                    f"order_send() returned None: {client.last_error()}"
+                )
+                return False
+
+            retcode    = int(getattr(result, "retcode", -1))
+            broker_msg = getattr(result, "comment", "") or ""
+
+            if retcode == retcode_done:
+                logger.info(
+                    f"{label} {position.symbol} | ticket={position.ticket} "
+                    f"magic={position.magic} | volume={position.volume} "
+                    f"profit={position.profit} | {broker_msg}"
+                )
+                return True
+
+            if attempt == 1 and retcode == retryable_retcode:
+                logger.warning(
+                    f"{label} {position.symbol} | ticket={position.ticket} | rejected "
+                    f"retcode={retcode} ({broker_msg}) | retrying once in {RETRY_DELAY_SECONDS}s"
+                )
+                time.sleep(RETRY_DELAY_SECONDS)
+                continue
+
+            logger.error(
+                f"{label} {position.symbol} | ticket={position.ticket} | rejected "
+                f"retcode={retcode} ({broker_msg}) | position left open"
+            )
+            return False
+
+        except Exception as e:
+            logger.error(
+                f"{label} {position.symbol} | ticket={position.ticket} | unexpected "
+                f"failure on attempt {attempt}: {e} | position left open"
+            )
+            return False
+
+    return False

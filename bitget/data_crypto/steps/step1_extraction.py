@@ -201,7 +201,13 @@ def _save_csv(df: pd.DataFrame, path: str) -> None:
     if df_save["timestamp"].dt.tz is not None:
         df_save["timestamp"] = df_save["timestamp"].dt.tz_localize(None)
     df_save.to_csv(path, index=False)
-
+    
+def _normalize_volume_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.loc[:, ~df.columns.duplicated(keep="first")].copy()
+    if "volume" not in df.columns and "volume_quote" in df.columns:
+        df = df.rename(columns={"volume_quote": "volume"})
+    df = df.drop(columns=["volume_base", "volume_quote"], errors="ignore")
+    return df
 # =============================================================================
 # SYMBOL PROCESSOR
 # =============================================================================
@@ -251,7 +257,7 @@ def _process_symbol(
     validate_append_border(df_existing, df_new, gran_ms, sym)
 
     df_final = _merge_and_deduplicate(df_existing, df_new)
-    df_final = df_final.rename(columns={"volume_quote": "volume"}).drop(columns=["volume_base"])
+    df_final = _normalize_volume_columns(df_final)
 
     for col in ["open", "high", "low", "close", "volume"]:
         df_final[col] = pd.to_numeric(df_final[col], errors="coerce")

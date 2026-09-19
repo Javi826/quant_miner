@@ -12,8 +12,7 @@ from setup.config_backtest import INITIAL_BALANCE
 from utils.batch_metrics import compute_metrics
 logger = logging.getLogger("BOT_batch.engines.wfo_WF")
 
-WARMUP_BARS = 100
-
+WARMUP_BARS       = 100
 MIN_COOLDOWN_BARS = 100
 
 # =============================================================================
@@ -71,11 +70,11 @@ def _find_window_indices(
         return None
     return t0, t1, test0, test1
 
-def _evaluate_with_shm(params: dict, shm_metadata: dict, evaluate_fn) -> tuple:
+def _evaluate_with_shm(params: dict, shm_metadata: dict, evaluate_fn, train_start_ts, train_edge_ts) -> tuple:
     """Worker: reconstruct base_arrays from shared memory and evaluate."""
     base_arrays, shm_handles = arrays_from_shared_memory(shm_metadata)
     try:
-        return evaluate_fn(params, base_arrays)
+        return evaluate_fn(params, base_arrays, train_start_ts, train_edge_ts)
     finally:
         for shm in shm_handles:
             shm.close()
@@ -99,7 +98,7 @@ def walk_forward_optimization(
     if evaluate_fn is None:
         raise ValueError("You must pass an evaluate_fn(params, base_arrays) function")
 
-    COOLDOWN_BARS = max(param_ranges.get("SELL_AFTER", [WARMUP_BARS]) + [MIN_COOLDOWN_BARS])
+    COOLDOWN_BARS    = max(param_ranges.get("SELL_AFTER", [WARMUP_BARS]) + [MIN_COOLDOWN_BARS])
 
     EDGE_BUFFER_BARS = max(param_ranges.get("SELL_AFTER", [WARMUP_BARS]) + [MIN_COOLDOWN_BARS])
 
@@ -121,10 +120,10 @@ def walk_forward_optimization(
     test_symbols_list  = []
 
     # Trade accumulators per window
-    train_trades_list      = []
-    test_trades_list        = []
-    test_n_trades_list      = []
-    train_criteria_list     = [] 
+    train_trades_list   = []
+    test_trades_list    = []
+    test_n_trades_list  = []
+    train_criteria_list = [] 
 
     ema_raw = None 
 
@@ -229,7 +228,10 @@ def walk_forward_optimization(
         # Parallel evaluation via shared memory
         # -----------------------------------------------------------
         if n_jobs == 1:
-            results = [evaluate_fn(params, base_arrays) for params in dict_combinations]
+            results = [
+                evaluate_fn(params, base_arrays, train_start_ts, train_edge_ts)
+                for params in dict_combinations
+            ]
         else:
             shm_list, shm_metadata = arrays_to_shared_memory(base_arrays)
             try:
@@ -237,7 +239,7 @@ def walk_forward_optimization(
                     tqdm(desc=f"🔁 WFO Window {window_idx}", total=len(dict_combinations), dynamic_ncols=True)
                 ) if show_progress else contextlib.nullcontext()):
                     results = Parallel(n_jobs=n_jobs)(
-                        delayed(_evaluate_with_shm)(params, shm_metadata, evaluate_fn)
+                        delayed(_evaluate_with_shm)(params, shm_metadata, evaluate_fn, train_start_ts, train_edge_ts)
                         for params in dict_combinations
                     )
             finally:
@@ -335,10 +337,10 @@ def walk_forward_optimization(
     test_start_ts_raw  = list(test_start_dates)
     test_end_ts_raw    = list(test_end_dates)
 
-    train_start_dates = [pd.to_datetime(d).date() if d is not None else None for d in train_start_dates]
-    train_end_dates   = [pd.to_datetime(d).date() if d is not None else None for d in train_end_dates]
-    test_start_dates  = [pd.to_datetime(d).date() if d is not None else None for d in test_start_dates]
-    test_end_dates    = [pd.to_datetime(d).date() if d is not None else None for d in test_end_dates]
+    train_start_dates  = [pd.to_datetime(d).date() if d is not None else None for d in train_start_dates]
+    train_end_dates    = [pd.to_datetime(d).date() if d is not None else None for d in train_end_dates]
+    test_start_dates   = [pd.to_datetime(d).date() if d is not None else None for d in test_start_dates]
+    test_end_dates     = [pd.to_datetime(d).date() if d is not None else None for d in test_end_dates]
 
     df_results = pd.DataFrame(best_params_list)
     df_results.insert(0, 'train_start', train_start_dates)
@@ -377,10 +379,10 @@ def walk_forward_optimization(
     wfo_train_trades = pd.concat(train_trades_list, ignore_index=True) if train_trades_list else pd.DataFrame()
     wfo_test_trades  = pd.concat(test_trades_list,  ignore_index=True) if test_trades_list  else pd.DataFrame()
 
-    valid_train_criteria = [c for c in train_criteria_list if np.isfinite(c)]
+    valid_train_criteria  = [c for c in train_criteria_list if np.isfinite(c)]
     train_net_gain_is_avg = float(np.mean(valid_train_criteria)) if valid_train_criteria else 0.0
 
-    valid_test_criteria = [c for c in best_criteria_list if np.isfinite(c)]
+    valid_test_criteria  = [c for c in best_criteria_list if np.isfinite(c)]
     test_net_gain_oos_avg = float(np.mean(valid_test_criteria)) if valid_test_criteria else 0.0
 
     return final_params, df_results, wfo_train_trades, wfo_test_trades, window_idx, train_net_gain_is_avg, test_net_gain_oos_avg

@@ -766,9 +766,9 @@ async function loadBotConfig() {
             const extraParamKeys = new Set();
             sortedStrategies.forEach(strat => {
                 Object.keys(strat).forEach(key => {
-                    if (!excludeKeys.has(key)) {
-                        extraParamKeys.add(key);
-                    }
+                    if (excludeKeys.has(key)) return;
+                    if (key.toLowerCase().startsWith('spec')) return;
+                    extraParamKeys.add(key);
                 });
             });
             
@@ -978,10 +978,6 @@ async function updateEquityChart() {
             return;
         }
         
-        // Fetch BTC history with same date filters
-        const btcRes = await fetch('/api/ref/history?timeframe=1Dutc' + dateParams);
-        const btcData = await btcRes.json();
-        
         document.getElementById('equity-metrics').style.display = 'block';
         document.getElementById('metric-num-trades').textContent = data.num_trades || 0;
         
@@ -1028,39 +1024,7 @@ async function updateEquityChart() {
             tension: 0.1,
             yAxisID: 'y'
         }];
-        
-        // Add BTC dataset if data available
-        // Add BTC dataset if data available (WITH DATE ALIGNMENT)
-        if (btcData.success && btcData.dates && btcData.dates.length > 0) {
-            // Normalize BTC dates: "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DD"
-            const btcDatesMap = {};
-            btcData.dates.forEach((dateStr, idx) => {
-                const normalizedDate = dateStr.split(' ')[0]; // Extract YYYY-MM-DD
-                btcDatesMap[normalizedDate] = btcData.prices[idx];
-            });
-            
-            // Align BTC prices with equity dates
-            const alignedBtcPrices = data.dates.map(equityDate => {
-                return btcDatesMap[equityDate] || null; // null if no match
-            });
-            
-            // Only add if we have at least some overlap
-            const validPrices = alignedBtcPrices.filter(p => p !== null);
-            if (validPrices.length > 0) {
-                datasets.push({
-                    label: (btcData.symbol || 'BTC') + ' Price',
-                    data: alignedBtcPrices,
-                    borderColor: '#f59e0b',
-                    backgroundColor: 'transparent',
-                    borderWidth: 1,
-                    borderDash: [5, 5],
-                    pointRadius: 0,
-                    tension: 0.1,
-                    yAxisID: 'y2',
-                    spanGaps: true  // Draw line across null values
-                });
-            }
-        }
+
         const ctxEquity = document.getElementById('equityChart').getContext('2d');
         equityChart = new Chart(ctxEquity, {
             type: 'line',
@@ -1115,19 +1079,6 @@ async function updateEquityChart() {
                             drawBorder: true,
                             borderColor: CHART_DEFAULTS.borderColor,
                             borderWidth: CHART_DEFAULTS.borderWidth
-                        }
-                    },
-                    y2: {
-                        type: 'linear',
-                        display: datasets.length > 1,
-                        position: 'right',
-                        ticks: {
-                            color: '#f59e0b',
-                            font: { size: CHART_DEFAULTS.fontSize.axis },
-                            callback: function(value) { return '$' + value.toLocaleString(); }
-                        },
-                        grid: {
-                            drawOnChartArea: false
                         }
                     }
                 }
@@ -1421,13 +1372,6 @@ async function loadQualityTab() {
             document.getElementById('deviation-table-container').innerHTML  = errorHtml;
         }
 
-        // Initialize win rate evolution checkboxes
-        await initStrategyCheckboxes(
-            'winrate-strategy-checkboxes',
-            'winrate-strat-',
-            'winrate-strat-all'
-        );
-
     } catch (error) {
         console.error('Error loading quality tab:', error);
         const errorHtml = '<div style="text-align: center; color: #f85149; padding: 40px;">Error loading data</div>';
@@ -1614,126 +1558,6 @@ async function updateRiskCards(metrics, strategies) {
     if (shortEl) shortEl.textContent = shortPct.toFixed(1) + '% | $' + shortUsdt.toFixed(0);
 }
 
-// =============================================================================
-// WIN RATE EVOLUTION CHART (Quality Control)
-// =============================================================================
-
-let winRateChart = null;
-
-function clearWinRateDates() {
-    document.getElementById('winrate-date-from').value = '';
-    document.getElementById('winrate-date-to').value = '';
-}
-
-function getWinRateDateParams() {
-    const dateFrom = document.getElementById('winrate-date-from').value;
-    const dateTo = document.getElementById('winrate-date-to').value;
-    let params = '';
-    if (dateFrom) params += '&date_from=' + dateFrom;
-    if (dateTo) params += '&date_to=' + dateTo;
-    return params;
-}
-
-async function updateWinRateChart() {
-    try {
-        const selectedStrategies = getSelectedStrategies('winrate-strategy-checkboxes');
-        
-        if (selectedStrategies.length === 0) {
-            alert('Please select at least one strategy');
-            return;
-        }
-        
-        const dateParams = getWinRateDateParams();
-        const res = await fetch('/api/quality/winrate-evolution?strategies=' + selectedStrategies.join(',') + dateParams);
-        const data = await res.json();
-        
-        if (!data.success) {
-            alert('Error loading win rate data: ' + (data.error || 'Unknown error'));
-            return;
-        }
-        
-        if (!data.dates || data.dates.length === 0) {
-            alert('No trades found for selected strategies in this date range');
-            return;
-        }
-        
-        // Destroy existing chart
-        if (winRateChart) {
-            winRateChart.destroy();
-            winRateChart = null;
-        }
-        
-        // Create chart
-        const ctx = document.getElementById('winRateChart').getContext('2d');
-        winRateChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: data.dates,
-                datasets: [{
-                    label: 'Cumulative Win Rate (%)',
-                    data: data.winrate,
-                    borderColor: '#58a6ff',
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    pointRadius: 2,
-                    pointBackgroundColor: '#58a6ff',
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: {
-                            color: '#ffffff',
-                            font: { size: 14 }
-                        }
-                    },
-                    title: {
-                        display: true,
-                        text: 'Win Rate Evolution - ' + selectedStrategies.length + ' strategies (' + data.total_trades + ' trades)',
-                        color: CHART_DEFAULTS.titleColor,
-                        font: { size: CHART_DEFAULTS.fontSize.title, weight: 'bold' }
-                    }
-                },
-                scales: {
-                    x: {
-                        ticks: {
-                            color: CHART_DEFAULTS.textColor,
-                            font: { size: CHART_DEFAULTS.fontSize.axis }
-                        },
-                        grid: {
-                            color: CHART_DEFAULTS.gridColor,
-                            drawBorder: true,
-                            borderColor: CHART_DEFAULTS.borderColor,
-                            borderWidth: CHART_DEFAULTS.borderWidth
-                        }
-                    },
-                    y: {
-                        ticks: {
-                            color: CHART_DEFAULTS.textColor,
-                            font: { size: CHART_DEFAULTS.fontSize.axis },
-                            callback: function(value) { return value.toFixed(1) + '%'; }
-                        },
-                        grid: {
-                            color: CHART_DEFAULTS.gridColor,
-                            drawBorder: true,
-                            borderColor: CHART_DEFAULTS.borderColor,
-                            borderWidth: CHART_DEFAULTS.borderWidth
-                        }
-                    }
-                }
-            }
-        });
-        
-    } catch (error) {
-        console.error('Error updating win rate chart:', error);
-        alert('Error loading win rate chart: ' + error.message);
-    }
-}
 // =============================================================================
 // PERIOD ANALYSIS — Monthly & Weekly subtabs
 // =============================================================================
@@ -1982,12 +1806,6 @@ async function initPeriodTab() {
         console.error('Error initializing period tab:', error);
     }
 }
-
-// =============================================================================
-// END PERIOD ANALYSIS
-// =============================================================================
-
-
 // =============================================================================
 // END WIN RATE EVOLUTION CHART
 // =============================================================================

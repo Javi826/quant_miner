@@ -8,6 +8,6 @@ docker exec -d -u abc quant_mt5 bash -c "wine python -m mt5linux --host 0.0.0.0 
 sleep 3
 
 echo "[3/3] Arrancando bot en core 2..."
-cd ~/projects/quant/quant_d/darwinex/BOT_forex
+cd ~/projects/quant/quant_miner/darwinex/BOT_forex
 source ~/projects/quant/env_quant/bin/activate
 exec taskset -c 2 python darwinex/live/main.py

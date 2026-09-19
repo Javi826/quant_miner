@@ -16,14 +16,14 @@ from multiprocessing.shared_memory import SharedMemory
 from setup.config_core import settings
 from utils.batch_metrics import sharpe_from_daily_values, skew_kurtosis_from_daily_values, daily_values_from_sell_days
 from utils.paralelization import arrays_to_shared_memory, arrays_from_shared_memory, compact_columns_inplace
-from signals.condition_bank import ConditionBank
+from signals.indicators_bank import ConditionBank
 logger = logging.getLogger("BOT_batch.pipeline.backtest_runner")
 DTYPE  = np.float32
 # =============================================================================
 # BACKTEST EXECUTION CONFIG
 # =============================================================================
 BACKTEST_N_JOBS     = -1
-BACKTEST_MIN_TRADES = 100
+BACKTEST_MIN_TRADES = 150
 COLUMN_CHUNK_SIZE   = 5000  # columns processed per chunk during final matrix compaction
 
 # =============================================================================
@@ -91,16 +91,17 @@ def _run_backtest_core_light(prepared_arrays, sell_after, tp_pct, sl_pct, order_
         int(sell_after), float(tp_pct), float(sl_pct),
     )
     n_trades      = core_output[0]
+    buy_time_int  = core_output[2]
     sell_time_int = core_output[4]
     profits       = core_output[7]
-    return n_trades, sell_time_int, profits
+    return n_trades, buy_time_int, sell_time_int, profits
 
 def _daily_values_from_trades(sell_time_int: np.ndarray, profits: np.ndarray) -> tuple:
 
     sell_days_ns = sell_time_int.view("datetime64[ns]")
     return daily_values_from_sell_days(sell_days_ns, profits)
 
-def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sharpe: float) -> dict:
+def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sharpe: float, duration_train: float) -> dict:
     eq       = INITIAL_BALANCE + np.cumsum(daily_values)
     cm       = np.maximum.accumulate(eq)
     max_dd   = ((eq - cm) / cm * 100).min()
@@ -118,6 +119,7 @@ def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sha
         "n_days_train":   n_days,
         "net_gain_train": round(float(net_gain), 2),
         "max_dd_train":   round(float(max_dd), 2),
+        "duration_train": round(float(duration_train), 2),
     }
 
 def _empty_winner_metrics() -> dict:
@@ -128,6 +130,7 @@ def _empty_winner_metrics() -> dict:
         "n_days_train":   0,
         "net_gain_train": np.nan,
         "max_dd_train":   np.nan,
+        "duration_train": np.nan,
     }
 
 def _evaluate_combo_sharpe(
@@ -139,7 +142,7 @@ def _evaluate_combo_sharpe(
     col_idx: int,
     global_start_day: np.datetime64,
 ) -> tuple:
-    n_trades, sell_time_int, profits = _run_backtest_core_light(
+    n_trades, buy_time_int, sell_time_int, profits = _run_backtest_core_light(
         prepared_arrays,
         sell_after   = params["SELL_AFTER"],
         tp_pct       = params["TP_PCT"],
@@ -150,6 +153,7 @@ def _evaluate_combo_sharpe(
         return -np.inf, params, None
 
     daily_values, n_days, start_day = _daily_values_from_trades(sell_time_int, profits)
+    duration_train = float(np.mean(sell_time_int - buy_time_int)) / 1e9 / 86400.0
 
     sharpe_metric = sharpe_from_daily_values(daily_values)
     sharpe_rank   = sharpe_metric if np.isfinite(sharpe_metric) else -np.inf
@@ -159,7 +163,7 @@ def _evaluate_combo_sharpe(
         matrix_view[col_idx, row_offset:row_offset + n_days] = daily_values.astype(np.float32)
         valid_view[col_idx] = 1
 
-    return sharpe_rank, params, (daily_values, n_days, sharpe_metric)
+    return sharpe_rank, params, (daily_values, n_days, sharpe_metric, duration_train)
 
 def _run_full_period_for_rule(
     rule_id: str,
@@ -208,8 +212,10 @@ def _run_full_period_for_rule(
     if best_bundle is None:
         winner_metrics = _empty_winner_metrics()
     else:
-        best_daily_values, best_n_days, best_sharpe_metric = best_bundle
-        winner_metrics = _winner_metrics_from_daily_values(best_daily_values, best_n_days, best_sharpe_metric)
+        best_daily_values, best_n_days, best_sharpe_metric, best_duration_train = best_bundle
+        winner_metrics = _winner_metrics_from_daily_values(
+            best_daily_values, best_n_days, best_sharpe_metric, best_duration_train,
+        )
 
     return rule_id, {**winner_metrics, "best_combo_id": best_combo_id}
 

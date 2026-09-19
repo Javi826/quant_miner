@@ -19,7 +19,7 @@ ACCOUNTS = {
         "reference_symbol": "BTCUSDT",
     },
     "00": {
-        "initial_capital": 40000,
+        "initial_capital": 80000,
         "dashboard_port": 5000,
         "description": "Main Account",
         "type": "production",

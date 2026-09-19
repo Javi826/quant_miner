@@ -6,19 +6,23 @@ from setup.config_core import settings
 import logging
 logger = logging.getLogger("shared.utils.ohlcv_utils")
 
-def get_bars_per_year(timeframe: str) -> int:
-    mapping = {
-        '15m'    : settings.DAYS_PER_YEAR * 96,
-        '30m'    : settings.DAYS_PER_YEAR * 48,
-        '1H'     : settings.DAYS_PER_YEAR * 24,
-        '4H'     : settings.DAYS_PER_YEAR * 6,
-        '6Hutc'  : settings.DAYS_PER_YEAR * 4,
-        '12Hutc' : settings.DAYS_PER_YEAR * 2,
-        '1Dutc'  : settings.DAYS_PER_YEAR,
-    }
-    if timeframe not in mapping:
+BARS_PER_DAY = {
+    '15m'    : 96,
+    '30m'    : 48,
+    '1H'     : 24,
+    '4H'     : 6,
+    '6Hutc'  : 4,
+    '12Hutc' : 2,
+    '1Dutc'  : 1,
+}
+
+def get_bars_per_day(timeframe: str) -> int:
+    if timeframe not in BARS_PER_DAY:
         raise ValueError(f"Timeframe not in mapping: {timeframe}")
-    return mapping[timeframe]
+    return BARS_PER_DAY[timeframe]
+
+def get_bars_per_year(timeframe: str) -> int:
+    return settings.DAYS_PER_YEAR * get_bars_per_day(timeframe)
 
 def prepare_ohlcv_arrays(ohlcv_data):
     ohlcv_arr = {}

@@ -22,11 +22,11 @@ logger = logging.getLogger("BOT_batch.pipeline.universe")
 # UNIVERSE DATA REQUIREMENTS
 # =============================================================================
 # =============================================================================
-# MIN_START_DATE_IS     = "2022-01-01"
-# MIN_START_DATE_OOS    = "2024-01-01"
-# MIN_START_DATE_MERGED = "2022-01-02"
-# 
+# MIN_START_DATE_IS     = "2021-01-01"
+# MIN_START_DATE_OOS    = "2024-01-10"
+# MIN_START_DATE_MERGED = "2022-01-01"
 # =============================================================================
+
 MIN_START_DATE_IS     = "2017-01-02"
 MIN_START_DATE_OOS    = "2024-01-10"
 MIN_START_DATE_MERGED = "2018-01-02"

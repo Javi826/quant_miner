@@ -4,7 +4,7 @@ import numpy as np
 import cupy as cp
 from joblib import Parallel, delayed
 from tqdm import tqdm
-from signals.condition_bank import ConditionBank
+from signals.indicators_bank import ConditionBank
 from signals.signal_builder import build_signal_fn
 
 logger = logging.getLogger("BOT_batch.pipeline.signal_cleaning")
@@ -12,7 +12,7 @@ logger = logging.getLogger("BOT_batch.pipeline.signal_cleaning")
 # =============================================================================
 # CONFIG
 # =============================================================================
-JACCARD_SIMILARITY_TH  = 0.8
+JACCARD_SIMILARITY_TH  = 0.9
 
 
 SIGNAL_MASK_N_JOBS     = -1
@@ -30,7 +30,7 @@ METRIC_LABEL_WIDTH     = 28  # fixed label width so all metric-block prints alig
 
 def _spec_identity(spec: dict) -> tuple:
     """Hashable identity of a condition spec, used to deduplicate specs across rules."""
-    return tuple(sorted(spec.items()))
+    return (spec["key"], spec["op"], spec["threshold"])
 
 
 def _collect_unique_specs(all_rules: list) -> tuple:

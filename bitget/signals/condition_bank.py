@@ -174,31 +174,6 @@ def _historical_volatility(close: np.ndarray, window: int) -> np.ndarray:
     out[:window] = np.nan
     return out
 
-def _ema(values: np.ndarray, period: int) -> np.ndarray:
-    return pd.Series(values, dtype=np.float64).ewm(span=period, adjust=False).mean().to_numpy()
-
-from numpy.lib.stride_tricks import sliding_window_view
- 
-# ---- Ubicación 2: reemplaza las dos funciones _rolling_max_shifted / _rolling_min_shifted ----
- 
-def _rolling_max_shifted(values: np.ndarray, window: int) -> np.ndarray:
-    n   = len(values)
-    out = np.full(n, np.nan)
-    if window >= n:
-        return out
-    windows      = sliding_window_view(values[:-1], window)
-    out[window:] = windows.max(axis=1)
-    return out
-  
-def _rolling_min_shifted(values: np.ndarray, window: int) -> np.ndarray:
-    n   = len(values)
-    out = np.full(n, np.nan)
-    if window >= n:
-        return out
-    windows      = sliding_window_view(values[:-1], window)
-    out[window:] = windows.min(axis=1)
-    return out
-
 # =============================================================================
 # INDICATOR REGISTRY
 # =============================================================================

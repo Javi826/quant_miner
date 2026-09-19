@@ -1,15 +1,15 @@
-#quant_d/darwinex/BOT_forex/darwinex/live/main.py (forex)
+#quant_miner/darwinex/BOT_forex/darwinex/live/main.py (forex)
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "core")))
 import time
 from loguru import logger
-from broker_client.broker_api.mt5_client import get_client,get_last_closed_bar_time,sync_server_offset
+from broker_client.broker_api.mt5_client import get_client,get_last_closed_bar_time,sync_server_offset,count_closed_bars_since
 from broker_client.broker_config import TIMEFRAME_MINUTES
-from live.mt5_connection import run
-from live.strategies import get_active_strategies, get_signal
+from live.mt5_connection import run, has_open_position, get_open_positions, close_position
+from live.strategies import get_active_strategies, get_signal, get_strategy_by_magic
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -20,6 +20,8 @@ logger.add(LOG_FILE, rotation="1 week", retention="1 month", level="INFO")
 LOOP_SLEEP_SECONDS   = 5.0
 STALE_BAR_FACTOR     = 3
 SIGNAL_DELAY_SECONDS = 15.0
+ALLOW_PYRAMIDING     = False
+ENABLE_TIME_EXITS    = True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONNECTION
@@ -34,7 +36,6 @@ def connect() -> bool:
     info = client.account_info()
     logger.success(f"Conectado | Cuenta: {info.login} | Balance: {info.balance} {info.currency}")
     return True
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BAR CLOCK
@@ -70,6 +71,10 @@ def init_bar_clock(symbols_by_timeframe: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 def execute_strategy(strategy: dict, timeframe: str, new_symbols: list,
                      last_bar_time: dict, processed: dict) -> None:
+
+    if not ALLOW_PYRAMIDING and has_open_position(strategy["magic"]):
+        logger.info(f"Pyramiding blocked | {strategy['id']} | position already open")
+        return
 
     expected_bar_times = {
         symbol: last_bar_time[(symbol, timeframe)]
@@ -127,6 +132,70 @@ def run_strategies(timeframe: str, new_symbols: list, last_bar_time: dict, proce
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TIME-BASED EXITS
+# ─────────────────────────────────────────────────────────────────────────────
+def close_expired_position(position) -> None:
+
+    strategy = get_strategy_by_magic(position.magic)
+
+    if strategy is None:
+        logger.warning(
+            f"Open position with unknown magic | ticket={position.ticket} "
+            f"magic={position.magic} | time exit not applied"
+        )
+        return
+
+    max_candles = strategy.get("sell_after_ncandles", 0)
+
+    if not max_candles:
+        return
+
+    elapsed = count_closed_bars_since(
+        position.symbol, strategy["timeframe"], int(position.time)
+    )
+
+    if elapsed is None:
+        logger.error(
+            f"Could not count bars since entry | {strategy['id']} | "
+            f"{position.symbol} | ticket={position.ticket} | time exit deferred"
+        )
+        return
+
+    if elapsed < max_candles:
+        logger.info(
+            f"Holding | {strategy['id']} | {position.symbol} | "
+            f"ticket={position.ticket} | candle {elapsed}/{max_candles}"
+        )
+        return
+
+    logger.info(
+        f"Time exit reached | {strategy['id']} | {position.symbol} | "
+        f"ticket={position.ticket} | candle {elapsed}/{max_candles}"
+    )
+    close_position(position, comment=strategy["id"])
+
+
+def manage_time_exits() -> None:
+    """Closes positions that have reached sell_after_ncandles, before new entries."""
+    if not ENABLE_TIME_EXITS:
+        return
+
+    try:
+        positions = get_open_positions()
+    except Exception as e:
+        logger.error(f"Could not read open positions | time exits skipped | {e}")
+        return
+
+    for position in positions:
+        try:
+            close_expired_position(position)
+        except Exception as e:
+            logger.error(
+                f"Time exit aborted, remaining positions continue | "
+                f"ticket={position.ticket} magic={position.magic} | {e}"
+            )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 def main() -> None:
@@ -157,6 +226,9 @@ def main() -> None:
     last_bar_time = init_bar_clock(symbols_by_timeframe)
     last_change   = {key: time.monotonic() for key in last_bar_time}
     processed     = {}
+    first_loop    = True
+
+    manage_time_exits()
 
     logger.info("Sistema listo. Entrando en loop principal...")
 
@@ -191,17 +263,20 @@ def main() -> None:
 
                     last_bar_time[key] = bar_time
                     last_change[key]   = time.monotonic()
-                    new_symbols.append(symbol)
-                    logger.info(f"Vela cerrada | {symbol} | {timeframe} | {bar_time}")
+                    if not first_loop:
+                        new_symbols.append(symbol)
+                        logger.info(f"Vela cerrada | {symbol} | {timeframe} | {bar_time}")
 
                 if new_symbols:
                     logger.info(f"Waiting {SIGNAL_DELAY_SECONDS:.0f}s before firing signals | {timeframe}")
                     time.sleep(SIGNAL_DELAY_SECONDS)
+                    manage_time_exits()
                     try:
                         run_strategies(timeframe, new_symbols, last_bar_time, processed)
                     except Exception as e:
                         logger.error(f"Error ejecutando estrategias {timeframe}: {e}")
 
+            first_loop = False
             time.sleep(LOOP_SLEEP_SECONDS)
 
     except KeyboardInterrupt:

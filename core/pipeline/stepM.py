@@ -1,5 +1,6 @@
 # core/pipeline/stepM.py
 import logging
+import sys
 import numpy as np
 from tqdm import tqdm
 from setup.config_core import settings
@@ -12,17 +13,17 @@ logger = logging.getLogger("BOT_batch.pipeline.stepM")
 # =============================================================================
 # STATISTICAL TEST CONFIG + STEPDOWN / K-FWE CONFIG -ROmano Wolf
 # =============================================================================
-STEPM_ALPHA         = 0.1              # significance level used inside the Romano-Wolf stepdown search
+STEPM_ALPHA         = 0.10      # significance level used inside the Romano-Wolf stepdown search
 
-STEPM_K_MODE        = "kesime"            # "kmaxime", "kesime" or "fdp"
+STEPM_K_MODE        = "fdp"     # "kmaxime", "kesime" or "fdp"
 STEPM_K_FWE         = 1
 STEPM_K_ESIME_TF    = {
-    "1H":     0.01,
-    "4H":     0.01,
-    "6Hutc":  0.01,
-    "12Hutc": 0.01,
+    "1H":     0.001,
+    "4H":     0.001,
+    "6Hutc":  0.001,
+    "12Hutc": 0.001,
 }
-FDP_GAMMA          = 0.10           # max tolerated false discovery proportion (Romano-Wolf 2007, Algorithm 4.1)
+FDP_GAMMA          = 0.10        # max tolerated false discovery proportion (Romano-Wolf 2007, Algorithm 4.1)
 # =============================================================================
 # STATISTICAL TEST 
 # =============================================================================
@@ -217,6 +218,9 @@ def compute_deviation_matrix(
         )
         deviations[:, start:end] = dev_chunk
         sigma_hat[start:end]     = sigma_chunk
+        
+    sys.stderr.flush()
+    sys.stdout.flush()
 
     if logger.isEnabledFor(logging.DEBUG):
         print_stepm_bootstrap_replicas_debug(progress_label, deviations, n_cols, n_bootstrap)

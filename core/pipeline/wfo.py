@@ -153,6 +153,8 @@ def compute_metric(results: dict) -> float:
 def _evaluate_fn(
     params: dict,
     base_arrays: dict,
+    train_start_ts,
+    train_edge_ts,
     signal_fn: callable,
     signal_params_keys: list,
     order_amount: int,
@@ -171,6 +173,17 @@ def _evaluate_fn(
         sl_pct       = params["SL_PCT"],
         order_amount = order_amount,
     )
+
+    trade_log = results["__PORTFOLIO__"]["trade_log"]
+    if not trade_log.empty:
+        truncated_mask = (
+            trade_log["exit_reason"].isin(["SELL_AFTER", "END_OF_DATA"]) &
+            (trade_log["buy_time"] >= pd.Timestamp(train_start_ts)) &
+            (trade_log["buy_time"] > pd.Timestamp(train_edge_ts))
+        )
+        trade_log = trade_log[~truncated_mask]
+        results   = {"__PORTFOLIO__": {"trade_log": trade_log}}
+
     return compute_metric(results), params
 
 
@@ -341,6 +354,7 @@ def _empty_wfo_fields() -> dict:
         "calmar":          0.0,
         "r_squared":       0.0,
         "wfr":             0.0,
+        "duration_d":      0.0,
         "best_params":     None,
         "wfo_test_trades": None,
     }
@@ -417,6 +431,7 @@ def _run_wfo_for_rule(
         "calmar":          metrics["Calmar"]        if metrics else 0.0,
         "r_squared":       metrics["R_Squared"]     if metrics else 0.0,
         "wfr":             wfo_wfr,
+        "duration_d":      metrics["Duration_d"]    if metrics else 0.0,
         "best_params":     best_params,
         "wfo_test_trades": wfo_test_trades,
     }

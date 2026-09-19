@@ -13,7 +13,7 @@ logger = logging.getLogger("BOT_batch.runs.run_best_wfo_portfolio")
 # =============================================================================
 #NET_GAIN_PCT | CALMAR | R_SQUARED | MAX_DD_PCT — see _FAST_METRIC_MAP below
 WFO_METRIC       = "R_SQUARED"
-WFO_SPLIT_MONTHS = 2
+WFO_SPLIT_MONTHS = 3
 
 def _generate_subperiod_weights(n_splits: int) -> list:
 
@@ -27,12 +27,12 @@ def _generate_subperiod_weights(n_splits: int) -> list:
     weights = [rest_weight] * n_rest + [last_weight]
     return [round(w, 6) for w in weights]
 
-MIN_STRATEGIES        = 5
+MIN_STRATEGIES        = 2
 MAX_STRATEGIES        = 8
 MAX_TOTAL_STRATEGIES  = 25
 TOP_N                 = 3
 
-REQUIRE_SUBPERIODS_POSITIVE = True
+REQUIRE_SUBPERIODS_POSITIVE = False
 REQUIRE_LONG_SHORT          = True
 REQUIRE_ALL_TIMEFRAMES      = True
 # =============================================================================

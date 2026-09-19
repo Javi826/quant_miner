@@ -3,12 +3,50 @@ import logging
 import numpy as np
 import pandas as pd
 from utils.batch_metrics import compute_metrics
+from utils.ohlcv_utils import get_bars_per_day
+from setup.config_core import settings
 logger = logging.getLogger("BOT_batch.utils.reporting")
 
 # =============================================================================
 # PRINT HELPERS
 # =============================================================================
+def print_rule_mining_min_by_group_train(rows: list, stage_label: str) -> None:
+    """Print IS (train) net gain, drawdown and trade duration p90 by (timeframe, side), before entering WFO."""
+    if not rows:
+        return
 
+    groups = {}
+    for r in rows:
+        key = (r.get("timeframe", ""), r.get("side", ""))
+        groups.setdefault(key, []).append(r)
+
+    n_total = len(rows)
+
+    logger.info(f"\n{'─' * 142}")
+    logger.info(f"  RULE MINING RESULTS (TRAIN) — {stage_label} ── {n_total} candidates")
+    logger.info(f"{'─' * 142}")
+    logger.info(
+        f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}"
+        f"{'NET_GAIN_TR% min/max':<22}{'MAX_DD_TR% min/max':<20}"
+        f"{'DAYS/CANDLES p90':<20}"
+    )
+    logger.info(f"{'─' * 142}")
+    for (tf, side), group_rows in sorted(groups.items()):
+        net_gain_values = [r.get("net_gain_train", 0.0) for r in group_rows]
+        max_dd_values    = [r.get("max_dd_train", 0.0) for r in group_rows]
+        duration_values  = [r.get("duration_train", 0.0) for r in group_rows]
+        bars_per_day = get_bars_per_day(tf) * settings.DAYS_PER_YEAR / 365.0
+
+        p90_duration = np.percentile(duration_values, 90)
+        p90_candles  = p90_duration * bars_per_day
+
+        logger.info(
+            f"{tf:<12}{side:<8}{len(group_rows):<6}"
+            f"{f'{min(net_gain_values):.1f} / {max(net_gain_values):.1f}':<22}"
+            f"{f'{min(max_dd_values):.1f} / {max(max_dd_values):.1f}':<20}"
+            f"{f'{p90_duration:.2f}d / {p90_candles:.1f}c':<20}"
+        )
+    logger.info(f"{'─' * 142}\n")
 def print_metrics_table(metrics_list: list, title: str) -> None:
     df          = pd.DataFrame(metrics_list).drop(columns=["Calmar"])
     df["Curve"] = df["Curve"].astype(str)
@@ -226,6 +264,8 @@ def _short_id(rule_id: str) -> str:
     return "_".join(parts[:3])
 
 def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_label: str, survivor_ids: list = None) -> None:
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
     rows = [r for r in all_raw_results if r["rule_id"] in set(candidate_ids)]
     rows.sort(key=lambda r: int(r["rule_id"].split("_")[0]))
 
@@ -245,7 +285,8 @@ def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_
     status_header = f"  {'STATUS':<8}" if show_status else ""
     log_fn(
         f"{'ID':<{id_width}}{'NET_GAIN%':<12}{'MAX_DD%':<10}{'PF':<8}{'SHARPE':<8}{'R2':<8}"
-        f"{'STEPM_P':<8}{'WFR':<8}{'MC_RUIN':<9}{'MV_PVAL':<9}{'TRADES':<8}{'RULE':<{label_width}}{status_header}"
+        f"{'STEPM_P':<8}{'WFR':<8}{'MC_RUIN':<9}{'MV_PVAL':<9}{'TRADES':<8}"
+        f"{'WIN_RATE%':<11}{'DUR_D':<8}{'RULE':<{label_width}}{status_header}"
     )
     log_fn(f"{'─' * 180}")
     for r in rows:
@@ -255,7 +296,8 @@ def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_
             f"{r['profit_factor']:<8.2f}{(r.get('sharpe') or 0.0):<8.3f}{r['r_squared']:<8.3f}"
             f"{r.get('stepm_p', 0.0):<8.3f}{r['wfr']:<8.2f}{r.get('montecarlo_prob_ruin', 0.0):<9.1f}"
             f"{r.get('multiverse_p_value', 0.0):<9.3f}"
-            f"{r['n_trades']:<8}{r['label']:<{label_width}}{status_cell}"
+            f"{r['n_trades']:<8}{r.get('win_rate', 0.0):<11.1f}{r.get('duration_d', 0.0):<8.2f}"
+            f"{r['label']:<{label_width}}{status_cell}"
         )
 
     log_fn(f"{'─' * 180}\n")
@@ -287,19 +329,27 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
     n_total_candidate = len(candidate_ids)
     total_pass_pct    = n_total_passed / n_total_candidate if n_total_candidate else 0.0
 
-    logger.info(f"\n{'─' * 140}")
+    logger.info(f"\n{'─' * 142}")
     logger.info(f"  RULE MINING RESULTS — {stage_label} ── {n_total_passed} / {n_total_candidate} passed ({total_pass_pct:.1%}) ✅")
-    logger.info(f"{'─' * 140}")
+    logger.info(f"{'─' * 142}")
     logger.info(
         f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}{'PASS%':<9}"
         f"{'NET_GAIN% min/max':<22}{'MAX_DD% min/max':<20}{'R2 min/max':<16}"
         f"{'STEPM_P min/max':<16}{'WFR min/max':<16}"
+        f"{'DAYS/CANDLES p90':<20}"
     )
-    logger.info(f"{'─' * 140}")
+    logger.info(f"{'─' * 142}")
     for (tf, side), group_rows in sorted(groups.items()):
         s = group_stats[(tf, side)]
         n_group_candidates = len(candidate_groups.get((tf, side), []))
         group_pass_pct = len(group_rows) / n_group_candidates if n_group_candidates else 0.0
+
+        duration_d_values = [r.get("duration_d", 0.0) for r in group_rows]
+        bars_per_day       = get_bars_per_day(tf) * settings.DAYS_PER_YEAR / 365.0
+
+        p90_duration_d = np.percentile(duration_d_values, 90)
+        p90_candles    = p90_duration_d * bars_per_day
+
         logger.info(
             f"{tf:<12}{side:<8}{len(group_rows):<6}{f'{group_pass_pct:.1%}':<9}"
             f"{f'{s['net_gain'][0]:.1f} / {s['net_gain'][1]:.1f}':<22}"
@@ -307,8 +357,9 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
             f"{f'{s['r_squared'][0]:.3f} / {s['r_squared'][1]:.3f}':<16}"
             f"{f'{s['stepm_p'][0]:.3f} / {s['stepm_p'][1]:.3f}':<16}"
             f"{f'{s['wfr'][0]:.2f} / {s['wfr'][1]:.2f}':<16}"
+            f"{f'{p90_duration_d:.2f}d / {p90_candles:.1f}c':<20}"
         )
-    logger.info(f"{'─' * 140}")
+    logger.info(f"{'─' * 142}")
     # ALL-SAFE: worst-case across the whole table -> every rule shown passes all conditions at once.
     all_safe_net_gain = min(s["net_gain"][0]   for s in group_stats.values())
     all_safe_max_dd   = max(abs(s["max_dd"][0]) for s in group_stats.values())
@@ -341,7 +392,7 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
         f"NET_GAIN>={safe_net_gain:.1f}  MAX_DD<={safe_max_dd:.1f}  R2>={safe_r2:.3f}  "
         f"STEPM_P<={safe_stepm_p:.3f}  WFR>={safe_wfr:.2f}"
     )
-    logger.info(f"{'─' * 140}\n")
+    logger.info(f"{'─' * 142}\n")
 
 # =============================================================================
 # DSR — debug-only reporting (moved from pipeline/dsr.py)
