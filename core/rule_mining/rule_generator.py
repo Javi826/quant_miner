@@ -1,13 +1,30 @@
 #core/rule_mining/rule_generator.py
+import itertools
 import logging
-from indicators.indicators_pool import generate_valid_combos, implied_side
 from signals.indicators_bank import ConditionBank
 from signals.signal_builder import build_signal_fn, describe_rule
 
 logger = logging.getLogger("BOT_batch.rule_mining.generator")
 
-MAX_DEPTH = 2
+MAX_DEPTH = 3
 SIDES     = ("long", "short")
+
+
+def generate_valid_combos(specs: list, depth: int, indices: list = None) -> list:
+    """Combinations of `depth` conditions, at most one per indicator. No side filtering."""
+    candidate_indices = indices if indices is not None else range(len(specs))
+
+    by_indicator = {}
+    for i in candidate_indices:
+        by_indicator.setdefault(specs[i]["indicator"], []).append(i)
+
+    names  = list(by_indicator.keys())
+    combos = []
+    for name_combo in itertools.combinations(names, depth):
+        pools = [by_indicator[n] for n in name_combo]
+        for members in itertools.product(*pools):
+            combos.append(tuple(sorted(members)))
+    return combos
 
 
 def generate_rule_combinations(condition_specs: list, max_depth: int = MAX_DEPTH) -> list:
@@ -18,20 +35,13 @@ def generate_rule_combinations(condition_specs: list, max_depth: int = MAX_DEPTH
     return rules
 
 
-def is_side_coherent(spec: dict, side: str) -> bool:
-    implied = implied_side(spec)
-    return implied is None or implied == side
-
-
-def generate_all_rules(arr_sample: dict, max_depth: int = MAX_DEPTH) -> list:
-    bank            = ConditionBank(arr_sample)
+def generate_all_rules(arr_sample: dict, max_depth: int = MAX_DEPTH, timeframe: str = None) -> list:
+    bank            = ConditionBank(arr_sample, timeframe=timeframe)
     condition_specs = bank.build_condition_specs()
     rule_combos     = generate_rule_combinations(condition_specs, max_depth)
     all_rules = []
     for side in SIDES:
         for rule_specs in rule_combos:
-            if not all(is_side_coherent(spec, side) for spec in rule_specs):
-                continue
             all_rules.append({
                 "side":       side,
                 "specs":      rule_specs,

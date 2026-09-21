@@ -102,7 +102,7 @@ def build_universe(
         sys.exit(1)
 
     counts_str = " | ".join(f"{timeframe}: {len(symbols)} symbol(s)" for timeframe, symbols in ohlcv_loaded.items())
-    logger.info(f"✅ Universe validation OK [{dataset}] — {counts_str}")
+    logger.debug(f"✅ Universe validation OK [{dataset}] — {counts_str}")
 
     ohlcv_by_timeframe = {}
     for timeframe, ohlcv_data in ohlcv_loaded.items():

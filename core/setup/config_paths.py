@@ -20,9 +20,9 @@ import os
 # =============================================================================
 
 BITGET_ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex"))
-SPLIT_BASE          = os.path.join(BITGET_ROOT, "data_forex", "data_fx", "04_split", "expanding")
+SPLIT_BASE          = os.path.join(BITGET_ROOT, "data_forex", "data_fx", "04_split")
 
-DATA_FOLDER_IS      = os.path.join(SPLIT_BASE, "IS",  "fx_2017-01_2024-01_IS")
+DATA_FOLDER_IS      = os.path.join(SPLIT_BASE, "IS",  "fx_2017-01_2025-01_IS")
 DATA_FOLDER_OOS     = os.path.join(SPLIT_BASE, "OOS", "fx_2024-01_2026-09_OOS")
 DATA_FOLDER_MERGED  = os.path.join(SPLIT_BASE, "IS",  "fx_2018-01_2026-09_IS")
 

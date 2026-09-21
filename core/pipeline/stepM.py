@@ -14,7 +14,7 @@ logger = logging.getLogger("BOT_batch.pipeline.stepM")
 # STATISTICAL TEST CONFIG + STEPDOWN / K-FWE CONFIG -ROmano Wolf
 # =============================================================================
 STEPM_ALPHA         = 0.10      # significance level used inside the Romano-Wolf stepdown search
-
+FDP_GAMMA           = 0.10 
 STEPM_K_MODE        = "fdp"     # "kmaxime", "kesime" or "fdp"
 STEPM_K_FWE         = 1
 STEPM_K_ESIME_TF    = {
@@ -23,7 +23,6 @@ STEPM_K_ESIME_TF    = {
     "6Hutc":  0.001,
     "12Hutc": 0.001,
 }
-FDP_GAMMA          = 0.10        # max tolerated false discovery proportion (Romano-Wolf 2007, Algorithm 4.1)
 # =============================================================================
 # STATISTICAL TEST 
 # =============================================================================

@@ -13,139 +13,135 @@ from numba import njit
 # =============================================================================
 
 # --- A: existing --------------------------------------------------------------
-RSI_PERIODS                    = [7,14,21]
-RSI_THRESHOLDS                 = [30,40,60,70]
+RSI_PDS                = [7,14,21]
+RSI_THS                = [30,40,60,70]
 
-ADX_PERIODS                    = [7,14,21]
-ADX_THRESHOLDS                 = [10,20,30]
+ADX_PDS                = [7,14,21]
+ADX_THS                = [10,20,30]
 
-MA_DIST_PERIODS                = [20,50,100]
-MA_DIST_THRESHOLDS             = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
+MA_DIST_PDS            = [20,50,100]
+MA_DIST_THS            = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
 
-MOMENTUM_PERIODS               = [10,20,30]
-MOMENTUM_THRESHOLDS            = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
+MOMENTUM_PDS           = [10,20,30]
+MOMENTUM_THS           = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
 
-ATR_REGIME_PERIODS             = [7,14,21]
-ATR_REGIME_SMA_PERIODS         = [30,60]
-ATR_REGIME_THRESHOLDS          = [0.5,0.7,1.0,1.4,2.0]
+ATR_REGIME_PDS         = [7,14,21]
+ATR_REGIME_SMA_PDS     = [30,60]
+ATR_REGIME_THS         = [0.5,0.7,1.0,1.4,2.0]
 
-HISTVOL_REGIME_PERIODS         = [20,30]
-HISTVOL_REGIME_SMA_PERIODS     = [40,60]
-HISTVOL_REGIME_THRESHOLDS      = [0.5,0.7,1.0,1.4,2.0]
+HISTVOL_REGIME_PDS     = [20,30]
+HISTVOL_REGIME_SMA_PDS = [40,60]
+HISTVOL_REGIME_THS     = [0.5,0.7,1.0,1.4,2.0]
 
 # --- B: range / reversion -----------------------------------------------------
-BB_PCTB_PERIODS                = [10,20,40]
-BB_PCTB_THRESHOLDS             = [0.2,0.4,0.6,0.7,0.8,0.9]
+BB_PCTB_PDS           = [10,20,40]
+BB_PCTB_THS           = [0.2,0.4,0.6,0.7,0.8,0.9]
 
-DONCHIAN_POS_PERIODS           = [7,14,21]
-DONCHIAN_POS_THRESHOLDS        = [0.2,0.4,0.6,0.8,0.9]
+DONCHIAN_POS_PDS      = [7,14,21]
+DONCHIAN_POS_THS      = [0.2,0.4,0.6,0.8,0.9]
 
-CLOSE_PCT_RANK_PERIODS           = [100]
-CLOSE_PCT_RANK_THRESHOLDS        = [20.0, 50.0, 80.0]
+CLOSE_PCT_RANK_PDS    = [100]
+CLOSE_PCT_RANK_THS    = [20.0, 50.0, 80.0]
 
-PIVOT_DIST_PERIODS               = [10,20,40]
-PIVOT_DIST_THRESHOLDS            = [-1.0, -0.3, 0.3, 1.0]
+PIVOT_DIST_PDS        = [10,20,40]
+PIVOT_DIST_THS        = [-1.0, -0.3, 0.3, 1.0]
 
 # --- C: trend -----------------------------------------------------------------
-VORTEX_PERIODS                 = [7,14,21]
-VORTEX_THRESHOLDS              = [0.7,0.9,1.1,1.3]
+VORTEX_PDS            = [7,14,21]
+VORTEX_THS            = [-0.5,-0.3,0.3,0.5]
 
-HURST_PERIODS                  = [30,60]
-HURST_THRESHOLDS               = [0.4,0.5,0.6]
+HURST_PDS             = [30,60]
+HURST_THS             = [0.4,0.5,0.6]
 
-ICHIMOKU_TENKAN_PERIODS             = [9,18]
-ICHIMOKU_KIJUN_PERIODS              = [13,26]
-ICHIMOKU_SENKOU_B_PERIODS           = [27,52]
-ICHIMOKU_TENKAN_KIJUN_THRESHOLDS    = [-0.5,0.5]
-ICHIMOKU_CLOUD_THICKNESS_THRESHOLDS = [0.2,0.4,0.6,0.8,1.0]
-ICHIMOKU_PRICE_VS_CLOUD_THRESHOLDS  = [-1.0,-0.5,0.5,1.0]
+ICHIMOKU_TENKAN_PDS           = [9]
+ICHIMOKU_KIJUN_PDS            = [26]
+ICHIMOKU_SENKOU_B_PDS         = [52]
+ICHIMOKU_TENKAN_KIJUN_THS     = [-0.5,0.5]
+ICHIMOKU_CLOUD_THICKNESS_THS  = [0.2,0.4,0.6,0.8,1.0]
+ICHIMOKU_PRICE_VS_CLOUD_THS   = [-1.0,-0.5,0.5,1.0]
 
-TII_PERIODS                      = [15,30,60]
-TREND_INTENSITY_INDEX_THRESHOLDS = [30.0, 50.0, 70.0]
+TII_PDS                       = [15,30,50]
+TREND_INTENSITY_INDEX_THS     = [30.0, 50.0, 70.0]
 
 # --- D: momentum / acceleration -----------------------------------------------
-MACD_HIST_FAST_PERIODS         = [12,24]
-MACD_HIST_SLOW_PERIODS         = [26,52]
-MACD_HIST_SIGNAL_PERIODS       = [9]
-MACD_HIST_THRESHOLDS           = [0.2, 0.4]
+MACD_HIST_FAST_PDS    = [6,12]
+MACD_HIST_SLOW_PDS    = [26,52]
+MACD_HIST_SIGNAL_PDS  = [9]
+MACD_HIST_THS         = [-0.4,-0.2,0.2,0.4]
 
-ROC_SPREAD_FAST_PERIODS        = [5,10]
-ROC_SPREAD_SLOW_PERIODS        = [20,40]
-ROC_SPREAD_THRESHOLDS          = [0.4, 0.6, 0.8]
+ROC_SPREAD_FAST_PDS   = [5,10]
+ROC_SPREAD_SLOW_PDS   = [20,40]
+ROC_SPREAD_THS        = [-0.8,-0.6,-0.4,0.4,0.6,0.8]
 
-TSI_LONG_PERIODS               = [25,50]
-TSI_SHORT_PERIODS              = [13,26]
-TSI_THRESHOLDS                 = [-40.0, -20.0, 20.0, 40.0]
+TSI_LONG_PDS          = [25,50]
+TSI_SHORT_PDS         = [13,26]
+TSI_THS               = [-40.0, -20.0, 20.0, 40.0]
 
-ACCELERATION_THRESHOLDS        = [0.4,0.6,0.8, 1.0]
+ACCELERATION_THS      = [-1.0,-0.8,-0.6,-0.4,0.4,0.6,0.8,1.0]
 
-PPO_FAST_PERIODS                = [12,22]
-PPO_SLOW_PERIODS                = [26,52]
-PPO_THRESHOLDS                  = [-1.0, -0.3, 0.3, 1.0]
+PPO_FAST_PDS          = [6,12]
+PPO_SLOW_PDS          = [26,52]
+PPO_THS               = [-1.0, -0.3, 0.3, 1.0]
 
-RVI_PERIODS                     = [10,20,40]
-RVI_THRESHOLDS                  = [-0.3, -0.1, 0.1, 0.3]
+RVI_PDS               = [10,20,40]
+RVI_THS               = [-0.3, -0.1, 0.1, 0.3]
 
 # --- E: volatility ------------------------------------------------------------
-BB_BANDWIDTH_PERIODS            = [15,30,60]
-BB_BANDWIDTH_THRESHOLDS         = [0.01,0.02,0.03,0.04]
+BB_BANDWIDTH_PDS      = [15,30,60]
+BB_BANDWIDTH_THS      = [0.01,0.02,0.03,0.04]
 
-CHOPPINESS_PERIODS              = [7,14,21]
-CHOPPINESS_THRESHOLDS           = [38.0, 62.0]
+CHOPPINESS_PDS        = [7,14,21]
+CHOPPINESS_THS        = [38.0, 62.0]
 
-PARKINSON_RATIO_PERIODS         = [10,20,40]
-PARKINSON_RATIO_THRESHOLDS      = [0.8, 1.2]
+PARKINSON_RATIO_PDS   = [10,20,40]
+PARKINSON_RATIO_THS   = [0.8, 1.2]
 
-VOL_OF_VOL_PERIODS              = [10,20]
-VOL_OF_VOL_SMA_PERIODS          = [30,60]
-VOL_OF_VOL_THRESHOLDS           = [0.3,0.4,0.5,0.6]
+VOL_OF_VOL_PDS        = [10,20]
+VOL_OF_VOL_SMA_PDS    = [30,60]
+VOL_OF_VOL_THS        = [0.3,0.4,0.5,0.6]
 
-RET_SKEW_PERIODS                = [30,60]
-RET_SKEW_THRESHOLDS             = [-1.0, -0.5, 0.5, 1.0]
+RET_SKEW_PDS          = [30,60]
+RET_SKEW_THS          = [-1.0, -0.5, 0.5, 1.0]
 
-DONCHIAN_WIDTH_PERIODS          = [10,20,40]
-DONCHIAN_WIDTH_THRESHOLDS       = [0.01,0.02,0.03,0.04]
+DONCHIAN_WIDTH_PDS    = [10,20,40]
+DONCHIAN_WIDTH_THS    = [0.01,0.02,0.03,0.04,0.05]
 
-ULCER_PERIODS                   = [7,14,21]
-ULCER_INDEX_THRESHOLDS          = [1.0,2.0,3.0, 4.0]
+ULCER_PDS             = [7,14,21]
+ULCER_INDEX_THS       = [1.0,2.0,3.0, 4.0]
 
-BB_PCTB_SLOPE_PERIODS            = [5]
-BB_PCTB_SLOPE_THRESHOLDS         = [-0.2, -0.05, 0.05, 0.2]
+BB_PCTB_SLOPE_PDS     = [5]
+BB_PCTB_SLOPE_THS     = [-0.2, -0.05, 0.05, 0.2]
 
 # --- F: microstructure --------------------------------------------------------
-CLOSE_POS_IN_BAR_THRESHOLDS     = [0.1, 0.2, 0.8, 0.9]
+CLOSE_POS_IN_BAR_THS  = [0.1, 0.2, 0.8, 0.9]
 
-RANGE_EXPANSION_PERIODS         = [10,20,40]
-RANGE_EXPANSION_THRESHOLDS      = [0.5, 0.75, 1.5, 2.0]
+RANGE_EXPANSION_PDS   = [10,20,40]
+RANGE_EXPANSION_THS   = [0.5, 0.75, 1.5, 2.0]
 
-INSIDE_OUTSIDE_PERIODS            = [20,40]
-INSIDE_OUTSIDE_RATIO_THRESHOLDS   = [10.0, 25.0, 40.0]
+INSIDE_OUTSIDE_PDS       = [20,40]
+INSIDE_OUTSIDE_RATIO_THS = [10.0, 25.0, 40.0]
 
-OPEN_CLOSE_MOMENTUM_THRESHOLDS    = [-0.5, -0.2, 0.2, 0.5]
+OPEN_CLOSE_MOMENTUM_THS  = [-0.5, -0.2, 0.2, 0.5]
 
 # --- G: cycles / statistics ---------------------------------------------------
-ENTROPY_PERIODS                   = [30,60]
-RETURN_ENTROPY_THRESHOLDS         = [1.5, 2.0, 2.5]
+ENTROPY_PDS           = [30,60]
+RETURN_ENTROPY_THS    = [1.55,1.75,1.9,2.05]
 
-KALMAN_SLOPE_THRESHOLDS           = [-0.3, -0.1, 0.1, 0.3]
+KALMAN_SLOPE_THS      = [-0.3, -0.1, 0.1, 0.3]
 
 # --- H: calendar / seasonality ------------------------------------------------
-DAY_SLOT_SLOTS                    = [0,1,2,3,4,5]
-DAY_SLOT_THRESHOLDS               = [0.5]
+DAY_SLOT_SLOTS        = [0,1,2,3,4,5]
+DAY_SLOT_THS          = [0.5]
 
-VOL_DESEASON_DAYS                 = [20,60]
-VOL_DESEASON_THRESHOLDS           = [0.5,0.7,1.0,1.4,2.0]
+VOL_DESEASON_DAYS     = [10,16]
+VOL_DESEASON_THS      = [0.5,0.7,1.0,1.4,2.0]
 
 # --- I: price levels / profile ------------------------------------------------
-ROUND_LEVEL_GRIDS                 = [50,100]          # grid size in pips
-ROUND_LEVEL_PHASE_THRESHOLDS      = [0.05,0.1,0.2]
+ROUND_LEVEL_GRIDS     = [50,100]          # grid size in pips
+ROUND_LEVEL_PHASE_THS = [0.05,0.1,0.2]
 
-TPO_DENSITY_PERIODS               = [50,100,200]
-TPO_DENSITY_THRESHOLDS            = [0.05,0.15,0.3]
-
-# --- J: swing structure -------------------------------------------------------
-SWING_ATR_MULTS                   = [2,3,5]           # zigzag reversal, in ATR units
-SWING_LEG_RATIO_THRESHOLDS        = [0.25,0.5,1.0,1.5]
+TPO_DENSITY_PDS       = [50,75,99]
+TPO_DENSITY_THS       = [0.05,0.15,0.3]
 
 # =============================================================================
 # SHAPE CONSTANTS — not exposed as grids, they define a formula's internal
@@ -155,11 +151,13 @@ BB_N                 = 20   # underlying BB window used inside e_bb_pctb_slope
 
 BB_K                 = 2.0
 
-ENTROPY_BINS         = 6
+ENTROPY_BINS         = 10
 KALMAN_PROCESS_VAR   = 1e-5
 KALMAN_MEASURE_VAR   = 1e-2
 
-SLOT_HOURS           = 4    # hours per day slot (4H bars -> 6 slots per day)
+SLOT_HOURS           = 4    #MIN HOURS
+
+MAX_LOOKBACK         = 100  # max candles (the current one included) any indicator value may use
 
 _HERE     = os.path.abspath(os.path.dirname(__file__))
 _DARWINEX = os.path.abspath(os.path.join(_HERE, "..", ".."))
@@ -187,6 +185,28 @@ def _rolling_mean_skipnan(values: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
+@njit(cache=True)
+def _fir(x: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """y[t] = sum of w[k] * x[t-k], k = 0..len(w)-1 (w[0]: weight of the newest value).
+    NaN for the first len(w)-1 values and wherever a value of the window is NaN."""
+    n   = len(x)
+    win = len(w)
+    out = np.full(n, np.nan)
+    for t in range(win - 1, n):
+        acc = 0.0
+        for k in range(win):
+            acc += w[k] * x[t - k]
+        out[t] = acc
+    return out
+
+
+def _ewm_win(x: np.ndarray, alpha: float, win: int) -> np.ndarray:
+    """EWM (adjust=False recursion) truncated to its last `win` values, weights renormalized.
+    The value at t uses x[t-win+1..t] only; NaN if any of them is NaN."""
+    w = (1.0 - alpha) ** np.arange(win, dtype=np.float64)       # weight of x[t-k], newest first
+    return _fir(np.ascontiguousarray(x, dtype=np.float64), w / w.sum())
+
+
 def _rsi(close: np.ndarray, window: int) -> np.ndarray:
     n     = len(close)
     out   = np.full(n, np.nan)
@@ -195,8 +215,8 @@ def _rsi(close: np.ndarray, window: int) -> np.ndarray:
     diff  = np.diff(close)
     up    = np.where(diff > 0, diff, 0.0)
     dn    = np.where(diff < 0, -diff, 0.0)
-    emaup = pd.Series(np.concatenate(([0.0], up))).ewm(alpha=alpha, adjust=False).mean().to_numpy()[1:]
-    emadn = pd.Series(np.concatenate(([0.0], dn))).ewm(alpha=alpha, adjust=False).mean().to_numpy()[1:]
+    emaup = _ewm_win(up, alpha, MAX_LOOKBACK - 1)                 # 99 changes = 100 closes
+    emadn = _ewm_win(dn, alpha, MAX_LOOKBACK - 1)
 
     safe_emadn = np.where(emadn == 0.0, 1.0, emadn)
     rsi_vals   = np.where(emadn == 0.0, 100.0, 100.0 - (100.0 / (1.0 + emaup / safe_emadn)))
@@ -219,16 +239,11 @@ def _wilder_sum_smooth(seed: float, x: np.ndarray, window: int) -> np.ndarray:
 
 
 def _adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int) -> np.ndarray:
-    n        = len(close)
-    adx_full = np.zeros(n)
+    n = len(close)
 
-    k = n - (window - 1)
-    if k <= window + 1:
-        return adx_full
-
-    diff_dm = np.zeros(n)
-    pos     = np.zeros(n)
-    neg     = np.zeros(n)
+    diff_dm = np.full(n, np.nan)       # index 0 has no previous candle
+    pos     = np.full(n, np.nan)
+    neg     = np.full(n, np.nan)
 
     prev_close = close[:-1]
     pdm = np.maximum(high[1:], prev_close)
@@ -240,21 +255,12 @@ def _adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int) -> n
     pos[1:] = np.where((diff_up > diff_down) & (diff_up > 0), diff_up, 0.0)
     neg[1:] = np.where((diff_down > diff_up) & (diff_down > 0), diff_down, 0.0)
 
-    trs_s = float(diff_dm[1:window + 1].sum())
-    dip_s = float(pos[1:window + 1].sum())
-    din_s = float(neg[1:window + 1].sum())
-
-    trs = np.zeros(k)
-    dip = np.zeros(k)
-    din = np.zeros(k)
-    trs[0], dip[0], din[0] = trs_s, dip_s, din_s
-
-    x_trs = diff_dm[window + 1:window + k - 1]
-    x_dip = pos[window + 1:window + k - 1]
-    x_din = neg[window + 1:window + k - 1]
-    trs[1:k - 1] = _wilder_sum_smooth(trs_s, x_trs, window)
-    dip[1:k - 1] = _wilder_sum_smooth(dip_s, x_dip, window)
-    din[1:k - 1] = _wilder_sum_smooth(din_s, x_din, window)
+    # Wilder smoothing truncated: TR and DM over 50 changes (51 candles), then DX over 50 values -> 100 candles
+    half  = MAX_LOOKBACK // 2
+    alpha = 1.0 / window
+    trs = _ewm_win(diff_dm, alpha, half)
+    dip = _ewm_win(pos, alpha, half)
+    din = _ewm_win(neg, alpha, half)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         di_p = np.where(trs != 0, 100.0 * dip / trs, 0.0)
@@ -263,20 +269,7 @@ def _adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int) -> n
     with np.errstate(divide="ignore", invalid="ignore"):
         dx = np.where(denom != 0, 100.0 * np.abs(di_p - di_n) / denom, 0.0)
 
-    adx_smooth = np.zeros(k)
-    seed_adx   = float(dx[:window].sum() / window)
-    adx_smooth[window] = seed_adx
-
-    tail = dx[window:k - 1]
-    if len(tail) > 0:
-        alpha    = 1.0 / window
-        virtual  = np.concatenate(([seed_adx], tail))
-        ema      = pd.Series(virtual).ewm(alpha=alpha, adjust=False).mean().to_numpy()
-        adx_smooth[window + 1:k] = ema[1:]
-
-    prefix = window - 1
-    adx_full[prefix:prefix + k] = adx_smooth
-    return adx_full
+    return _ewm_win(dx, alpha, half)
 
 
 def _true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
@@ -291,25 +284,12 @@ def _true_range(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndar
     return out
 
 
-def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int) -> np.ndarray:
-    tr  = _true_range(high, low, close)
-    n   = len(tr)
-    out = np.full(n, np.nan)
-
-    if window > n:
-        return out
-
-    seed = float(tr[:window].sum() / window)
-    out[window - 1] = seed
-
-    tail = tr[window:]
-    if len(tail) > 0:
-        alpha   = 1.0 / window
-        virtual = np.concatenate(([seed], tail))
-        ema     = pd.Series(virtual).ewm(alpha=alpha, adjust=False).mean().to_numpy()
-        out[window:] = ema[1:]
-
-    return out
+def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, window: int,
+         win: int = MAX_LOOKBACK - 1) -> np.ndarray:
+    """Wilder ATR truncated to its last `win` true ranges (win + 1 candles; default 100)."""
+    tr    = _true_range(high, low, close)
+    tr[0] = np.nan                     # no previous close
+    return _ewm_win(tr, 1.0 / window, win)
 
 
 def _historical_volatility(close: np.ndarray, window: int) -> np.ndarray:
@@ -346,8 +326,9 @@ def _roll_sum(x: np.ndarray, n: int) -> np.ndarray:
     return _s(x).rolling(n).sum().to_numpy()
 
 
-def _ema(x: np.ndarray, n: int) -> np.ndarray:
-    return _s(x).ewm(span=n, adjust=False).mean().to_numpy()
+def _ema(x: np.ndarray, n: int, win: int) -> np.ndarray:
+    """EMA (span n) truncated to its last `win` values."""
+    return _ewm_win(x, 2.0 / (n + 1.0), win)
 
 
 def _safe_div(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -419,78 +400,145 @@ def _shannon_entropy(x: np.ndarray, bins: int) -> float:
             ent -= p * np.log(p)
     return ent
 
+@njit(cache=True)
+def _kalman_slope_core(close: np.ndarray, q: float, r: float) -> np.ndarray:
+    m   = len(close)
+    out = np.empty(m)
+    if m == 0:
+        return out
 
-def _kalman_slope_filter(close: np.ndarray, q: float, r: float) -> np.ndarray:
-    m = len(close)
-    out = np.full(m, np.nan)
+    # state = [level, slope], covariance p = [[p00, p01], [p10, p11]]
+    s0  = close[0]
+    s1  = 0.0
+    p00 = 1.0
+    p01 = 0.0
+    p10 = 0.0
+    p11 = 1.0
 
-    p = np.eye(2) * 1.0
-    f_mat = np.array([[1.0, 1.0], [0.0, 1.0]])
-    h_vec = np.array([1.0, 0.0])
-    q_mat = np.eye(2) * q
-
-    state = np.array([close[0], 0.0])
     for i in range(m):
-        state = f_mat @ state
-        p = f_mat @ p @ f_mat.T + q_mat
+        # predict: state = F @ state, p = F @ p @ F.T + Q, with F = [[1, 1], [0, 1]]
+        s0  = s0 + s1
+        a00 = p00 + p10
+        a01 = p01 + p11
+        p00 = (a00 + a01) + q
+        p01 = a01
+        p10 = p10 + p11
+        p11 = p11 + q
 
-        y = close[i] - h_vec @ state
-        s = h_vec @ p @ h_vec.T + r
-        k_gain = (p @ h_vec) / s
-        state = state + k_gain * y
-        p = p - np.outer(k_gain, h_vec) @ p
+        # update, with H = [1, 0]
+        y  = close[i] - s0
+        s  = p00 + r
+        k0 = p00 / s
+        k1 = p10 / s
+        s0 = s0 + k0 * y
+        s1 = s1 + k1 * y
 
-        out[i] = state[1]
+        n00 = p00 - k0 * p00
+        n01 = p01 - k0 * p01
+        n10 = p10 - k1 * p00
+        n11 = p11 - k1 * p01
+        p00 = n00
+        p01 = n01
+        p10 = n10
+        p11 = n11
+
+        out[i] = s1
     return out
+def _kalman_slope_weights(q: float, r: float, win: int) -> np.ndarray:
+    """Weights of the last slope of _kalman_slope_core run on `win` closes (index 0: newest close).
+    The filter is linear in the closes (start state included) and its gains do not depend on them,
+    so its last slope is sum of w[k] * close[t-k]: one impulse per position gives w."""
+    w = np.empty(win)
+    e = np.zeros(win)
+    for k in range(win):
+        e[:] = 0.0
+        e[win - 1 - k] = 1.0
+        w[k] = _kalman_slope_core(e, q, r)[-1]
+    return w
 
 
+def _kalman_slope_filter(close: np.ndarray, q: float, r: float, win: int = MAX_LOOKBACK) -> np.ndarray:
+    """Slope of the Kalman filter restarted at every candle on its last `win` closes (NaN before)."""
+    w = _kalman_slope_weights(float(q), float(r), int(win))
+    return _fir(np.ascontiguousarray(close, dtype=np.float64), w)
+
 # -----------------------------------------------------------------------------
-# Primitives for blocks H, I, J. All causal: the value at t uses bars <= t only.
+# Primitives for blocks H, I. All causal: the value at t uses bars <= t only.
 # -----------------------------------------------------------------------------
+def _bar_step_ns(ts: np.ndarray):
+
+    if len(ts) < 2:
+        return 0, 0
+    gaps = np.diff(ts.view(np.int64))
+    gaps = gaps[gaps > 0]
+    if len(gaps) == 0:
+        return 0, 0
+    vals, counts = np.unique(gaps, return_counts=True)
+    i = int(np.argmax(counts))
+    return int(vals[i]), int(counts[i])
+
+
 def _day_slot(ts: np.ndarray) -> np.ndarray:
-    """Slot of the day (hour // SLOT_HOURS) from the bar open timestamp.
 
-    Only for bars of exactly SLOT_HOURS hours, it checks that:
-      - every bar opens at minute 0;
-      - bar open hours never take both remainders 0 and SLOT_HOURS - 1 (mod SLOT_HOURS).
-        That happens when a DST change moves the opens across a slot boundary, so the
-        same bar would get different slots in summer and winter. Server time, UTC and
-        Madrid time are all safe with a GMT+2/+3 server; a fixed-offset clock is not.
-    """
     ts     = np.asarray(ts).astype("datetime64[ns]")
     in_day = ts - ts.astype("datetime64[D]")
     hour   = (in_day // np.timedelta64(1, "h")).astype(np.int64)
     minute = (in_day // np.timedelta64(1, "m")).astype(np.int64) % 60
 
-    if len(ts) > 1:
-        step = float(np.median(np.diff(ts.view(np.int64))))
-        if step == SLOT_HOURS * 3_600_000_000_000:
-            if (minute != 0).any():
-                raise ValueError("day_slot: some bars do not open at minute 0")
-            rem = hour % SLOT_HOURS
-            if (rem == 0).any() and (rem == SLOT_HOURS - 1).any():
-                raise ValueError("day_slot: bar opens cross a slot boundary across DST changes; "
-                                 "timestamps are not in a DST-consistent clock")
-    return hour // SLOT_HOURS
+    hour_ns    = 3_600_000_000_000
+    step, n    = _bar_step_ns(ts)
+    slot_hours = SLOT_HOURS
+    if step > SLOT_HOURS * hour_ns and n >= 2:
+        slot_hours = min(step, 24 * hour_ns) // hour_ns
+        if step < 24 * hour_ns and (step % hour_ns != 0 or 24 % slot_hours != 0):
+            raise ValueError("day_slot: bars above SLOT_HOURS must be a whole number of hours dividing 24")
+
+    if step == slot_hours * hour_ns:
+        if (minute != 0).any():
+            raise ValueError("day_slot: some bars do not open at minute 0")
+        rem = hour % slot_hours
+        if (rem == 0).any() and (rem == slot_hours - 1).any():
+            raise ValueError("day_slot: bar opens cross a slot boundary across DST changes; "
+                             "timestamps are not in a DST-consistent clock")
+    return hour // slot_hours
 
 
-def _same_slot_median(x: np.ndarray, slot: np.ndarray, n_prev: int) -> np.ndarray:
-    """Median of x over the n_prev previous bars of the same slot (current bar excluded)."""
-    x   = np.asarray(x, dtype=np.float64)
-    out = np.full(len(x), np.nan)
-    for s in np.unique(slot):
-        idx = np.flatnonzero(slot == s)
-        med = _s(x[idx]).shift(1).rolling(n_prev).median().to_numpy()
-        out[idx] = med
+@njit(cache=True)
+def _same_slot_median_pos(x, slot, n_pos):
+    """Median of x over the bars of the same slot among the previous n_pos bars (current bar excluded).
+    NaN until n_pos previous bars exist, or if one of the values used is NaN."""
+    m   = len(x)
+    out = np.full(m, np.nan)
+    buf = np.empty(n_pos)
+    for t in range(n_pos, m):
+        s     = slot[t]
+        k     = 0
+        valid = True
+        for j in range(t - n_pos, t):
+            if slot[j] == s:
+                v = x[j]
+                if v != v:
+                    valid = False
+                    break
+                buf[k] = v
+                k += 1
+        if valid and k > 0:
+            out[t] = np.median(buf[:k])
     return out
 
 
-def _price_decimals(close: np.ndarray) -> int:
-    """Number of decimals in the quotes (max over the series; CSVs drop trailing zeros).
+def _same_slot_median(x: np.ndarray, slot: np.ndarray, n_prev: int) -> np.ndarray:
+    """Median of x over the bars of the same slot among the previous n_prev * (slots per day) bars, current
+    bar excluded: the n_prev previous bars of the slot when no bar is missing. A window by position, so
+    holidays or partial days cannot stretch it."""
+    x      = np.ascontiguousarray(x, dtype=np.float64)
+    slot   = np.ascontiguousarray(slot, dtype=np.int64)
+    n_slot = int(slot.max()) + 1 if len(slot) else 1
+    return _same_slot_median_pos(x, slot, int(n_prev) * n_slot)
 
-    Static metadata of the symbol, not a statistic of the price dynamics.
-    The tolerance is relative so that prices stored as float32 upstream still match.
-    """
+
+def _price_decimals(close: np.ndarray) -> int:
+
     x = np.asarray(close, dtype=np.float64)
     x = x[np.isfinite(x) & (x > 0.0)]
     if len(x) == 0:
@@ -532,107 +580,6 @@ def _tpo_density(high, low, close, n):
     return out
 
 
-@njit(cache=True)
-def _zigzag_confirmed(high, low, atr, k):
-    """Zigzag on high/low with reversal threshold k * atr[t]. Causal.
-
-    Rule: while in an up leg with extreme E (max high since the leg started), the high
-    is confirmed as a pivot at the first bar t where E - (min low after E, up to t)
-    >= k * atr[t]. The down leg then starts at that min low. Symmetric for down legs.
-    Several reversals can be confirmed in the same bar.
-
-    A pivot is registered at the bar where it is confirmed, never at the bar of the
-    extreme itself. A bar that makes a new extreme is not tested against that same
-    extreme (the order of high and low inside the bar is unknown).
-
-    For every bar t, after processing bar t:
-      last_idx[t] : bar index of the extreme of the last confirmed pivot (-1 if none yet)
-      last_px[t]  : its price
-      prev_px[t]  : price of the pivot before it (NaN if none yet)
-    """
-    m        = len(high)
-    last_idx = np.full(m, -1, dtype=np.int64)
-    last_px  = np.full(m, np.nan)
-    prev_px  = np.full(m, np.nan)
-
-    direction = 0            # 0: no pivot yet, 1: up leg, -1: down leg
-    hi   = np.nan            # running extremes before the first pivot
-    lo   = np.nan
-    hi_i = -1
-    lo_i = -1
-    e_i  = -1                # bar of the current leg extreme
-    cur_idx  = -1
-    cur_px   = np.nan
-    cur_prev = np.nan
-
-    for t in range(m):
-        h = high[t]
-        l = low[t]
-        a = atr[t]
-        if h == h and l == l and a == a and a > 0.0:
-            thr = k * a
-            if direction == 0:
-                if hi != hi or h > hi:
-                    hi = h
-                    hi_i = t
-                if lo != lo or l < lo:
-                    lo = l
-                    lo_i = t
-                if hi_i != lo_i and hi - lo >= thr:
-                    if lo_i < hi_i:
-                        cur_px = lo
-                        cur_idx = lo_i
-                        direction = 1
-                        e_i = hi_i
-                    else:
-                        cur_px = hi
-                        cur_idx = hi_i
-                        direction = -1
-                        e_i = lo_i
-            elif direction == 1:
-                if h > high[e_i]:
-                    e_i = t
-            else:
-                if l < low[e_i]:
-                    e_i = t
-
-            # reversals from the current leg extreme (bars after it, up to t)
-            while direction != 0 and e_i < t:
-                j = -1
-                if direction == 1:
-                    for i in range(e_i + 1, t + 1):
-                        if low[i] == low[i] and (j < 0 or low[i] < low[j]):
-                            j = i
-                    if j < 0 or high[e_i] - low[j] < thr:
-                        break
-                    cur_prev = cur_px
-                    cur_px = high[e_i]
-                    cur_idx = e_i
-                    direction = -1
-                else:
-                    for i in range(e_i + 1, t + 1):
-                        if high[i] == high[i] and (j < 0 or high[i] > high[j]):
-                            j = i
-                    if j < 0 or high[j] - low[e_i] < thr:
-                        break
-                    cur_prev = cur_px
-                    cur_px = low[e_i]
-                    cur_idx = e_i
-                    direction = 1
-                e_i = j
-        last_idx[t] = cur_idx
-        last_px[t] = cur_px
-        prev_px[t] = cur_prev
-    return last_idx, last_px, prev_px
-
-
-def _zigzag(arr: dict, k: float):
-    atr = _atr(arr["high"], arr["low"], arr["close"], ATR_N)
-    return _zigzag_confirmed(np.asarray(arr["high"], dtype=np.float64),
-                             np.asarray(arr["low"], dtype=np.float64),
-                             np.asarray(atr, dtype=np.float64), float(k))
-
-
 # =============================================================================
 # BLOCK A — existing
 # =============================================================================
@@ -663,7 +610,8 @@ def a_momentum(arr, ctx, params):
 
 
 def a_atr_regime(arr, ctx, params):
-    atr = _atr(arr["high"], arr["low"], arr["close"], params["period"])
+    # ATR over 100 - sma_period candles, then its mean over sma_period values -> 100 candles
+    atr = _atr(arr["high"], arr["low"], arr["close"], params["period"], win=MAX_LOOKBACK - params["sma_period"])
     return _safe_div(atr, _rolling_mean_skipnan(atr, params["sma_period"]))
 
 
@@ -766,8 +714,9 @@ def c_trend_intensity_index(arr, ctx, params):
 # =============================================================================
 def d_macd_hist(arr, ctx, params):
     close = arr["close"]
-    macd  = _ema(close, params["fast"]) - _ema(close, params["slow"])
-    hist  = macd - _ema(macd, params["signal"])
+    # EMAs over 70 closes, signal over 31 MACD values -> 100 closes
+    macd  = _ema(close, params["fast"], 70) - _ema(close, params["slow"], 70)
+    hist  = macd - _ema(macd, params["signal"], MAX_LOOKBACK + 1 - 70)
     return _safe_div(hist, _atr(arr["high"], arr["low"], arr["close"], ATR_N))
 
 
@@ -787,8 +736,9 @@ def d_tsi(arr, ctx, params):
     close = arr["close"]
     mom = np.full(len(close), np.nan)
     mom[1:] = np.diff(close)
-    num = _ema(_ema(np.nan_to_num(mom, nan=0.0), long_n), short_n)
-    den = _ema(_ema(np.abs(np.nan_to_num(mom, nan=0.0)), long_n), short_n)
+    # long EMA over 65 changes (66 closes), short EMA over 35 of its values -> 100 closes
+    num = _ema(_ema(mom, long_n, 65), short_n, MAX_LOOKBACK - 65)
+    den = _ema(_ema(np.abs(mom), long_n, 65), short_n, MAX_LOOKBACK - 65)
     out = 100.0 * _safe_div(num, den)
     out[:long_n + short_n] = np.nan
     return out
@@ -803,7 +753,7 @@ def d_acceleration(arr, ctx, params):
 
 def d_ppo(arr, ctx, params):
     close = arr["close"]
-    fast, slow = _ema(close, params["fast"]), _ema(close, params["slow"])
+    fast, slow = _ema(close, params["fast"], MAX_LOOKBACK), _ema(close, params["slow"], MAX_LOOKBACK)
     return 100.0 * _safe_div(fast - slow, slow)
 
 def d_rvi(arr, ctx, params):
@@ -927,11 +877,7 @@ def h_day_slot(arr, ctx, params):
 
 
 def h_vol_deseason(arr, ctx, params):
-    """Bar range / median range of the same slot over the previous `days` occurrences.
 
-    With 4H bars each slot occurs once per day, so `days` previous occurrences = `days` days.
-    The current bar is excluded from its own baseline.
-    """
     rng  = np.asarray(arr["high"], dtype=np.float64) - np.asarray(arr["low"], dtype=np.float64)
     base = _same_slot_median(rng, _day_slot(arr["ts"]), params["days"])
     return _safe_div(rng, base)
@@ -941,11 +887,7 @@ def h_vol_deseason(arr, ctx, params):
 # BLOCK I: price levels / profile
 # =============================================================================
 def i_round_level_phase(arr, ctx, params):
-    """Distance from close to the nearest multiple of `grid` pips, as a fraction of the grid.
 
-    Range [0, 0.5]: 0 = on a round level, 0.5 = halfway between two. Not ATR-normalized,
-    so it carries no volatility information. The pip is inferred from the quote decimals.
-    """
     close   = np.asarray(arr["close"], dtype=np.float64)
     grid_px = params["grid"] * _pip_size(close)
     pos     = close / grid_px
@@ -962,150 +904,137 @@ def i_tpo_density(arr, ctx, params):
 
 
 # =============================================================================
-# BLOCK J: swing structure (zigzag with ATR reversal, confirmed pivots only)
-# =============================================================================
-def j_swing_leg_ratio(arr, ctx, params):
-    """|close - last pivot| / |last pivot - previous pivot|: current move vs previous leg."""
-    _, last_px, prev_px = _zigzag(arr, params["k"])
-    return _safe_div(np.abs(np.asarray(arr["close"], dtype=np.float64) - last_px), np.abs(last_px - prev_px))
-
-
-# =============================================================================
 # REGISTRY — single source of truth for research AND production.
 # =============================================================================
 GROUP_NAMES = {
     "A": "Existing", "B": "Range/Reversion", "C": "Trend", "D": "Momentum/Accel",
     "E": "Volatility", "F": "Microstructure", "G": "Cycles/Stats", "H": "Calendar",
-    "I": "Levels/Profile", "J": "Swing structure", "Z": "NOISE CONTROL",
+    "I": "Levels/Profile",
 }
 
 CANDIDATE_REGISTRY = {
     # --- A ---
-    "rsi":                      {"group": "A", "fn": a_rsi, "directional": False,
-                                 "params_grid": {"period": RSI_PERIODS}, "thresholds": RSI_THRESHOLDS},
-    "adx":                      {"group": "A", "fn": a_adx, "directional": False,
-                                 "params_grid": {"period": ADX_PERIODS}, "thresholds": ADX_THRESHOLDS},
-    "ma_dist":                  {"group": "A", "fn": a_ma_dist, "directional": True,
-                                 "params_grid": {"period": MA_DIST_PERIODS}, "thresholds": MA_DIST_THRESHOLDS},
-    "momentum":                 {"group": "A", "fn": a_momentum, "directional": True,
-                                 "params_grid": {"period": MOMENTUM_PERIODS}, "thresholds": MOMENTUM_THRESHOLDS},
-    "atr_regime":               {"group": "A", "fn": a_atr_regime, "directional": False,
-                                 "params_grid": {"period": ATR_REGIME_PERIODS, "sma_period": ATR_REGIME_SMA_PERIODS},
-                                 "thresholds": ATR_REGIME_THRESHOLDS},
-    "histvol_regime":           {"group": "A", "fn": a_histvol_regime, "directional": False,
-                                 "params_grid": {"period": HISTVOL_REGIME_PERIODS,
-                                                 "sma_period": HISTVOL_REGIME_SMA_PERIODS},
-                                 "thresholds": HISTVOL_REGIME_THRESHOLDS},
+    "rsi":                      {"group": "A", "fn": a_rsi, "role": "signal",
+                                 "params_grid": {"period": RSI_PDS}, "thresholds": RSI_THS},
+    "adx":                      {"group": "A", "fn": a_adx, "role": "filter",
+                                 "params_grid": {"period": ADX_PDS}, "thresholds": ADX_THS},
+    "ma_dist":                  {"group": "A", "fn": a_ma_dist, "role": "signal",
+                                 "params_grid": {"period": MA_DIST_PDS}, "thresholds": MA_DIST_THS},
+    "momentum":                 {"group": "A", "fn": a_momentum, "role": "signal",
+                                 "params_grid": {"period": MOMENTUM_PDS}, "thresholds": MOMENTUM_THS},
+    "atr_regime":               {"group": "A", "fn": a_atr_regime, "role": "filter",
+                                 "params_grid": {"period": ATR_REGIME_PDS, "sma_period": ATR_REGIME_SMA_PDS},
+                                 "thresholds": ATR_REGIME_THS},
+    "histvol_regime":           {"group": "A", "fn": a_histvol_regime, "role": "filter",
+                                 "params_grid": {"period": HISTVOL_REGIME_PDS,
+                                                 "sma_period": HISTVOL_REGIME_SMA_PDS},
+                                 "thresholds": HISTVOL_REGIME_THS},
 
     # --- B ---
-    "bb_pctb":                  {"group": "B", "fn": b_bb_pctb, "directional": False,
-                                 "params_grid": {"period": BB_PCTB_PERIODS}, "thresholds": BB_PCTB_THRESHOLDS},
-    "donchian_pos":             {"group": "B", "fn": b_donchian_pos, "directional": False,
-                                 "params_grid": {"period": DONCHIAN_POS_PERIODS},
-                                 "thresholds": DONCHIAN_POS_THRESHOLDS},
-    "close_pct_rank":           {"group": "B", "fn": b_close_pct_rank, "directional": False,
-                                 "params_grid": {"period": CLOSE_PCT_RANK_PERIODS},
-                                 "thresholds": CLOSE_PCT_RANK_THRESHOLDS},
-    "pivot_dist":               {"group": "B", "fn": b_pivot_dist, "directional": False,
-                                 "params_grid": {"period": PIVOT_DIST_PERIODS}, "thresholds": PIVOT_DIST_THRESHOLDS},
+    "bb_pctb":                  {"group": "B", "fn": b_bb_pctb, "role": "signal",
+                                 "params_grid": {"period": BB_PCTB_PDS}, "thresholds": BB_PCTB_THS},
+    "donchian_pos":             {"group": "B", "fn": b_donchian_pos, "role": "signal",
+                                 "params_grid": {"period": DONCHIAN_POS_PDS},
+                                 "thresholds": DONCHIAN_POS_THS},
+    "close_pct_rank":           {"group": "B", "fn": b_close_pct_rank, "role": "signal",
+                                 "params_grid": {"period": CLOSE_PCT_RANK_PDS},
+                                 "thresholds": CLOSE_PCT_RANK_THS},
+    "pivot_dist":               {"group": "B", "fn": b_pivot_dist, "role": "signal",
+                                 "params_grid": {"period": PIVOT_DIST_PDS}, "thresholds": PIVOT_DIST_THS},
 
     # --- C ---
-    "vortex":                   {"group": "C", "fn": c_vortex, "directional": True,
-                                 "params_grid": {"period": VORTEX_PERIODS}, "thresholds": VORTEX_THRESHOLDS},
-    "hurst":                    {"group": "C", "fn": c_hurst, "directional": False,
-                                 "params_grid": {"period": HURST_PERIODS}, "thresholds": HURST_THRESHOLDS},
-    "ichimoku_tenkan_kijun":    {"group": "C", "fn": c_ichimoku_tenkan_kijun, "directional": True,
-                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PERIODS, "kijun": ICHIMOKU_KIJUN_PERIODS},
-                                 "thresholds": ICHIMOKU_TENKAN_KIJUN_THRESHOLDS},
-    "ichimoku_cloud_thickness": {"group": "C", "fn": c_ichimoku_cloud_thickness, "directional": False,
-                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PERIODS, "kijun": ICHIMOKU_KIJUN_PERIODS,
-                                                 "senkou_b": ICHIMOKU_SENKOU_B_PERIODS},
-                                 "thresholds": ICHIMOKU_CLOUD_THICKNESS_THRESHOLDS},
-    "ichimoku_price_vs_cloud":  {"group": "C", "fn": c_ichimoku_price_vs_cloud, "directional": True,
-                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PERIODS, "kijun": ICHIMOKU_KIJUN_PERIODS,
-                                                 "senkou_b": ICHIMOKU_SENKOU_B_PERIODS},
-                                 "thresholds": ICHIMOKU_PRICE_VS_CLOUD_THRESHOLDS},
-    "trend_intensity_index":    {"group": "C", "fn": c_trend_intensity_index, "directional": False,
-                                 "params_grid": {"period": TII_PERIODS},
-                                 "thresholds": TREND_INTENSITY_INDEX_THRESHOLDS},
+    "vortex":                   {"group": "C", "fn": c_vortex, "role": "signal",
+                                 "params_grid": {"period": VORTEX_PDS}, "thresholds": VORTEX_THS},
+    "hurst":                    {"group": "C", "fn": c_hurst, "role": "filter",
+                                 "params_grid": {"period": HURST_PDS}, "thresholds": HURST_THS},
+    "ichimoku_tenkan_kijun":    {"group": "C", "fn": c_ichimoku_tenkan_kijun, "role": "signal",
+                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_KIJUN_PDS},
+                                 "thresholds": ICHIMOKU_TENKAN_KIJUN_THS},
+    "ichimoku_cloud_thickness": {"group": "C", "fn": c_ichimoku_cloud_thickness, "role": "filter",
+                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_KIJUN_PDS,
+                                                 "senkou_b": ICHIMOKU_SENKOU_B_PDS},
+                                 "thresholds": ICHIMOKU_CLOUD_THICKNESS_THS},
+    "ichimoku_price_vs_cloud":  {"group": "C", "fn": c_ichimoku_price_vs_cloud, "role": "signal",
+                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_KIJUN_PDS,
+                                                 "senkou_b": ICHIMOKU_SENKOU_B_PDS},
+                                 "thresholds": ICHIMOKU_PRICE_VS_CLOUD_THS},
+    "trend_intensity_index":    {"group": "C", "fn": c_trend_intensity_index, "role": "signal",
+                                 "params_grid": {"period": TII_PDS},
+                                 "thresholds": TREND_INTENSITY_INDEX_THS},
 
     # --- D ---
-    "macd_hist":                {"group": "D", "fn": d_macd_hist, "directional": True,
-                                 "params_grid": {"fast": MACD_HIST_FAST_PERIODS, "slow": MACD_HIST_SLOW_PERIODS,
-                                                 "signal": MACD_HIST_SIGNAL_PERIODS},
-                                 "thresholds": MACD_HIST_THRESHOLDS},
-    "roc_spread":               {"group": "D", "fn": d_roc_spread, "directional": True,
-                                 "params_grid": {"fast": ROC_SPREAD_FAST_PERIODS, "slow": ROC_SPREAD_SLOW_PERIODS},
-                                 "thresholds": ROC_SPREAD_THRESHOLDS},
-    "tsi":                      {"group": "D", "fn": d_tsi, "directional": True,
-                                 "params_grid": {"long": TSI_LONG_PERIODS, "short": TSI_SHORT_PERIODS},
-                                 "thresholds": TSI_THRESHOLDS},
-    "acceleration":             {"group": "D", "fn": d_acceleration, "directional": True,
-                                 "params_grid": {}, "thresholds": ACCELERATION_THRESHOLDS},
-    "ppo":                      {"group": "D", "fn": d_ppo, "directional": True,
-                                 "params_grid": {"fast": PPO_FAST_PERIODS, "slow": PPO_SLOW_PERIODS},
-                                 "thresholds": PPO_THRESHOLDS},
-    "rvi":                      {"group": "D", "fn": d_rvi, "directional": False,
-                                 "params_grid": {"period": RVI_PERIODS}, "thresholds": RVI_THRESHOLDS},
+    "macd_hist":                {"group": "D", "fn": d_macd_hist, "role": "signal",
+                                 "params_grid": {"fast": MACD_HIST_FAST_PDS, "slow": MACD_HIST_SLOW_PDS,
+                                                 "signal": MACD_HIST_SIGNAL_PDS},
+                                 "thresholds": MACD_HIST_THS},
+    "roc_spread":               {"group": "D", "fn": d_roc_spread, "role": "signal",
+                                 "params_grid": {"fast": ROC_SPREAD_FAST_PDS, "slow": ROC_SPREAD_SLOW_PDS},
+                                 "thresholds": ROC_SPREAD_THS},
+    "tsi":                      {"group": "D", "fn": d_tsi, "role": "signal",
+                                 "params_grid": {"long": TSI_LONG_PDS, "short": TSI_SHORT_PDS},
+                                 "thresholds": TSI_THS},
+    "acceleration":             {"group": "D", "fn": d_acceleration, "role": "signal",
+                                 "params_grid": {}, "thresholds": ACCELERATION_THS},
+    "ppo":                      {"group": "D", "fn": d_ppo, "role": "signal",
+                                 "params_grid": {"fast": PPO_FAST_PDS, "slow": PPO_SLOW_PDS},
+                                 "thresholds": PPO_THS},
+    "rvi":                      {"group": "D", "fn": d_rvi, "role": "signal",
+                                 "params_grid": {"period": RVI_PDS}, "thresholds": RVI_THS},
 
     # --- E ---
-    "bb_bandwidth":             {"group": "E", "fn": e_bb_bandwidth, "directional": False,
-                                 "params_grid": {"period": BB_BANDWIDTH_PERIODS},
-                                 "thresholds": BB_BANDWIDTH_THRESHOLDS},
-    "choppiness":               {"group": "E", "fn": e_choppiness, "directional": False,
-                                 "params_grid": {"period": CHOPPINESS_PERIODS}, "thresholds": CHOPPINESS_THRESHOLDS},
-    "parkinson_ratio":          {"group": "E", "fn": e_parkinson_ratio, "directional": False,
-                                 "params_grid": {"period": PARKINSON_RATIO_PERIODS},
-                                 "thresholds": PARKINSON_RATIO_THRESHOLDS},
-    "vol_of_vol":               {"group": "E", "fn": e_vol_of_vol, "directional": False,
-                                 "params_grid": {"period": VOL_OF_VOL_PERIODS, "sma_period": VOL_OF_VOL_SMA_PERIODS},
-                                 "thresholds": VOL_OF_VOL_THRESHOLDS},
-    "ret_skew":                 {"group": "E", "fn": e_ret_skew, "directional": False,
-                                 "params_grid": {"period": RET_SKEW_PERIODS}, "thresholds": RET_SKEW_THRESHOLDS},
-    "donchian_width":           {"group": "E", "fn": e_donchian_width, "directional": False,
-                                 "params_grid": {"period": DONCHIAN_WIDTH_PERIODS},
-                                 "thresholds": DONCHIAN_WIDTH_THRESHOLDS},
-    "ulcer_index":              {"group": "E", "fn": e_ulcer_index, "directional": False,
-                                 "params_grid": {"period": ULCER_PERIODS}, "thresholds": ULCER_INDEX_THRESHOLDS},
-    "bb_pctb_slope":            {"group": "E", "fn": e_bb_pctb_slope, "directional": False,
-                                 "params_grid": {"period": BB_PCTB_SLOPE_PERIODS},
-                                 "thresholds": BB_PCTB_SLOPE_THRESHOLDS},
+    "bb_bandwidth":             {"group": "E", "fn": e_bb_bandwidth, "role": "filter",
+                                 "params_grid": {"period": BB_BANDWIDTH_PDS},
+                                 "thresholds": BB_BANDWIDTH_THS},
+    "choppiness":               {"group": "E", "fn": e_choppiness, "role": "filter",
+                                 "params_grid": {"period": CHOPPINESS_PDS}, "thresholds": CHOPPINESS_THS},
+    "parkinson_ratio":          {"group": "E", "fn": e_parkinson_ratio, "role": "filter",
+                                 "params_grid": {"period": PARKINSON_RATIO_PDS},
+                                 "thresholds": PARKINSON_RATIO_THS},
+    "vol_of_vol":               {"group": "E", "fn": e_vol_of_vol, "role": "filter",
+                                 "params_grid": {"period": VOL_OF_VOL_PDS, "sma_period": VOL_OF_VOL_SMA_PDS},
+                                 "thresholds": VOL_OF_VOL_THS},
+    "ret_skew":                 {"group": "E", "fn": e_ret_skew, "role": "filter",
+                                 "params_grid": {"period": RET_SKEW_PDS}, "thresholds": RET_SKEW_THS},
+    "donchian_width":           {"group": "E", "fn": e_donchian_width, "role": "filter",
+                                 "params_grid": {"period": DONCHIAN_WIDTH_PDS},
+                                 "thresholds": DONCHIAN_WIDTH_THS},
+    "ulcer_index":              {"group": "E", "fn": e_ulcer_index, "role": "filter",
+                                 "params_grid": {"period": ULCER_PDS}, "thresholds": ULCER_INDEX_THS},
+    "bb_pctb_slope":            {"group": "E", "fn": e_bb_pctb_slope, "role": "signal",
+                                 "params_grid": {"period": BB_PCTB_SLOPE_PDS},
+                                 "thresholds": BB_PCTB_SLOPE_THS},
 
     # --- F ---
-    "close_pos_in_bar":         {"group": "F", "fn": f_close_pos_in_bar, "directional": False,
-                                 "params_grid": {}, "thresholds": CLOSE_POS_IN_BAR_THRESHOLDS},
-    "range_expansion":          {"group": "F", "fn": f_range_expansion, "directional": False,
-                                 "params_grid": {"period": RANGE_EXPANSION_PERIODS},
-                                 "thresholds": RANGE_EXPANSION_THRESHOLDS},
-    "inside_outside_ratio":     {"group": "F", "fn": f_inside_outside_ratio, "directional": False,
-                                 "params_grid": {"period": INSIDE_OUTSIDE_PERIODS},
-                                 "thresholds": INSIDE_OUTSIDE_RATIO_THRESHOLDS},
-    "open_close_momentum":      {"group": "F", "fn": f_open_close_momentum, "directional": True,
-                                 "params_grid": {}, "thresholds": OPEN_CLOSE_MOMENTUM_THRESHOLDS},
+    "close_pos_in_bar":         {"group": "F", "fn": f_close_pos_in_bar, "role": "signal",
+                                 "params_grid": {}, "thresholds": CLOSE_POS_IN_BAR_THS},
+    "range_expansion":          {"group": "F", "fn": f_range_expansion, "role": "filter",
+                                 "params_grid": {"period": RANGE_EXPANSION_PDS},
+                                 "thresholds": RANGE_EXPANSION_THS},
+    "inside_outside_ratio":     {"group": "F", "fn": f_inside_outside_ratio, "role": "filter",
+                                 "params_grid": {"period": INSIDE_OUTSIDE_PDS},
+                                 "thresholds": INSIDE_OUTSIDE_RATIO_THS},
+    "open_close_momentum":      {"group": "F", "fn": f_open_close_momentum, "role": "signal",
+                                 "params_grid": {}, "thresholds": OPEN_CLOSE_MOMENTUM_THS},
 
     # --- G ---
-    "return_entropy":           {"group": "G", "fn": g_return_entropy, "directional": False,
-                                 "params_grid": {"period": ENTROPY_PERIODS}, "thresholds": RETURN_ENTROPY_THRESHOLDS},
-    "kalman_slope":             {"group": "G", "fn": g_kalman_slope, "directional": True,
-                                 "params_grid": {}, "thresholds": KALMAN_SLOPE_THRESHOLDS},
+    "return_entropy":           {"group": "G", "fn": g_return_entropy, "role": "filter",
+                                 "params_grid": {"period": ENTROPY_PDS}, "thresholds": RETURN_ENTROPY_THS},
+    "kalman_slope":             {"group": "G", "fn": g_kalman_slope, "role": "signal",
+                                 "params_grid": {}, "thresholds": KALMAN_SLOPE_THS},
 
     # --- H ---
-    "day_slot":                 {"group": "H", "fn": h_day_slot, "directional": False,
+    "day_slot":                 {"group": "H", "fn": h_day_slot, "role": "filter",
                                  "params_grid": {"slot": DAY_SLOT_SLOTS},
-                                 "thresholds": DAY_SLOT_THRESHOLDS, "ops": (">",)},
-    "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "directional": False,
-                                 "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THRESHOLDS},
+                                 "thresholds": DAY_SLOT_THS, "ops": (">",)},
+    "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "role": "filter",
+                                 "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THS},
 
     # --- I ---
-    "round_level_phase":        {"group": "I", "fn": i_round_level_phase, "directional": False,
+    "round_level_phase":        {"group": "I", "fn": i_round_level_phase, "role": "filter",
                                  "params_grid": {"grid": ROUND_LEVEL_GRIDS},
-                                 "thresholds": ROUND_LEVEL_PHASE_THRESHOLDS},
-    "tpo_density":              {"group": "I", "fn": i_tpo_density, "directional": False,
-                                 "params_grid": {"period": TPO_DENSITY_PERIODS}, "thresholds": TPO_DENSITY_THRESHOLDS},
-
-    # --- J ---
-    "swing_leg_ratio":          {"group": "J", "fn": j_swing_leg_ratio, "directional": False,
-                                 "params_grid": {"k": SWING_ATR_MULTS}, "thresholds": SWING_LEG_RATIO_THRESHOLDS},
+                                 "thresholds": ROUND_LEVEL_PHASE_THS},
+    "tpo_density":              {"group": "I", "fn": i_tpo_density, "role": "filter",
+                                 "params_grid": {"period": TPO_DENSITY_PDS}, "thresholds": TPO_DENSITY_THS},
 }
 # =============================================================================
 # SPEC GENERATOR — expands params_grid x thresholds x ops into flat specs.
@@ -1154,40 +1083,3 @@ def describe_spec(spec: dict) -> str:
     param_str = "_".join(parts)
     prefix = f"{spec['indicator']}_{param_str}" if param_str else spec["indicator"]
     return f"{prefix}{spec['op']}{spec['threshold']:g}"
-
-# =============================================================================
-# RULE COMBINATION LOGIC — shared by rule_generator.py (backtesting) and
-# =============================================================================
-def implied_side(spec: dict) -> str | None:
-    """'long'/'short' if this spec only makes directional sense that way; None otherwise."""
-    if not CANDIDATE_REGISTRY[spec["indicator"]]["directional"]:
-        return None
-    op, threshold = spec["op"], spec["threshold"]
-    if op == ">" and threshold > 0:
-        return "long"
-    if op == "<" and threshold < 0:
-        return "short"
-    return None
-
-def _combo_has_side_conflict(members: tuple, specs: list) -> bool:
-    sides = {implied_side(specs[i]) for i in members}
-    sides.discard(None)
-    return len(sides) > 1
-
-def generate_valid_combos(specs: list, depth: int, indices: list = None) -> list:
-    candidate_indices = indices if indices is not None else range(len(specs))
-
-    by_indicator = {}
-    for i in candidate_indices:
-        by_indicator.setdefault(specs[i]["indicator"], []).append(i)
-
-    names  = list(by_indicator.keys())
-    combos = []
-    for name_combo in itertools.combinations(names, depth):
-        pools = [by_indicator[n] for n in name_combo]
-        for members in itertools.product(*pools):
-            members = tuple(sorted(members))
-            if _combo_has_side_conflict(members, specs):
-                continue
-            combos.append(members)
-    return combos

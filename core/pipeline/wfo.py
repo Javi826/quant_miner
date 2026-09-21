@@ -48,8 +48,8 @@ logger = logging.getLogger("BOT_batch.pipeline.wfo")
 # =============================================================================
 WFO_NET_GAIN_TH = 5
 WFO_DD_TH       = 5
-WFO_R2_TH       = 0.7
-WFO_WFR_TH      = 0.6
+WFO_R2_TH       = 0.6
+WFO_WFR_TH      = 0.5
 
 # =============================================================================
 # WFO EXECUTION CONFIG

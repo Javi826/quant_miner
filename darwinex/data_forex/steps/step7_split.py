@@ -116,8 +116,8 @@ def print_split_preview(config: dict) -> bool:
     print(f"  OOS : {oos_start} → {oos_end}  ({oos_months} months available)")
     print(f"")
     print(f"  📁 Output folders:")
-    print(f"  IS  → {os.path.join('expanding', 'IS', is_folder)}/")
-    print(f"  OOS → {os.path.join('expanding', 'OOS', oos_folder)}/")
+    print(f"  IS  → {os.path.join('IS', is_folder)}/")
+    print(f"  OOS → {os.path.join('OOS', oos_folder)}/")
     print(f"{'='*60}")
 
     answer = input("\n  Continue? [y/n]: ").strip().lower()
@@ -128,7 +128,7 @@ def print_split_preview(config: dict) -> bool:
 # =============================================================================
 
 def get_latest_split_folders(split_dir: str) -> dict | None:
-    mode_dir = os.path.join(split_dir, "expanding")
+    mode_dir = split_dir
     result = {}
 
     for subset in ["IS", "OOS"]:
@@ -177,7 +177,7 @@ def run(config: dict) -> bool:
     split_dir: str = config["split_dir"]
     export_csv: bool = config.get("export_csv", False)
 
-    mode_dir = os.path.join(split_dir, "expanding")
+    mode_dir = split_dir
     os.makedirs(mode_dir, exist_ok=True)
 
     is_start, is_end, oos_start, oos_end = _compute_windows(config)

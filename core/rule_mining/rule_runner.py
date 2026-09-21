@@ -1,6 +1,7 @@
 # core/rule_mining/rule_runner.py
 import os
 import logging
+from utils.ohlcv_utils import prepare_ohlcv_arrays
 from pipeline.wfo import pipe_wfo
 from pipeline.backtest_runner import pipe_backtesting
 from pipeline.stepM import pipe_stepm
@@ -32,14 +33,9 @@ def _build_rule_id(i: int, combo_key: str, rule: dict) -> str:
 
 def _build_rule_dicts(ohlcv_data: dict, combo_key: str, timeframe: str, max_depth: int) -> list:
 
-    arr_sample = next(iter(ohlcv_data.values()))
-    all_rules  = generate_all_rules({
-        "open":  arr_sample["open"],
-        "high":  arr_sample["high"],
-        "low":   arr_sample["low"],
-        "close": arr_sample["close"],
-        "volume": arr_sample["volume"],
-    }, max_depth=max_depth)
+    sample_sym = next(iter(ohlcv_data))
+    arr_sample = prepare_ohlcv_arrays({sample_sym: ohlcv_data[sample_sym]})[sample_sym]
+    all_rules  = generate_all_rules(arr_sample, max_depth=max_depth, timeframe=timeframe)
 
     return [
         {

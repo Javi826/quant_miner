@@ -21,8 +21,8 @@ FOREX = Settings(
     DAYS_PER_YEAR=252,
     WEEKMASK="1111100",
     CUSTOM_FIELDS={"lot": 0.2, "magic": "AUTO_INCREMENT"},
-    BACKTEST_MODE="YPY",
-    #BACKTEST_MODE="NPY",
+    #BACKTEST_MODE="YPY",
+    BACKTEST_MODE="NPY",
 )
 _MARKET_SETTINGS = {
     "crypto": CRYPTO,

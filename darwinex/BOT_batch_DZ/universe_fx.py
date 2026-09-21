@@ -57,30 +57,29 @@ SYMBOL_POOL = [
     "EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD",
     "USDCHF", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP",
     "EURCHF", "AUDJPY", "CADJPY", "CHFJPY", "EURAUD",
-#    "EURCAD", "AUDCAD", "GBPCAD", "NZDJPY", "GBPCHF",
+    "EURCAD", "AUDCAD", "GBPCAD", "NZDJPY", "GBPCHF",
 ]
 
 TIMEFRAMES   = ["1H","4H"]
 TIMEFRAMES   = ["4H"]
-COMBO_SIZES  = [1,2]
+COMBO_SIZES  = [4]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {
      1:  None,
-     2:  105,
-     10: 50,
+     4:  100,
 }
 
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
-        "SELL_AFTER": [400],
-        "TP_PCT":     [0.78,1.18,1.58],
-        "SL_PCT":     [1.18,1.78,2.38],
+        "SELL_AFTER": [10,100],
+        "TP_PCT":     [0.5,1.0,1.5],
+        "SL_PCT":     [0.5,1.0,1.5],
     },
     "4H": {
-        "SELL_AFTER":[25],
-        "TP_PCT":    [1.2,1.4,1.6],
-        "SL_PCT":    [1.2,1.4,1.6],
+        "SELL_AFTER":[10,100],
+        "TP_PCT":    [0.5,1.0,1.5],
+        "SL_PCT":    [0.5,1.0,1.5],
     },
 }
 
@@ -209,6 +208,20 @@ def _log_threshold_report(subset: pd.DataFrame, rank_percentiles: list, threshol
         table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
         table[col] = table[col].round(2)
         logger.info(table.to_string(index=False))
+
+        # --- NUEVO: la misma lista de "symbols", pero como literal Python ---
+        _log_symbols_as_python_list(passing)
+
+
+def _log_symbols_as_python_list(passing: pd.DataFrame) -> None:
+    """Print the passing 'symbols' column as a Python list-of-lists literal, ready to paste."""
+    lines = []
+    for symbols_str in passing["symbols"].str.strip():
+        syms = symbols_str.split("+")
+        formatted = ", ".join(f'"{s}"' for s in syms)
+        lines.append(f"    [{formatted}],")
+
+    logger.info("[\n" + "\n".join(lines) + "\n]")
 
 # =============================================================================
 # CROSS-TIMEFRAME SUMMARY — combos passing the threshold in every timeframe,
