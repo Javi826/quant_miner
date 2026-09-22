@@ -112,9 +112,7 @@ def build_signal_mask_keys(
 _POPCOUNT_TABLE_NP = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint16)
 
 def _packed_signal_matrix(rules: list, ohlcv_arr: dict, n_jobs: int, timeframe: str = "") -> tuple:
-    """Pack every rule signal into one contiguous uint64 row so that the GPU
-    kernel can AND whole 64-bit words. Returns (words, sides) with words
-    shaped (n_rules, n_words)."""
+
     signal_keys = build_signal_mask_keys(rules, ohlcv_arr, n_jobs=n_jobs, timeframe=timeframe)
     sides       = np.array([side for side, _ in signal_keys])
 
@@ -131,8 +129,7 @@ def _packed_signal_matrix(rules: list, ohlcv_arr: dict, n_jobs: int, timeframe: 
     return packed.view(np.uint64), sides
 
 def _popcount_packed(words: np.ndarray) -> np.ndarray:
-    """Set cardinality |A| per rule. Chunked so the uint16 lookup expansion
-    never materializes the full matrix at once."""
+
     bytes_view = words.view(np.uint8)
     n_rows     = bytes_view.shape[0]
     cardinality = np.empty(n_rows, dtype=np.float32)
@@ -370,8 +367,7 @@ def pipe_signal_cleaning_jaccard(
 # COLUMN DECORRELATION (GPU) — post-backtest, pre-StepM redundancy filter
 # =============================================================================
 def _normalize_columns_for_correlation(matrix_arr: np.ndarray) -> np.ndarray:
-    """Center and L2-normalize each column so that a plain dot product
-    between any two columns equals their Pearson correlation coefficient."""
+
     matrix_norm = matrix_arr.astype(np.float32, copy=True)
     matrix_norm -= matrix_norm.mean(axis=0, keepdims=True)
     col_norms = np.linalg.norm(matrix_norm, axis=0)

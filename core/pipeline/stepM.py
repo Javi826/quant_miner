@@ -15,14 +15,6 @@ logger = logging.getLogger("BOT_batch.pipeline.stepM")
 # =============================================================================
 STEPM_ALPHA         = 0.10      # significance level used inside the Romano-Wolf stepdown search
 FDP_GAMMA           = 0.10 
-STEPM_K_MODE        = "fdp"     # "kmaxime", "kesime" or "fdp"
-STEPM_K_FWE         = 1
-STEPM_K_ESIME_TF    = {
-    "1H":     0.001,
-    "4H":     0.001,
-    "6Hutc":  0.001,
-    "12Hutc": 0.001,
-}
 # =============================================================================
 # STATISTICAL TEST 
 # =============================================================================
@@ -327,7 +319,7 @@ def stepwise_reality_check_pvalues(
     statistic: np.ndarray,
     alpha: float = STEPM_ALPHA,
     max_iterations: int = STEPM_MAX_ITERATIONS,
-    k: int = STEPM_K_FWE,
+    k: int = 1,
     _presorted: tuple = None,   # (order, dev_sorted, stat_sorted), reused across the FDP ladder
     _abort_at: int = None,      # stop early once active_start reaches this count
 ) -> np.ndarray:
@@ -510,15 +502,9 @@ def pipe_stepm(
     stepm_alpha: float = STEPM_ALPHA,
     n_bootstrap: int = WHITE_N_BOOTSTRAP,
     block_size: int = WHITE_BLOCK_SIZE,
-    stepm_k_esime: float = None,
     seed: int = RANDOM_SEED,
     timeframe: str = "",
 ) -> list:
-
-    if stepm_k_esime is None:
-        if timeframe not in STEPM_K_ESIME_TF:
-            raise ValueError(f"No STEPM_K_ESIME configured for timeframe: {timeframe!r}")
-        stepm_k_esime = STEPM_K_ESIME_TF[timeframe]
 
     if matrix_arr is None:
         logger.warning(f"STEPM ── {timeframe} ── insufficient data — skipping, passing all rules through untouched")
@@ -549,31 +535,17 @@ def pipe_stepm(
     best_raw_idx  = int(np.argmax(real_sharpe))
     best_raw_name = str(kept_columns[best_raw_idx])
     
-    stepm_pvals = None
-
-    if STEPM_K_MODE == "kmaxime":
-        k_fwe = STEPM_K_FWE
-    elif STEPM_K_MODE == "kesime":
-        n_cols_for_k = len(kept_columns)
-        k_fwe = max(1, int(np.ceil(stepm_k_esime * n_cols_for_k)))
-        k_fwe_fmt = f"{k_fwe:,}".replace(",", ".")
-        n_cols_for_k_fmt = f"{n_cols_for_k:,}".replace(",", ".")
-        logger.info(
-            f"STEPM COLUMNS   {timeframe}: STEPM_K_MODE=kesime ── resolved k={k_fwe_fmt} "
-            f"from {stepm_k_esime:.4%} of {n_cols_for_k_fmt} surviving columns"
-        )
-    elif STEPM_K_MODE == "fdp":
-        k_fwe, stepm_pvals, _ = resolve_k_by_fdp(
-            studentized_deviations, z_stat, timeframe=timeframe,
-        )
-    else:
-        raise ValueError(f"Unknown STEPM_K_MODE={STEPM_K_MODE!r}; expected 'kmaxime', 'kesime' or 'fdp'.")
+    k_fwe, stepm_pvals, _ = resolve_k_by_fdp(
+        studentized_deviations, z_stat, timeframe=timeframe,
+    )
     logger.debug(f"\n{'─' * 70}")
     logger.debug(f"  MAX RAW SHARPE (no bootstrap adjustment) ── {timeframe}")
     logger.debug(f"{'─' * 70}")
     logger.debug(f"  best column       : {best_raw_name}")
     logger.debug(f"  best real Sharpe  : {real_sharpe[best_raw_idx]:.4f}")
     logger.debug(f"{'─' * 70}\n")
+
+    logger.info(f"\n{'─' * 70}")
 
     logger.info(f"\n{'─' * 70}")
     logger.info(f"  GLOBAL WHITE p-value (studentized) ── {timeframe}")
@@ -605,7 +577,10 @@ def pipe_stepm(
     for col_name in kept_columns:
         rule_id = str(col_name).rsplit("__", 1)[0]
         current_best = best_col_by_rule.get(rule_id)
-        if current_best is None or stepm_p_by_col[col_name] < stepm_p_by_col[current_best]:
+        if current_best is None or (
+            (stepm_p_by_col[col_name], -z_stat_by_col[col_name])
+            < (stepm_p_by_col[current_best], -z_stat_by_col[current_best])
+        ):
             best_col_by_rule[rule_id] = col_name
     
     n_passed = 0

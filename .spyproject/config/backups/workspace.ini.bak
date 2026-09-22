@@ -4,7 +4,7 @@ save_data_on_exit = True
 save_history = True
 save_non_project_files = False
 project_type = 'empty-project-type'
-recent_files = ['darwinex/BOT_research/screening.py']
+recent_files = ['darwinex/BOT_research/main_screen.py', 'darwinex/BOT_batch_DZ/universe_fx.py', 'darwinex/signals/indicators_bank.py']
 
 [main]
 version = 0.2.0

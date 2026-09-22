@@ -3,13 +3,14 @@ import os
 import logging
 import numpy as np
 import pandas as pd
+import itertools
 from functools import partial
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from setup.config_backtest import INITIAL_BALANCE
 import importlib
 from setup.config_core import settings
-
+from pipeline.backtest_runner import _combo_id
 _bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
 prepare_backtest_data            = _bt.prepare_backtest_data
 run_backtest_from_prepared       = _bt.run_backtest_from_prepared
@@ -46,10 +47,10 @@ logger = logging.getLogger("BOT_batch.pipeline.wfo")
 # =============================================================================
 # WFO APPROVAL THRESHOLDS
 # =============================================================================
-WFO_NET_GAIN_TH = 5
-WFO_DD_TH       = 5
-WFO_R2_TH       = 0.6
-WFO_WFR_TH      = 0.5
+WFO_NET_GAIN_TH = 1
+WFO_DD_TH       = 1
+WFO_R2_TH       = 0.1
+WFO_WFR_TH      = 0.1
 
 # =============================================================================
 # WFO EXECUTION CONFIG
@@ -73,6 +74,26 @@ EMA_ALPHA   = 0.3
 # =============================================================================
 RULES_N_JOBS = -1  # parallelizes across rules
 INNER_N_JOBS = 1   # parallelizes the param grid search within each rule's window
+
+# =============================================================================
+# BLOCKED SELL_AFTER: taken from the rule's StepM best column, TP/SL stay free
+# =============================================================================
+WFO_BLOCK_SELL_AFTER = True
+
+def _combo_lookup(param_grid: dict) -> dict:
+    keys = list(param_grid.keys())
+    return {
+        _combo_id(dict(zip(keys, c))): dict(zip(keys, c))
+        for c in itertools.product(*[param_grid[k] for k in keys])
+    }
+
+def block_sell_after_grid(param_grid: dict, best_combo_id: str | None, lookup: dict | None = None) -> dict:
+    if not WFO_BLOCK_SELL_AFTER or best_combo_id is None:
+        return param_grid
+    best = (lookup if lookup is not None else _combo_lookup(param_grid)).get(best_combo_id)
+    if best is None:
+        raise ValueError(f"best_combo_id {best_combo_id!r} not found in param_grid")
+    return {**param_grid, "SELL_AFTER": [best["SELL_AFTER"]]}
 
 # =============================================================================
 # PRIVATE HELPERS
@@ -154,13 +175,14 @@ def _evaluate_fn(
     params: dict,
     base_arrays: dict,
     train_start_ts,
-    train_edge_ts,
     signal_fn: callable,
     signal_params_keys: list,
     order_amount: int,
     _signal_cache: dict = None,
     _prepared_cache: dict = None,
 ) -> tuple:
+    
+    
     """Single param combination evaluation for one WFO train window."""
     ohlcv_arrays = build_ohlcv_with_signal(
         base_arrays, signal_fn, signal_params_keys, params, _signal_cache=_signal_cache
@@ -176,16 +198,12 @@ def _evaluate_fn(
 
     trade_log = results["__PORTFOLIO__"]["trade_log"]
     if not trade_log.empty:
-        truncated_mask = (
-            trade_log["exit_reason"].isin(["SELL_AFTER", "END_OF_DATA"]) &
-            (trade_log["buy_time"] >= pd.Timestamp(train_start_ts)) &
-            (trade_log["buy_time"] > pd.Timestamp(train_edge_ts))
-        )
-        trade_log = trade_log[~truncated_mask]
+        truncated_mask    = trade_log["exit_reason"] == "END_OF_DATA"
+        below_warmup_mask = trade_log["buy_time"] < pd.Timestamp(train_start_ts)
+        trade_log = trade_log[~truncated_mask & ~below_warmup_mask]
         results   = {"__PORTFOLIO__": {"trade_log": trade_log}}
 
     return compute_metric(results), params
-
 
 def _collect_trades_fn(
     params: dict,
@@ -194,9 +212,19 @@ def _collect_trades_fn(
     signal_params_keys: list,
     order_amount: int,
     _prepared_cache: dict = None,
+    entry_from_ts = None,
 ) -> pd.DataFrame:
     """Run backtest with best_params on a window and return the trade log."""
     ohlcv_arrays  = build_ohlcv_with_signal(base_arrays, signal_fn, signal_params_keys, params)
+
+    if entry_from_ts is not None:
+        cut = pd.Timestamp(entry_from_ts).to_datetime64()
+        ohlcv_arrays = {
+            sym: {**arr, "signal": np.where(arr["ts"].astype("datetime64[ns]") >= cut, arr["signal"], 0).astype(DTYPE)}
+            for sym, arr in ohlcv_arrays.items()
+        }
+        _prepared_cache = None  # masked signal: bypass cache
+
     prepared_data = _get_prepared_data(base_arrays, ohlcv_arrays, _prepared_cache=_prepared_cache)
     results       = run_backtest_from_prepared(
         prepared_data,
@@ -310,6 +338,7 @@ def run_wfo_is(
         show_progress           = show_progress,
         collect_train_trades_fn = collect_train_fn,
         collect_test_trades_fn  = collect_test_fn,
+        inherit_entry_block     = settings.BACKTEST_MODE == "NPY",
     )
 
     logger.debug(
@@ -341,24 +370,6 @@ def run_wfo_is(
 # =============================================================================
 # PIPE WFO — one timeframe at a time, parallelized by rule
 # =============================================================================
-def _empty_wfo_fields() -> dict:
-    """Placeholder WFO fields for rules that were never evaluated (pipe disabled)."""
-    return {
-        "approved":        False,
-        "net_gain":        0.0,
-        "max_dd":          0.0,
-        "n_trades":        0,
-        "n_windows":       0,
-        "win_rate":        0.0,
-        "profit_factor":   0.0,
-        "calmar":          0.0,
-        "r_squared":       0.0,
-        "wfr":             0.0,
-        "duration_d":      0.0,
-        "best_params":     None,
-        "wfo_test_trades": None,
-    }
-
 def _run_wfo_for_rule(
     idx: int,
     total: int,
@@ -447,7 +458,6 @@ def pipe_wfo(
     dd_th: float = WFO_DD_TH,
     r2_th: float = WFO_R2_TH,
     wfr_th: float = WFO_WFR_TH,
-    enabled: bool = True,
     rules_n_jobs: int = RULES_N_JOBS,
     inner_n_jobs: int = INNER_N_JOBS,
     show_progress: bool = False,
@@ -455,18 +465,18 @@ def pipe_wfo(
     save_trades: bool = False,
     brief_trades_folder: str = None,
 ) -> list:
-    if not enabled:
-        logger.info(f"WFO ── {combo_key} ── disabled — passing all {len(rules)} rules through untouched")
-        return [{**r, **_empty_wfo_fields()} for r in rules]
+    lookup = _combo_lookup(param_grid)
+    total  = len(rules)
 
-    param_names    = list(param_grid.keys())
-    lists_for_grid = [param_grid[k] for k in param_names]
-    total          = len(rules)
+    def _grid_args(rule: dict) -> tuple:
+        grid  = block_sell_after_grid(param_grid, rule.get("best_combo_id"), lookup)
+        names = list(grid.keys())
+        return names, [grid[k] for k in names]
 
     results = list(tqdm(
         Parallel(n_jobs=rules_n_jobs, return_as="generator")(
             delayed(_run_wfo_for_rule)(
-                i, total, rule, ohlcv_arr, param_names, lists_for_grid, order_amount,
+                i, total, rule, ohlcv_arr, *_grid_args(rule), order_amount,
                 timeframe, net_gain_th, dd_th, r2_th, wfr_th, inner_n_jobs, show_progress,
                 log_level, save_trades, brief_trades_folder,
             )

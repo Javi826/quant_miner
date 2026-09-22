@@ -40,7 +40,6 @@ from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
 from pipeline.wfo import WFO_WINDOW_CONFIG, EMA_ALPHA, WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH
 from pipeline.correlation import CORRELATION_DD_TH
 from pipeline.multiverse import MULTIVERSE_PVALUE_TH
-from pipeline.stepM import STEPM_K_ESIME_TF
 from pipeline.signal_cleaning import JACCARD_SIMILARITY_TH
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from setup.config_backtest import ORDER_AMOUNT
@@ -51,10 +50,8 @@ from rule_mining.rule_runner import run_rule_mining_pipeline
 # =============================================================================
 SHOW_PLOTS    = True
 SAVE_TRADES   = False
-RUN_PORTFOLIO = True
 RUN_DEPLOY    = True
-#------------------------------------------------------------------------------
-SPLIT_MODE = False
+SPLIT_MODE    = False
 
 DATASET_MINING, DATASET_VALIDATION = ("IS", "OOS") if SPLIT_MODE else ("MERGED", "MERGED")
 #------------------------------------------------------------------------------
@@ -86,10 +83,6 @@ PARAM_GRID_BY_TIMEFRAME = {
 # =============================================================================
 # PIPELINES — sequential validation filters
 # =============================================================================
-PIPELINE_WFO         = True
-PIPELINE_CORRELATION = True
-PIPELINE_MULTIVERSE  = True
-
 STRATEGIES_E1_FOLDER = os.path.join(os.path.dirname(__file__), "strategies_E1")
 BRIEF_TRADES_FOLDER  = os.path.join(STRATEGIES_E1_FOLDER, "brief_trades")
 DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_E1_FOLDER, "rules_files", "rules_batch.py")
@@ -97,8 +90,8 @@ DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_E1_FOLDER, "rules_files", "rules_
 # =============================================================================
 # RUN CONFIG — single source of truth: printed at startup AND persisted
 # =============================================================================
-run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME, "WFO_WINDOW_CONFIG": {tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES}, "EMA_ALPHA": EMA_ALPHA, "PIPELINE_WFO": PIPELINE_WFO, "PIPELINE_CORRELATION": PIPELINE_CORRELATION, "PIPELINE_MULTIVERSE": PIPELINE_MULTIVERSE,
-              "WFO_NET_GAIN_TH": WFO_NET_GAIN_TH, "WFO_DD_TH": WFO_DD_TH, "WFO_R2_TH": WFO_R2_TH, "WFO_WFR_TH": WFO_WFR_TH, "CORRELATION_DD_TH": CORRELATION_DD_TH, "MULTIVERSE_PVALUE_TH": MULTIVERSE_PVALUE_TH, "STEPM_K_ESIME": {tf: STEPM_K_ESIME_TF[tf] for tf in TIMEFRAMES}, "JACCARD_SIMILARITY_TH": JACCARD_SIMILARITY_TH}
+run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME, "WFO_WINDOW_CONFIG": {tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES}, "EMA_ALPHA": EMA_ALPHA,
+              "WFO_NET_GAIN_TH": WFO_NET_GAIN_TH, "WFO_DD_TH": WFO_DD_TH, "WFO_R2_TH": WFO_R2_TH, "WFO_WFR_TH": WFO_WFR_TH, "CORRELATION_DD_TH": CORRELATION_DD_TH, "MULTIVERSE_PVALUE_TH": MULTIVERSE_PVALUE_TH, "JACCARD_SIMILARITY_TH": JACCARD_SIMILARITY_TH}
 # =============================================================================
 # COMBOS — each timeframe can be mined with several independent symbol baskets
 # =============================================================================
@@ -161,21 +154,13 @@ def log_run_config() -> None:
     logger.info(f"  PARAM GRID  : {PARAM_GRID_BY_TIMEFRAME}")
     logger.info(f"  WFO WINDOWS : {_format_wfo_windows({tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES})} | EMA_ALPHA: {EMA_ALPHA}")
     logger.info(
-        f"  PIPELINES   : WFO: {_pipeline_icon(PIPELINE_WFO)}  "
-        f"CORRELATION: {_pipeline_icon(PIPELINE_CORRELATION)}  "
-        f"MULTIVERSE: {_pipeline_icon(PIPELINE_MULTIVERSE)}"
-    )
-    logger.info(
         f"  PIPES       : JACCARD_TH={JACCARD_SIMILARITY_TH} | "
-     #   f"STEPM_K_MODE={STEPM_K_MODE} | "
-        f"K_ESIME={run_config['STEPM_K_ESIME']} | "
         f"NET_GAIN_TH={WFO_NET_GAIN_TH} DD_TH={WFO_DD_TH} R2_TH={WFO_R2_TH} WFR_TH={WFO_WFR_TH} | "
         f"CORR_TH={CORRELATION_DD_TH} | "
         f"MV_PVALUE_TH={MULTIVERSE_PVALUE_TH}"
     )
     logger.info(
-        f"  RUNS        : BEST PORTFOLIO: {_pipeline_icon(RUN_PORTFOLIO)}  "
-        f"DEPLOY: {_pipeline_icon(RUN_DEPLOY)}"
+        f"  RUNS        : DEPLOY: {_pipeline_icon(RUN_DEPLOY)}"
     )
     logger.info(f"{'─' * 115}\n")
 
@@ -228,10 +213,6 @@ if __name__ == "__main__":
             show_plots                         = SHOW_PLOTS,
             deploy_output_path                 = DEPLOY_OUTPUT_PATH,
             run_config                         = run_config,
-            pipeline_wfo                       = PIPELINE_WFO,
-            pipeline_correlation               = PIPELINE_CORRELATION,
-            pipeline_multiverse                = PIPELINE_MULTIVERSE,
-            run_best_portfolio                 = RUN_PORTFOLIO,
             run_deploy                         = RUN_DEPLOY,
         )
 

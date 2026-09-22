@@ -61,13 +61,13 @@ SYMBOL_POOL = [
 ]
 
 TIMEFRAMES   = ["1H","4H"]
-TIMEFRAMES   = ["4H"]
-COMBO_SIZES  = [4]
+TIMEFRAMES   = ["1H"]
+COMBO_SIZES  = [2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {
      1:  None,
-     4:  100,
+     2:  190,
 }
 
 PARAM_GRID_BY_TIMEFRAME = {

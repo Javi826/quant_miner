@@ -13,25 +13,25 @@ from numba import njit
 # =============================================================================
 
 # --- A: existing --------------------------------------------------------------
-RSI_PDS                = [7,14,21]
-RSI_THS                = [30,40,60,70]
+RSI_PDS               = [7,14,21]
+RSI_THS               = [30,40,60,70]
 
-ADX_PDS                = [7,14,21]
-ADX_THS                = [10,20,30]
+ADX_PDS               = [7,14,21]
+ADX_THS               = [10,20,30]
 
-MA_DIST_PDS            = [20,50,100]
-MA_DIST_THS            = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
+MA_DIST_PDS           = [20,50,100]
+MA_DIST_THS           = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
 
-MOMENTUM_PDS           = [10,20,30]
-MOMENTUM_THS           = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
+MOMENTUM_PDS          = [10,20,30]
+MOMENTUM_THS          = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
 
-ATR_REGIME_PDS         = [7,14,21]
-ATR_REGIME_SMA_PDS     = [30,60]
-ATR_REGIME_THS         = [0.5,0.7,1.0,1.4,2.0]
+ATR_REGIME_PDS        = [7,14,21]
+ATR_REGIME_SMA_PDS    = [30,60]
+ATR_REGIME_THS        = [0.5,0.7,1.0,1.4,2.0]
 
-HISTVOL_REGIME_PDS     = [20,30]
-HISTVOL_REGIME_SMA_PDS = [40,60]
-HISTVOL_REGIME_THS     = [0.5,0.7,1.0,1.4,2.0]
+HISTVOL_REGIME_PDS    = [20,30]
+HISTVOL_REGIME_SMA_PDS= [40,60]
+HISTVOL_REGIME_THS    = [0.5,0.7,1.0,1.4,2.0]
 
 # --- B: range / reversion -----------------------------------------------------
 BB_PCTB_PDS           = [10,20,40]
@@ -53,15 +53,15 @@ VORTEX_THS            = [-0.5,-0.3,0.3,0.5]
 HURST_PDS             = [30,60]
 HURST_THS             = [0.4,0.5,0.6]
 
-ICHIMOKU_TENKAN_PDS           = [9]
-ICHIMOKU_KIJUN_PDS            = [26]
-ICHIMOKU_SENKOU_B_PDS         = [52]
-ICHIMOKU_TENKAN_KIJUN_THS     = [-0.5,0.5]
-ICHIMOKU_CLOUD_THICKNESS_THS  = [0.2,0.4,0.6,0.8,1.0]
-ICHIMOKU_PRICE_VS_CLOUD_THS   = [-1.0,-0.5,0.5,1.0]
+ICHIMOKU_TENKAN_PDS   = [9]
+ICHIMOKU_K_PDS        = [26]
+ICHIMOKU_SENKOU_B_PDS = [52]
+ICHIMOKU_TENKAN_K_THS = [-0.5,0.5]
+ICHIMOKU_CL_THICK_THS = [0.2,0.4,0.6,0.8,1.0]
+ICHIMOKU_PR_VS_CL_THS = [-1.0,-0.5,0.5,1.0]
 
-TII_PDS                       = [15,30,50]
-TREND_INTENSITY_INDEX_THS     = [30.0, 50.0, 70.0]
+TII_PDS                = [15,30,50]
+TREND_INTEN_INDEX_THS  = [30.0, 50.0, 70.0]
 
 # --- D: momentum / acceleration -----------------------------------------------
 MACD_HIST_FAST_PDS    = [6,12]
@@ -135,10 +135,6 @@ DAY_SLOT_THS          = [0.5]
 
 VOL_DESEASON_DAYS     = [10,16]
 VOL_DESEASON_THS      = [0.5,0.7,1.0,1.4,2.0]
-
-# --- I: price levels / profile ------------------------------------------------
-ROUND_LEVEL_GRIDS     = [50,100]          # grid size in pips
-ROUND_LEVEL_PHASE_THS = [0.05,0.1,0.2]
 
 TPO_DENSITY_PDS       = [50,75,99]
 TPO_DENSITY_THS       = [0.05,0.15,0.3]
@@ -505,8 +501,7 @@ def _day_slot(ts: np.ndarray) -> np.ndarray:
 
 @njit(cache=True)
 def _same_slot_median_pos(x, slot, n_pos):
-    """Median of x over the bars of the same slot among the previous n_pos bars (current bar excluded).
-    NaN until n_pos previous bars exist, or if one of the values used is NaN."""
+
     m   = len(x)
     out = np.full(m, np.nan)
     buf = np.empty(n_pos)
@@ -526,35 +521,12 @@ def _same_slot_median_pos(x, slot, n_pos):
             out[t] = np.median(buf[:k])
     return out
 
-
 def _same_slot_median(x: np.ndarray, slot: np.ndarray, n_prev: int) -> np.ndarray:
-    """Median of x over the bars of the same slot among the previous n_prev * (slots per day) bars, current
-    bar excluded: the n_prev previous bars of the slot when no bar is missing. A window by position, so
-    holidays or partial days cannot stretch it."""
+
     x      = np.ascontiguousarray(x, dtype=np.float64)
     slot   = np.ascontiguousarray(slot, dtype=np.int64)
     n_slot = int(slot.max()) + 1 if len(slot) else 1
     return _same_slot_median_pos(x, slot, int(n_prev) * n_slot)
-
-
-def _price_decimals(close: np.ndarray) -> int:
-
-    x = np.asarray(close, dtype=np.float64)
-    x = x[np.isfinite(x) & (x > 0.0)]
-    if len(x) == 0:
-        raise ValueError("price_decimals: no valid prices")
-    for d in range(0, 9):
-        scaled = x * (10.0 ** d)
-        tol    = 1e-4 + 5e-7 * np.abs(scaled)
-        if np.all(np.abs(scaled - np.round(scaled)) < tol):
-            return d
-    raise ValueError("price_decimals: could not determine quote precision")
-
-
-def _pip_size(close: np.ndarray) -> float:
-    """Pip for fractional quoting: 5 decimals -> 0.0001, 3 decimals (JPY) -> 0.01."""
-    return 10.0 ** -(_price_decimals(close) - 1)
-
 
 @njit(cache=True)
 def _tpo_density(high, low, close, n):
@@ -674,7 +646,7 @@ def c_hurst(arr, ctx, params):
     return out
 
 
-def c_ichimoku_tenkan_kijun(arr, ctx, params):
+def c_ichimoku_tenkan_K(arr, ctx, params):
     tenkan_n, kijun_n = params["tenkan"], params["kijun"]
     tenkan = (_roll_max(arr["high"], tenkan_n) + _roll_min(arr["low"], tenkan_n)) / 2.0
     kijun = (_roll_max(arr["high"], kijun_n) + _roll_min(arr["low"], kijun_n)) / 2.0
@@ -886,15 +858,6 @@ def h_vol_deseason(arr, ctx, params):
 # =============================================================================
 # BLOCK I: price levels / profile
 # =============================================================================
-def i_round_level_phase(arr, ctx, params):
-
-    close   = np.asarray(arr["close"], dtype=np.float64)
-    grid_px = params["grid"] * _pip_size(close)
-    pos     = close / grid_px
-    frac    = pos - np.floor(pos)
-    return np.minimum(frac, 1.0 - frac)
-
-
 def i_tpo_density(arr, ctx, params):
     """Fraction of the previous `period` bars whose [low, high] contains close[t]."""
     return _tpo_density(np.asarray(arr["high"], dtype=np.float64),
@@ -947,20 +910,20 @@ CANDIDATE_REGISTRY = {
                                  "params_grid": {"period": VORTEX_PDS}, "thresholds": VORTEX_THS},
     "hurst":                    {"group": "C", "fn": c_hurst, "role": "filter",
                                  "params_grid": {"period": HURST_PDS}, "thresholds": HURST_THS},
-    "ichimoku_tenkan_kijun":    {"group": "C", "fn": c_ichimoku_tenkan_kijun, "role": "signal",
-                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_KIJUN_PDS},
-                                 "thresholds": ICHIMOKU_TENKAN_KIJUN_THS},
+    "ichimoku_tenkan_K":    {"group": "C", "fn": c_ichimoku_tenkan_K, "role": "signal",
+                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_K_PDS},
+                                 "thresholds": ICHIMOKU_TENKAN_K_THS},
     "ichimoku_cloud_thickness": {"group": "C", "fn": c_ichimoku_cloud_thickness, "role": "filter",
-                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_KIJUN_PDS,
+                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_K_PDS,
                                                  "senkou_b": ICHIMOKU_SENKOU_B_PDS},
-                                 "thresholds": ICHIMOKU_CLOUD_THICKNESS_THS},
+                                 "thresholds": ICHIMOKU_CL_THICK_THS},
     "ichimoku_price_vs_cloud":  {"group": "C", "fn": c_ichimoku_price_vs_cloud, "role": "signal",
-                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_KIJUN_PDS,
+                                 "params_grid": {"tenkan": ICHIMOKU_TENKAN_PDS, "kijun": ICHIMOKU_K_PDS,
                                                  "senkou_b": ICHIMOKU_SENKOU_B_PDS},
-                                 "thresholds": ICHIMOKU_PRICE_VS_CLOUD_THS},
+                                 "thresholds": ICHIMOKU_PR_VS_CL_THS},
     "trend_intensity_index":    {"group": "C", "fn": c_trend_intensity_index, "role": "signal",
                                  "params_grid": {"period": TII_PDS},
-                                 "thresholds": TREND_INTENSITY_INDEX_THS},
+                                 "thresholds": TREND_INTEN_INDEX_THS},
 
     # --- D ---
     "macd_hist":                {"group": "D", "fn": d_macd_hist, "role": "signal",
@@ -1025,14 +988,11 @@ CANDIDATE_REGISTRY = {
     # --- H ---
     "day_slot":                 {"group": "H", "fn": h_day_slot, "role": "filter",
                                  "params_grid": {"slot": DAY_SLOT_SLOTS},
-                                 "thresholds": DAY_SLOT_THS, "ops": (">",)},
+                                 "thresholds": DAY_SLOT_THS},
     "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "role": "filter",
                                  "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THS},
 
     # --- I ---
-    "round_level_phase":        {"group": "I", "fn": i_round_level_phase, "role": "filter",
-                                 "params_grid": {"grid": ROUND_LEVEL_GRIDS},
-                                 "thresholds": ROUND_LEVEL_PHASE_THS},
     "tpo_density":              {"group": "I", "fn": i_tpo_density, "role": "filter",
                                  "params_grid": {"period": TPO_DENSITY_PDS}, "thresholds": TPO_DENSITY_THS},
 }

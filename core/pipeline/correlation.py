@@ -129,14 +129,9 @@ def pipe_correlation(
     rules: list,
     initial_balance: float,
     threshold: float = None,
-    enabled: bool = True,
 ) -> list:
 
     threshold = threshold if threshold is not None else CORRELATION_DD_TH
-
-    if not enabled:
-        logger.info(f"CORRELATION ── disabled — passing all {len(rules)} rules through untouched")
-        return rules
 
     by_id = {r["rule_id"]: r for r in rules}
     strategy_trades_wfo_test = [(r["rule_id"], r["wfo_test_trades"]) for r in rules]

@@ -9,7 +9,7 @@ from setup.config_core import settings
 _bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
 run_grid_backtest = _bt.run_grid_backtest
 from pipeline.wfo import EMA_ALPHA, WFO_WINDOW_CONFIG, build_ohlcv_with_signal, compute_metric
-from engines.wfo_WF import WARMUP_BARS, MIN_COOLDOWN_BARS, update_ema_state, round_params_dict
+from engines.wfo_WF import WARMUP_BARS, update_ema_state, round_params_dict
 from utils.ohlcv_utils import prepare_ohlcv_arrays, get_bars_per_year
 from setup.config_core import settings
 logger = logging.getLogger("BOT_batch.runs.run_deploy")
@@ -58,10 +58,7 @@ def run_wfo_deploy_ema(
     param_ranges      = dict(zip(param_names, lists_for_grid))
     dict_combinations = [dict(zip(param_names, comb)) for comb in itertools.product(*lists_for_grid)]
 
-    EDGE_BUFFER_BARS = max(param_ranges.get("SELL_AFTER", [WARMUP_BARS]) + [MIN_COOLDOWN_BARS])
-
-
-    def _evaluate(params, base_arrays, train_start_ts, train_edge_ts):
+    def _evaluate(params, base_arrays, train_start_ts):
         arrays      = build_ohlcv_with_signal(base_arrays, signal_fn, [], params)
         results     = run_grid_backtest(
             arrays,
@@ -73,12 +70,9 @@ def run_wfo_deploy_ema(
         trade_log   = results["__PORTFOLIO__"]["trade_log"]
         n_before    = len(trade_log)
         if not trade_log.empty:
-            truncated_mask = (
-                trade_log["exit_reason"].isin(["SELL_AFTER", "END_OF_DATA"]) &
-                (trade_log["buy_time"] >= pd.Timestamp(train_start_ts)) &
-                (trade_log["buy_time"] > pd.Timestamp(train_edge_ts))
-            )
-            trade_log = trade_log[~truncated_mask]
+            truncated_mask    = trade_log["exit_reason"] == "END_OF_DATA"
+            below_warmup_mask = trade_log["buy_time"] < pd.Timestamp(train_start_ts)
+            trade_log = trade_log[~truncated_mask & ~below_warmup_mask]
             results   = {"__PORTFOLIO__": {"trade_log": trade_log}}
         n_after = len(trade_log)
         return compute_metric(results), params, n_before, n_after
@@ -96,7 +90,6 @@ def run_wfo_deploy_ema(
     for train_start_idx, train_end_idx in reversed(windows):
         train_start_ts = ref_ts[train_start_idx]
         train_end_ts   = ref_ts[train_end_idx]
-        train_edge_ts  = ref_ts[max(train_start_idx, train_end_idx - EDGE_BUFFER_BARS)]
 
         candidate_indices = {}
         for sym, arr_dict in ohlcv_arr.items():
@@ -129,7 +122,7 @@ def run_wfo_deploy_ema(
             }
 
         results = Parallel(n_jobs=n_jobs)(
-            delayed(_evaluate)(p, base_arrays, train_start_ts, train_edge_ts) for p in dict_combinations
+            delayed(_evaluate)(p, base_arrays, train_start_ts) for p in dict_combinations
         )
         _, raw_best_params, best_n_before, best_n_after = max(results, key=lambda x: x[0])
 

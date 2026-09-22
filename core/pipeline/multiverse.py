@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from tqdm import tqdm
-from pipeline.wfo import run_wfo_is
+from pipeline.wfo import run_wfo_is,block_sell_after_grid
 from utils.plotting import plot_multiverse_synthetic_vs_historical
 from utils.reporting import report_multiverse_debug
 logger = logging.getLogger("BOT_batch.pipeline.multiverse")
@@ -248,7 +248,7 @@ def _evaluate_rules_on_path(
     ohlcv_arr: dict,
     rules: list,
     param_names: list,
-    lists_for_grid: list,
+    lists_by_id: dict,
     order_amount: int,
     timeframe: str,
     return_schedules: bool = False,
@@ -261,7 +261,7 @@ def _evaluate_rules_on_path(
             ) = run_wfo_is(
                 ohlcv_arr          = ohlcv_arr,
                 param_names        = param_names,
-                lists_for_grid     = lists_for_grid,
+                lists_for_grid     = lists_by_id[rule["rule_id"]],
                 signal_fn          = rule["signal_fn"],
                 signal_params_keys = [],
                 order_amount       = order_amount,
@@ -294,7 +294,7 @@ def _evaluate_path_chunk(
     bundle: dict,
     rules: list,
     param_names: list,
-    lists_for_grid: list,
+    lists_by_id: dict,
     order_amount: int,
     timeframe: str,
     block_size: int,
@@ -310,7 +310,7 @@ def _evaluate_path_chunk(
             bundle, path_idx, block_size, base_seed,
         )
         path_results = _evaluate_rules_on_path(
-            ohlcv_arr, rules, param_names, lists_for_grid, order_amount, timeframe,
+            ohlcv_arr, rules, param_names, lists_by_id, order_amount, timeframe,
         )
         chunk_results.append({rid: profit for rid, (profit, _sched) in path_results.items()})
     return chunk_results
@@ -370,8 +370,11 @@ def _evaluate_multiverse_batch(
             {r["rule_id"]: False for r in rules},
         )
 
-    param_names    = list(param_grid.keys())
-    lists_for_grid = [param_grid[k] for k in param_names]
+    param_names = list(param_grid.keys())
+    lists_by_id = {}
+    for r in rules:
+        grid = block_sell_after_grid(param_grid, r.get("best_combo_id"))
+        lists_by_id[r["rule_id"]] = [grid[k] for k in param_names]
 
     bundle = _build_path_bundle(ohlcv_data, raw_columns=["volume"], timeframe=timeframe)
 
@@ -393,7 +396,7 @@ def _evaluate_multiverse_batch(
     chunked_results = list(tqdm(
         Parallel(n_jobs=n_jobs, return_as="generator")(
             delayed(_evaluate_path_chunk)(
-                chunk.tolist(), bundle, rules, param_names, lists_for_grid,
+                chunk.tolist(), bundle, rules, param_names, lists_by_id,
                 order_amount, timeframe, block_size, base_seed,
             )
             for chunk in path_chunks
@@ -428,7 +431,7 @@ def _evaluate_multiverse_batch(
     if logger.isEnabledFor(logging.DEBUG):
         probe_arr, probe_layout = _build_synthetic_ohlcv_arr(bundle, 0, block_size, base_seed)
         probe_profit, probe_schedule = _evaluate_rules_on_path(
-            probe_arr, rules[:1], param_names, lists_for_grid, order_amount, timeframe,
+            probe_arr, rules[:1], param_names, lists_by_id, order_amount, timeframe,
             return_schedules=True,
         )[rules[0]["rule_id"]]
 
@@ -456,20 +459,12 @@ def _evaluate_multiverse_batch(
 # =============================================================================
 # PIPE MULTIVERSE
 # =============================================================================
-def _empty_multiverse_fields() -> dict:
-    """Placeholder Multiverse fields for rules that were never evaluated (pipe disabled)."""
-    return {
-        "passed_multiverse":  True,
-        "multiverse_p_value": 0.0,
-    }
-
 def pipe_multiverse(
     rules: list,
     ohlcv_data_by_combo: dict,
     param_grid: dict,   # dict keyed by timeframe: {"1H": {...}, "4H": {...}}
     order_amount: int,
     p_value_th: float = None,
-    enabled: bool = True,
     n_paths: int = N_PERMUTATIONS,
     block_size: int | None = None,
     n_jobs: int = MCPT_N_JOBS,
@@ -477,11 +472,6 @@ def pipe_multiverse(
     show_plots: bool = False,
 ) -> list:
     p_value_th = p_value_th if p_value_th is not None else MULTIVERSE_PVALUE_TH
-
-
-    if not enabled:
-        logger.info(f"MULTIVERSE ── disabled — passing all {len(rules)} rules through untouched")
-        return [{**r, **_empty_multiverse_fields()} for r in rules]
 
     evaluable_rules = [
         r for r in rules

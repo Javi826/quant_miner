@@ -2,7 +2,7 @@
 import os
 import logging
 from utils.ohlcv_utils import prepare_ohlcv_arrays
-from pipeline.wfo import pipe_wfo
+from pipeline.wfo import pipe_wfo, block_sell_after_grid
 from pipeline.backtest_runner import pipe_backtesting
 from pipeline.stepM import pipe_stepm
 from pipeline.correlation import pipe_correlation
@@ -87,10 +87,6 @@ def run_rule_mining_pipeline(
     show_plots: bool = False,
     deploy_output_path: str = None,
     run_config: dict = None,
-    pipeline_wfo: bool = True,
-    pipeline_correlation: bool = True,  
-    pipeline_multiverse: bool = True,
-    run_best_portfolio: bool = True,
     run_deploy: bool = False,
 ) -> list:
     #-----------------------------------------------------------------
@@ -153,7 +149,6 @@ def run_rule_mining_pipeline(
             order_amount        = order_amount,
             timeframe           = timeframe,
             combo_key           = combo_key,
-            enabled             = pipeline_wfo,
             show_progress       = show_progress,
             log_level           = log_level,
             save_trades         = save_trades,
@@ -191,7 +186,6 @@ def run_rule_mining_pipeline(
         survivors_rules = pipe_correlation(
             rules           = rules_for_corr,
             initial_balance = INITIAL_BALANCE,
-            enabled         = pipeline_correlation,
         )
         survivors_corr              = [r["rule_id"] for r in survivors_rules]
         validated_after_correlation = [(rid, raw_by_id[rid]["wfo_test_trades"]) for rid in survivors_corr]
@@ -214,7 +208,6 @@ def run_rule_mining_pipeline(
             ohlcv_data_by_combo = ohlcv_data_validation_by_combo,
             param_grid          = param_grid,   # dict keyed by timeframe, resolved inside
             order_amount        = order_amount,
-            enabled             = pipeline_multiverse,
         )
         for r in mv_results:
             raw_by_id[r["rule_id"]]["multiverse_p_value"] = r["multiverse_p_value"]
@@ -250,7 +243,7 @@ def run_rule_mining_pipeline(
             )
 
     top_portfolios = []
-    if run_best_portfolio and validated_after_multiverse:
+    if validated_after_multiverse:
         top_portfolios = find_best_portfolio_combination_wfo(
             validated_wfo_trades = validated_after_multiverse,
             initial_balance      = INITIAL_BALANCE,
@@ -277,7 +270,7 @@ def run_rule_mining_pipeline(
                     timeframe           = rule_tf,
                     ohlcv_is            = ohlcv_data_validation_by_combo[rule_info["combo_key"]],
                     signal_fn           = rule_info["signal_fn"],
-                    param_grid          = param_grid[rule_tf],
+                    param_grid          = block_sell_after_grid(param_grid[rule_tf], rule_info.get("best_combo_id")),
                     order_amount        = order_amount,
                     approved            = rule_info["approved"],
                     deploy_map          = deploy_map,

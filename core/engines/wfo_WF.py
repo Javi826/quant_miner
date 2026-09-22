@@ -70,11 +70,11 @@ def _find_window_indices(
         return None
     return t0, t1, test0, test1
 
-def _evaluate_with_shm(params: dict, shm_metadata: dict, evaluate_fn, train_start_ts, train_edge_ts) -> tuple:
+def _evaluate_with_shm(params: dict, shm_metadata: dict, evaluate_fn, train_start_ts) -> tuple:
     """Worker: reconstruct base_arrays from shared memory and evaluate."""
     base_arrays, shm_handles = arrays_from_shared_memory(shm_metadata)
     try:
-        return evaluate_fn(params, base_arrays, train_start_ts, train_edge_ts)
+        return evaluate_fn(params, base_arrays, train_start_ts)
     finally:
         for shm in shm_handles:
             shm.close()
@@ -94,13 +94,12 @@ def walk_forward_optimization(
     show_progress=False,
     collect_train_trades_fn=None,
     collect_test_trades_fn=None,
+    inherit_entry_block=False,
 ):
     if evaluate_fn is None:
         raise ValueError("You must pass an evaluate_fn(params, base_arrays) function")
 
     COOLDOWN_BARS    = max(param_ranges.get("SELL_AFTER", [WARMUP_BARS]) + [MIN_COOLDOWN_BARS])
-
-    EDGE_BUFFER_BARS = max(param_ranges.get("SELL_AFTER", [WARMUP_BARS]) + [MIN_COOLDOWN_BARS])
 
     keys               = list(param_ranges.keys())
     all_combinations   = list(itertools.product(*[param_ranges[k] for k in keys]))
@@ -110,7 +109,7 @@ def walk_forward_optimization(
     best_params_list   = []
     best_criteria_list = []
     window_idx         = 1
-    last_test_end_ref  = length_train_set + length_test
+    #last_test_end_ref  = length_train_set + length_test
 
     train_start_dates  = []
     train_end_dates    = []
@@ -125,14 +124,19 @@ def walk_forward_optimization(
     test_n_trades_list  = []
     train_criteria_list = [] 
 
-    ema_raw = None 
-
-    start = 0
-    end   = length_train_set
+    ema_raw        = None
+    prev_last_exit = None  # sell_time of last kept test trade of previous window (NPY only)
 
     ref_sym    = max(ohlcv_arr.keys(), key=lambda k: len(ohlcv_arr[k]['ts']))
     ref_ts     = ohlcv_arr[ref_sym]['ts']
     max_length = len(ref_ts)
+
+    # Align windows to the present: the last test ends at the last candle.
+    # Leftover (< length_test candles) at the start is discarded (used only as warmup).
+    offset            = 0 if anchored else (max_length - length_train_set) % length_test
+    start             = offset
+    end               = offset + length_train_set
+    last_test_end_ref = end + length_test
 
     while start < max_length:
         remaining_data = max_length - (end if anchored else start)
@@ -157,7 +161,6 @@ def walk_forward_optimization(
             last_test_end_ref = test1_ref
 
         train_start_ts = ref_ts[t0_ref]
-        train_edge_ts  = ref_ts[max(t0_ref, t1_ref - EDGE_BUFFER_BARS)]
         test_start_ts  = ref_ts[t1_ref] if t1_ref < max_length else ref_ts[-1]
         test_end_ts    = ref_ts[test1_ref - 1]
 
@@ -213,7 +216,7 @@ def walk_forward_optimization(
         for sym, (t0_sym, t1_sym) in test_indices.items():
             arr_dict   = ohlcv_arr[sym]
             warm_start = max(0, t0_sym - WARMUP_BARS)
-            cool_end   = min(len(arr_dict['ts']), t1_sym + COOLDOWN_BARS)
+            cool_end   = min(len(arr_dict['ts']), t1_sym + COOLDOWN_BARS + 1)
             base_arrays_test[sym] = {
                 'ts':        arr_dict['ts'][warm_start:cool_end],
                 'open':      arr_dict['open'][warm_start:cool_end],
@@ -229,7 +232,7 @@ def walk_forward_optimization(
         # -----------------------------------------------------------
         if n_jobs == 1:
             results = [
-                evaluate_fn(params, base_arrays, train_start_ts, train_edge_ts)
+                evaluate_fn(params, base_arrays, train_start_ts)
                 for params in dict_combinations
             ]
         else:
@@ -239,7 +242,7 @@ def walk_forward_optimization(
                     tqdm(desc=f"🔁 WFO Window {window_idx}", total=len(dict_combinations), dynamic_ncols=True)
                 ) if show_progress else contextlib.nullcontext()):
                     results = Parallel(n_jobs=n_jobs)(
-                        delayed(_evaluate_with_shm)(params, shm_metadata, evaluate_fn, train_start_ts, train_edge_ts)
+                        delayed(_evaluate_with_shm)(params, shm_metadata, evaluate_fn, train_start_ts)
                         for params in dict_combinations
                     )
             finally:
@@ -267,11 +270,7 @@ def walk_forward_optimization(
             if df_train is not None and not df_train.empty:
                 n_before = len(df_train)
 
-                truncated_mask = (
-                    df_train["exit_reason"].isin(["SELL_AFTER", "END_OF_DATA"]) &
-                    (df_train["buy_time"] >= pd.Timestamp(train_start_ts)) &
-                    (df_train["buy_time"] > pd.Timestamp(train_edge_ts))
-                )
+                truncated_mask    = df_train["exit_reason"] == "END_OF_DATA"
                 below_warmup_mask = df_train["buy_time"] < pd.Timestamp(train_start_ts)
                 df_train = df_train[~truncated_mask & ~below_warmup_mask].copy()
                 n_after = len(df_train)
@@ -279,13 +278,17 @@ def walk_forward_optimization(
 
         df_test = None
         if collect_test_trades_fn is not None and base_arrays_test:
-            df_test = collect_test_trades_fn(effective_params, base_arrays_test)
+            entry_from = pd.Timestamp(test_start_ts)
+            if inherit_entry_block and prev_last_exit is not None:
+                entry_from = max(entry_from, prev_last_exit)
+            df_test = collect_test_trades_fn(effective_params, base_arrays_test, entry_from_ts=entry_from)
             if df_test is not None and not df_test.empty:
                 df_test = df_test[
                     (df_test["buy_time"] >= pd.Timestamp(test_start_ts)) &
                     (df_test["buy_time"] <= pd.Timestamp(test_end_ts)) &
                     (df_test["exit_reason"] != "END_OF_DATA")
                 ].copy()
+        prev_last_exit = None
 
         train_has_trades = df_train is not None and not df_train.empty
         test_has_trades  = df_test is not None and not df_test.empty
@@ -296,6 +299,7 @@ def walk_forward_optimization(
 
             df_test["wfo_window"] = window_idx
             test_trades_list.append(df_test)
+            prev_last_exit = df_test["sell_time"].max()
             window_test_n_trades = len(df_test)
             test_criterion       = float(df_test["profit"].sum()) / INITIAL_BALANCE * 100
 
