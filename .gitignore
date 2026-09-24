@@ -53,3 +53,4 @@ __pycache__/
 # Docker local volumes
 .docker/
 *.so
+darwinex/BOT_research/screen_cache/*.pkl

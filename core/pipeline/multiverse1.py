@@ -1,4 +1,4 @@
-# core/pipeline/multiverse.py
+# core/pipeline/multiverse.py OLD
 import os
 import sys
 import logging
@@ -7,7 +7,6 @@ import pandas as pd
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from pipeline.wfo import run_wfo_is,block_sell_after_grid
-from pipeline.stepM import resolve_k_by_fdp, stepwise_reality_check_pvalues
 from utils.plotting import plot_multiverse_synthetic_vs_historical
 from utils.reporting import report_multiverse_debug
 logger = logging.getLogger("BOT_batch.pipeline.multiverse")
@@ -15,9 +14,7 @@ logger = logging.getLogger("BOT_batch.pipeline.multiverse")
 # =============================================================================
 # MCPT EXECUTION CONFIG
 # =============================================================================
-MULTIVERSE_PVALUE_TH    = 0.10
-MULTIVERSE_FDP_GAMMA    = 0.10   # FDP level of the multiplicity filter across the rules of each combo
-MULTIVERSE_FDP_FILTER   = True   # True: downstream uses FDP survivors; False: FDP table is informative only
+MULTIVERSE_PVALUE_TH    = 0.1
 
 # =============================================================================
 # BLOCK_SIZE_BY_TIMEFRAME = {
@@ -325,37 +322,6 @@ def _compute_p_value(real_profit: float, permuted_profits: np.ndarray) -> float:
     return (1 + n_matching_or_beating) / (1 + len(permuted_profits))
 
 # =============================================================================
-# MULTIPLICITY FILTER (Romano-Wolf FDP across the rules of one combo)
-# =============================================================================
-def _compute_fdp_p_values(rules: list, profits_by_id: dict, p_value_th: float, combo_key: str) -> dict:
-    """Romano-Wolf FDP across the rules of one combo, on studentized permutation nulls."""
-    rule_ids = [r["rule_id"] for r in rules]
-    nulls    = np.column_stack([profits_by_id[rid] for rid in rule_ids])   # (n_paths, n_rules)
-    real     = np.array([float(r["wfo_test_trades"]["profit"].sum()) for r in rules])
-
-    null_mean = nulls.mean(axis=0)
-    null_std  = nulls.std(axis=0, ddof=1)
-    valid     = np.isfinite(null_std) & (null_std > 0)
-
-    p_fdp_by_id = {rid: 1.0 for rid in rule_ids}
-    if not valid.any():
-        return p_fdp_by_id
-
-    z_null = (nulls[:, valid] - null_mean[valid]) / null_std[valid]
-    z_real = (real[valid] - null_mean[valid]) / null_std[valid]
-
-    k_fdp, pvals, _ = resolve_k_by_fdp(
-        z_null, z_real, gamma=MULTIVERSE_FDP_GAMMA, alpha=p_value_th, timeframe=f"MV {combo_key}",
-    )
-    if pvals is None:
-        pvals = stepwise_reality_check_pvalues(z_null, z_real, alpha=p_value_th, k=k_fdp)
-
-    valid_ids = [rid for rid, ok in zip(rule_ids, valid) if ok]
-    for rid, p in zip(valid_ids, pvals):
-        p_fdp_by_id[rid] = float(p)
-    return p_fdp_by_id
-
-# =============================================================================
 # PLOTTING — paths regenerated on demand, never materialized for all n_paths
 # =============================================================================
 _PLOT_CLOSE_COL_IDX = 3
@@ -400,7 +366,6 @@ def _evaluate_multiverse_batch(
         return (
             {r["rule_id"]: 1.0   for r in rules},
             {r["rule_id"]: False for r in rules},
-            {r["rule_id"]: 1.0   for r in rules},
         )
 
     param_names = list(param_grid.keys())
@@ -461,8 +426,6 @@ def _evaluate_multiverse_batch(
         p_value_by_id[rid]   = p_value
         approved_by_id[rid]  = p_value <= p_value_th
 
-    p_fdp_by_id = _compute_fdp_p_values(rules, profits_by_id, p_value_th, combo_key)
-
     if logger.isEnabledFor(logging.DEBUG):
         probe_arr, probe_layout = _build_synthetic_ohlcv_arr(bundle, 0, block_size, base_seed)
         probe_profit, probe_schedule = _evaluate_rules_on_path(
@@ -489,7 +452,7 @@ def _evaluate_multiverse_batch(
             timeframe      = timeframe,
         )
 
-    return p_value_by_id, approved_by_id, p_fdp_by_id
+    return p_value_by_id, approved_by_id
 
 # =============================================================================
 # PIPE MULTIVERSE
@@ -524,13 +487,12 @@ def pipe_multiverse(
 
     p_value_by_id:  dict = {rid: 1.0   for rid in unevaluable_ids}
     approved_by_id: dict = {rid: False for rid in unevaluable_ids}
-    p_fdp_by_id:    dict = {rid: 1.0   for rid in unevaluable_ids}
 
     for combo_key, combo_rules in rules_by_combo.items():
         timeframe           = combo_rules[0]["timeframe"]
         resolved_block_size = block_size if block_size is not None else _resolve_block_size(timeframe)
 
-        combo_p_values, combo_approved, combo_p_fdp = _evaluate_multiverse_batch(
+        combo_p_values, combo_approved = _evaluate_multiverse_batch(
             ohlcv_data    = ohlcv_data_by_combo[combo_key],
             rules         = combo_rules,
             param_grid    = param_grid[timeframe],
@@ -546,23 +508,17 @@ def pipe_multiverse(
         )
         p_value_by_id.update(combo_p_values)
         approved_by_id.update(combo_approved)
-        p_fdp_by_id.update(combo_p_fdp)
 
     results = [
         {
             **r,
             "passed_multiverse":  approved_by_id[r["rule_id"]],
             "multiverse_p_value": p_value_by_id[r["rule_id"]],
-            "multiverse_p_fdp": p_fdp_by_id[r["rule_id"]],
-            "passed_multiverse_fdp": approved_by_id[r["rule_id"]] and p_fdp_by_id[r["rule_id"]] <= p_value_th,
         }
         for r in rules
     ]
 
     n_passed = sum(1 for r in results if r["passed_multiverse"])
     logger.info(f"MULTIVERSE ── {n_passed}/{len(results)} rules pass (p <= {p_value_th})")
-
-    n_passed_fdp = sum(1 for r in results if r["passed_multiverse_fdp"])
-    logger.info(f"MULTIVERSE FDP ── {n_passed_fdp}/{n_passed} rules pass (p_fdp <= {p_value_th}, gamma={MULTIVERSE_FDP_GAMMA})")
 
     return results

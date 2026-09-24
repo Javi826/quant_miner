@@ -38,7 +38,7 @@ def get_client() -> MetaTrader5:
 
     client = MetaTrader5(host=MT5_HOST, port=MT5_PORT)
 
-    if not client.initialize():
+    if not client.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
         raise ConnectionError(f"MT5 initialize() failed: {client.last_error()}")
     if not client.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER):
         raise ConnectionError(f"MT5 login() failed: {client.last_error()}")
@@ -176,7 +176,7 @@ def count_closed_bars_since(symbol: str, timeframe: str, from_ts: int, n: int = 
         return None
 
     bar_seconds  = TIMEFRAME_MINUTES[timeframe] * 60
-    bar_open_ts  = (df.index.astype("int64") // 10**9).to_numpy()
+    bar_open_ts  = df.index.as_unit("s").asi8
     closed_after = bar_open_ts + bar_seconds > from_ts
 
     return int(closed_after.sum())

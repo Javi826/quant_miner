@@ -4,29 +4,98 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
 import time
+import pandas as pd
 from loguru import logger
-from broker_client.broker_api.mt5_client import (
-    get_client,
-    get_rates,
-    get_last_closed_bar_time,
-    sync_server_offset,
-    get_server_time,
-)
+from broker_client.broker_api.mt5_client import get_client, mt5_timeframe
+from broker_client.broker_config import TIMEFRAME_MINUTES
 
 MAX_COMMENT_LEN     = 15
 RETRY_DELAY_SECONDS = 15
 
 __all__ = [
-    "get_client", "get_rates", "get_last_closed_bar_time",
-    "sync_server_offset", "get_server_time",
-    "send_order", "resume", "run",
-    "has_open_position", "get_open_positions", "close_position",
+    "get_client",
+    "get_bars", "last_closed_bar_time", "get_closed_bars", "count_closed_bars_since",
+    "get_open_positions", "send_order", "run", "close_position", "resume",
 ]
 
 def _truncate_comment(comment):
     """MT5 rejects order comments longer than 31 characters."""
     return str(comment)[:MAX_COMMENT_LEN]
 
+def fmt_bar(ts) -> str:
+    """Bar-open timestamp (broker time) as a readable string, for logs."""
+    return "None" if ts is None else time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(ts)))
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BARS
+# ─────────────────────────────────────────────────────────────────────────────
+# Bars are indexed by their open time in seconds (broker time), as MT5 gives it.
+# No datetime conversion, so no dependency on the pandas version.
+
+def get_bars(symbol: str, timeframe: str, n: int) -> pd.DataFrame:
+    """
+    Last n bars exactly as MT5 returns them, oldest first.
+    The last row is the bar still forming: it changes with every tick.
+    """
+    client = get_client()
+    rates  = client.copy_rates_from_pos(symbol, mt5_timeframe(timeframe), 0, n)
+
+    if rates is None or len(rates) == 0:
+        return pd.DataFrame()
+
+    df         = pd.DataFrame(rates)
+    df["time"] = df["time"].astype("int64")
+    return df.set_index("time")
+
+
+def last_closed_bar_time(symbol: str, timeframe: str) -> int | None:
+    """
+    Open time of the last closed bar: the second-to-last row, because the last
+    one is forming. If the new bar has no tick yet, the last row is actually
+    closed; it is simply picked up one probe later, never too early.
+    """
+    df = get_bars(symbol, timeframe, 2)
+
+    if len(df) < 2:
+        return None
+
+    return int(df.index[-2])
+
+
+def get_closed_bars(symbol: str, timeframe: str, until: int, n: int) -> pd.DataFrame:
+    """
+    Last n closed bars up to and including `until`.
+    `until` is the bar that triggered the cycle, already known to be closed, so
+    the forming bar is never included, even for a symbol that has not received
+    its first tick in the new bar yet.
+    """
+    df = get_bars(symbol, timeframe, n + 2)
+
+    if df.empty:
+        return df
+
+    return df[df.index <= until].tail(n)
+
+
+def count_closed_bars_since(symbol: str, timeframe: str, entry_ts: int,
+                            until: int, n: int) -> int | None:
+    """
+    Closed bars from the entry bar (included) up to `until` (included).
+    Exact up to n; callers only compare it against a threshold below n.
+    """
+    df = get_closed_bars(symbol, timeframe, until, n)
+
+    if df.empty:
+        return None
+
+    bar_seconds = TIMEFRAME_MINUTES[timeframe] * 60
+    bar_close   = df.index.to_numpy() + bar_seconds
+
+    return int((bar_close > entry_ts).sum())
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POSITIONS
+# ─────────────────────────────────────────────────────────────────────────────
 def get_open_positions(magic: int | None = None) -> list:
     """Open positions, optionally filtered by magic."""
     client    = get_client()
@@ -36,11 +105,6 @@ def get_open_positions(magic: int | None = None) -> list:
         return positions
 
     return [p for p in positions if p.magic == magic]
-
-
-def has_open_position(magic: int) -> bool:
-    """True if the given magic has any open position, regardless of symbol."""
-    return bool(get_open_positions(magic))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ORDER EXECUTION
@@ -146,19 +210,6 @@ def send_order(symbol, lot, buy, sell, pct_tp=2.0, pct_sl=2.0, comment="", magic
     return None
 
 
-def resume():
-    """Returns a DataFrame with open positions. Diagnostics only."""
-    import pandas as pd
-
-    client    = get_client()
-    columns   = ["ticket", "position", "symbol", "volume", "magic", "profit", "price", "tp", "sl"]
-    positions = client.positions_get() or []
-    rows      = [
-        [p.ticket, p.type, p.symbol, p.volume, p.magic, p.profit, p.price_open, p.tp, p.sl]
-        for p in positions
-    ]
-    return pd.DataFrame(rows, columns=columns)
-
 def run(symbol, buy, sell, lot, pct_tp=2.0, pct_sl=2.0, comment="", magic=0):
 
     logger.info(f"{symbol} | BUY={buy} SELL={sell}")
@@ -169,6 +220,17 @@ def run(symbol, buy, sell, lot, pct_tp=2.0, pct_sl=2.0, comment="", magic=0):
     if sell:
         send_order(symbol, lot, False, True, pct_tp=pct_tp, pct_sl=pct_sl, comment=comment, magic=magic)
 
+
+def resume():
+    """Returns a DataFrame with open positions. Diagnostics only."""
+    client    = get_client()
+    columns   = ["ticket", "position", "symbol", "volume", "magic", "profit", "price", "tp", "sl"]
+    positions = client.positions_get() or []
+    rows      = [
+        [p.ticket, p.type, p.symbol, p.volume, p.magic, p.profit, p.price_open, p.tp, p.sl]
+        for p in positions
+    ]
+    return pd.DataFrame(rows, columns=columns)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # POSITION CLOSING

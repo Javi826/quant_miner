@@ -32,6 +32,15 @@ MATRIX_GATHER_THREADS       = 8      # threads for the final gather (numpy copie
 
 # =============================================================================
 # FULL-PERIOD GRID SEARCH
+#   - OHLCV SHM views, static bundle and condition banks cached per worker.
+#   - One task = block of consecutive rules with its own SHM segment: valid
+#     rows are appended there (no shared tmpfs file written by every worker,
+#     no zero-fill of the full matrix).
+#   - Engine timeline reduced to event ticks + the tick before each one + the
+#     last tick (the engine only pops positions elsewhere; popping them before
+#     the next event tick yields the same trades, order and cash).
+#   - Duration computed only for the winning combo.
+#   - Final matrix gathered from the valid columns only.
 # =============================================================================
 
 def _combo_id(params: dict) -> str:

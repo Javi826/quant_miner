@@ -5,7 +5,7 @@
 MT5_HOST     = "localhost"
 MT5_PORT     = 8001
 MT5_LOGIN    = 4000097952
-MT5_PASSWORD = "52iYM6Q&K"
+MT5_PASSWORD = "Tomatera86-"
 MT5_SERVER   = "Darwinex-Live"
 
 # =============================================================================

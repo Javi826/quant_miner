@@ -6,6 +6,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from pipeline.stepM import compute_deviation_matrix, WHITE_N_BOOTSTRAP
 from pipeline.stepM import WHITE_BLOCK_SIZE, RANDOM_SEED, CROSS_SECTIONAL_PERCENTILES
+from pipeline.stepM import _to_host
 logger = logging.getLogger("BOT_batch.pipeline.FF_test")
 
 # =============================================================================
@@ -106,7 +107,7 @@ def _cross_sectional_percentiles(
 
     for start in range(0, n_bootstrap, chunk_size):
         end   = min(start + chunk_size, n_bootstrap)
-        batch = studentized_deviations[start:end]
+        batch = _to_host(studentized_deviations[start:end])   # stepM GPU v2: CuPy chunk -> NumPy
 
         batch_percentiles = _percentiles_rows_threaded(batch, percentiles)  # (n_runs, n_pct)
 
@@ -243,7 +244,7 @@ def pipe_FF_test(
     )
 
     # ---- Sample of raw null replicas, kept only for plotting purposes ------
-    sim_z_sample = studentized_deviations[:n_sample_replicas].copy() if n_sample_replicas > 0 else None
+    sim_z_sample = _to_host(studentized_deviations[:n_sample_replicas]).copy() if n_sample_replicas > 0 else None
 
     # ---- Phase B: real cross-section --------------------------------------
     real_percentiles = np.percentile(z_stat, percentiles)

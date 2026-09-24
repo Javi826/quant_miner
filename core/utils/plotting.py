@@ -1,6 +1,5 @@
 #core/utils/plotting.py
 import logging
-import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -82,7 +81,7 @@ def plot_rule_mining_filter_comparison(
     initial_balance: float,
     regime_enabled: bool = False,
 ) -> None:
-    """Plot equity curves for a single strategy: baseline vs regime 0+1."""
+
     def _equity_pct(tl, t_start):
         tl  = tl.sort_values("sell_time").reset_index(drop=True)
         eq  = initial_balance + tl["profit"].cumsum().values
@@ -113,7 +112,7 @@ def plot_rule_mining_portfolio_comparison(
     initial_balance: float,
     title: str = "Portfolio",
 ) -> None:
-    """Plot combined portfolio equity curves: baseline vs regime 0+1."""
+
     if not strategy_trades_baseline:
         return
 
@@ -243,7 +242,7 @@ def plot_montecarlo_equity_curves(
     n_curves: int = 100,
     seed: int = 42,
 ) -> None:
-    """Debug plot: bootstrap equity curves vs the original, with a dynamic ruin band."""
+
     n_trades = len(profits)
     blocks   = _mc_overlapping_blocks(profits, block_size)
     n_blocks = len(blocks)

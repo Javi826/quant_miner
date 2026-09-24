@@ -7,11 +7,13 @@ from indicators.indicators_pool import CANDIDATE_REGISTRY, build_flat_specs, ins
 # =============================================================================
 SELECTED_INDICATORS_BY_TIMEFRAME = {
     "1H": [
-    "bb_pctb",
     "pivot_dist",
     "close_pos_in_bar",
-    "ma_dist",
-    "rvi",
+    "donchian_pos",
+    "ichimoku_price_vs_cloud",
+    "open_close_momentum",
+    "bb_pctb_slope",
+    "vortex",
     "day_slot",
     "donchian_width",
     ],
@@ -19,10 +21,12 @@ SELECTED_INDICATORS_BY_TIMEFRAME = {
     "open_close_momentum",
     "close_pos_in_bar",
     "acceleration",
-    "momentum",
+    "bb_pctb_slope",
+    "rvi",
     "day_slot",
     "inside_outside_ratio",
-    "histvol_regime",
+    "choppiness",
+    "donchian_width",
     ],
 }
 

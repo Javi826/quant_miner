@@ -20,15 +20,22 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-SEP = "=" * 124
-SIDES = ("long", "short")
+SEP        = "=" * 124
+SIDES      = ("long", "short")
+LOW_COVER  = "low_cover"
+HIGH_COVER = "high_cover"
 
-
-def validate_selection(group_n, n_symbols, phi_th):
+def validate_selection(group_n, n_symbols, phi_th, min_cover, max_cover):
     if not (0 < group_n <= n_symbols):          # the whole selection depends on it
         raise ValueError(f"GROUP_N must be in [1, {n_symbols}]: {group_n}")
     if not (0.0 <= phi_th <= 1.0):
         raise ValueError(f"PHI_TH must be in [0, 1]: {phi_th}")
+    if not (0.0 <= min_cover <= 1.0):
+        raise ValueError(f"MIN_COVER must be in [0, 1]: {min_cover}")
+    if not (0.0 <= max_cover <= 1.0):
+        raise ValueError(f"MAX_COVER must be in [0, 1]: {max_cover}")
+    if min_cover > max_cover:
+        raise ValueError(f"MIN_COVER must be <= MAX_COVER: {min_cover} > {max_cover}")
 
 
 # =============================================================================
@@ -61,7 +68,7 @@ def _median_ok(v, mask):
 
 
 def evaluate1(r, null_pct):
-    """Phase 1: T1 > floor1 per symbol."""
+
     floor1, med1, p841 = _null_stats(r["null1"], null_pct)
     pass1 = r["T1"] > floor1
     score1 = _scores(r["T1"], med1, p841)
@@ -70,7 +77,7 @@ def evaluate1(r, null_pct):
 
 
 def evaluate2(r, null_pct):
-    """Phase 2: T2 > both floors per symbol. A symbol stopped early has NaN in its nulls: it does not pass."""
+
     floor2_A, med2_A, p842_A = _null_stats(r["null2_A"], null_pct)
     floor2_B, med2_B, p842_B = _null_stats(r["null2_B"], null_pct)
     pass2 = (r["T2"] > floor2_A) & (r["T2"] > floor2_B)
@@ -80,7 +87,7 @@ def evaluate2(r, null_pct):
 
 
 def _nan_low(v):
-    """Sort key that pushes NaN to the bottom of a descending order."""
+
     return v if np.isfinite(v) else -np.inf
 
 
@@ -104,7 +111,7 @@ def select(names, res1, res2, group_n):
 # 2. REDUNDANCY
 # =============================================================================
 def candidates(best):
-    """Distinct ways in of the selection: ("alone", name) or ("pair", (a, b)) -> score."""
+
     cands = {}
     for nm, (score, _n, _m, via) in best.items():
         cands[("alone", nm) if via == "alone" else ("pair", via)] = score
@@ -133,8 +140,7 @@ def rule_rows(r, pass_sym, n):
 
 
 def _phi_on(a, b):
-    """Phi (Pearson correlation of the 1/0 signals) of two (n_sym, n) rows, over every candle of the symbols
-    where a has candles. 0 if one of them is constant there."""
+
     on = a.any(axis=1)
     a, b = a[on], b[on]
     n = a.size
@@ -142,10 +148,11 @@ def _phi_on(a, b):
     den = np.sqrt(pa * (1.0 - pa) * pb * (1.0 - pb))
     return (np.count_nonzero(a & b) / n - pa * pb) / den if den > 0.0 else 0.0
 
+def _cover(row):
+    on = row.any(axis=1)
+    return np.count_nonzero(row) / row[on].size if on.any() else 0.0
 
-def prune(cands, rows, phi_th):
-    """Greedy by score (stable on ties), per side and per kind. {(cand, side): None if kept, else (by, phi)};
-    sides where a candidate has no candles are missing."""
+def prune(cands, rows, phi_th, min_cover, max_cover):
     status = {}
     order = sorted(cands, key=lambda c: -_nan_low(cands[c]))
     for d in range(2):
@@ -156,6 +163,13 @@ def prune(cands, rows, phi_th):
                     continue
                 a = rows[c][d]
                 if not a.any():
+                    continue
+                cv = _cover(a)
+                if cv < min_cover:
+                    status[(c, d)] = (LOW_COVER, cv)
+                    continue
+                if cv > max_cover:
+                    status[(c, d)] = (HIGH_COVER, cv)
                     continue
                 r_max, by = -np.inf, None
                 for k in kept:
@@ -168,7 +182,6 @@ def prune(cands, rows, phi_th):
                     status[(c, d)] = None
                     kept.append(c)
     return status
-
 
 def survivors(cands, status):
     """Indicators in some candidate kept on some side."""
@@ -200,7 +213,7 @@ def _group(pool, name):
 
 
 def _py_list(var_name, items):
-    """Render items as a copy-pasteable Python list literal."""
+
     lines = [f"{var_name} = ["]
     for it in items:
         lines.append(f'    "{it}",')
@@ -219,8 +232,13 @@ def _role_row(pool, nm, n_pass, score, mean, via):
 
 
 def _status_text(st):
-    return "kept" if st is None else f"absorbed by {cand_name(st[0])} (phi={st[1]:.2f})"
-
+    if st is None:
+        return "kept"
+    if st[0] == LOW_COVER:
+        return f"low cover ({st[1]:.0%})"
+    if st[0] == HIGH_COVER:
+        return f"high cover ({st[1]:.0%})"
+    return f"absorbed by {cand_name(st[0])} (phi={st[1]:.2f})"
 
 ROLES = (("SIGNALS", "signal", "SYMBOL_SIGNAL"), ("FILTERS", "filter", "SYMBOL_FILTER"))
 
@@ -243,11 +261,11 @@ def _report_roles(pool, names, best, group_n):
     return lists
 
 
-def _report_redundancy(cands, rows, status, phi_th):
+def _report_redundancy(cands, rows, status, phi_th, min_cover, max_cover):
     logger.info(f"\n{SEP}\nREDUNDANCY ({len(cands)} candidates) | per side, alones vs alones and pairs vs pairs, "
                 f"ranked by score;\nabsorbed if phi > {phi_th:.2f} with a better candidate already kept, on the "
-                f"symbols where it has candles;\ncover: % of the candles of its symbols where it fires\n{SEP}")
-    logger.info(f"{'side':<7}{'candidate':<50}{'score':>7}{'n_sym':>7}{'cover':>8}  result")
+                f"symbols where it has candles;\ncover: % of the candles of its symbols where it fires "
+                f"(dropped if < {min_cover:.0%} or > {max_cover:.0%})\n{SEP}")
     order = sorted(cands, key=lambda c: -_nan_low(cands[c]))
     for d in range(2):
         for kind in ("alone", "pair"):
@@ -255,10 +273,8 @@ def _report_redundancy(cands, rows, status, phi_th):
                 if c[0] != kind or (c, d) not in status:
                     continue
                 r = rows[c][d]
-                on = r.any(axis=1)
-                cover = np.count_nonzero(r) / r[on].size
-                logger.info(f"{SIDES[d]:<7}{cand_name(c):<50}{_fmt(cands[c], 7)}{int(on.sum()):>7}"
-                            f"{cover:>8.0%}  {_status_text(status[(c, d)])}")
+                logger.info(f"{SIDES[d]:<7}{cand_name(c):<50}{_fmt(cands[c], 7)}{int(r.any(axis=1).sum()):>7}"
+                            f"{_cover(r):>8.0%}  {_status_text(status[(c, d)])}")
     if not status:
         logger.info("(empty)")
 
@@ -285,10 +301,9 @@ def _report_pruned(lists, best, status, kept):
     return out
 
 
-def report_selection(raw, pool, null_pct, group_n, phi_th):
-    """Selection by role and its redundancy check. Returns the lists, before and after the redundancy check.
-    null_pct: the floor percentile of this run (>= the one the raw results were computed with)."""
-    validate_selection(group_n, len(raw["symbols"]), phi_th)
+def report_selection(raw, pool, null_pct, group_n, phi_th, min_cover, max_cover):
+
+    validate_selection(group_n, len(raw["symbols"]), phi_th, min_cover, max_cover)
     if null_pct < raw["null_pct"]:
         raise ValueError(f"NULL_PCT={null_pct} is below the {raw['null_pct']} of these raw results")
     names, n = raw["names"], raw["n"]
@@ -300,8 +315,8 @@ def report_selection(raw, pool, null_pct, group_n, phi_th):
     cands = candidates(best)
     rows = {c: rule_rows(raw["p1"][c[1]], res1[c[1]]["pass"], n) if c[0] == "alone"
             else rule_rows(raw["p2"][c[1]], res2[c[1]]["pass"], n) for c in cands}
-    status = prune(cands, rows, phi_th)
-    _report_redundancy(cands, rows, status, phi_th)
+    status = prune(cands, rows, phi_th, min_cover, max_cover)
+    _report_redundancy(cands, rows, status, phi_th, min_cover, max_cover)
     pruned = _report_pruned(lists, best, status, survivors(cands, status))
     return {"signal": lists["signal"], "filter": lists["filter"],
             "signal_pruned": pruned["signal"], "filter_pruned": pruned["filter"]}

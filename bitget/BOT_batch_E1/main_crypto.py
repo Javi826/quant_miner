@@ -81,7 +81,7 @@ PARAM_GRID_BY_TIMEFRAME = {
 }
 
 # =============================================================================
-# PIPELINES — sequential validation filters
+# PATHS
 # =============================================================================
 STRATEGIES_E1_FOLDER = os.path.join(os.path.dirname(__file__), "strategies_E1")
 BRIEF_TRADES_FOLDER  = os.path.join(STRATEGIES_E1_FOLDER, "brief_trades")
@@ -90,8 +90,9 @@ DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_E1_FOLDER, "rules_files", "rules_
 # =============================================================================
 # RUN CONFIG — single source of truth: printed at startup AND persisted
 # =============================================================================
-run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME, "WFO_WINDOW_CONFIG": {tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES}, "EMA_ALPHA": EMA_ALPHA,
-              "WFO_NET_GAIN_TH": WFO_NET_GAIN_TH, "WFO_DD_TH": WFO_DD_TH, "WFO_R2_TH": WFO_R2_TH, "WFO_WFR_TH": WFO_WFR_TH, "CORRELATION_DD_TH": CORRELATION_DD_TH, "MULTIVERSE_PVALUE_TH": MULTIVERSE_PVALUE_TH, "JACCARD_SIMILARITY_TH": JACCARD_SIMILARITY_TH}
+run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, 
+              "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, 
+              "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME}
 # =============================================================================
 # COMBOS — each timeframe can be mined with several independent symbol baskets
 # =============================================================================

@@ -11,7 +11,6 @@ logger = logging.getLogger("BOT_batch.utils.reporting")
 # PRINT HELPERS
 # =============================================================================
 def print_rule_mining_min_by_group_train(rows: list, stage_label: str) -> None:
-    """Print IS (train) net gain, drawdown and trade duration p90 by (timeframe, side), before entering WFO."""
     if not rows:
         return
 
@@ -733,7 +732,6 @@ def print_multiverse_null_distribution(
 
     logger.debug(f"{'─' * 130}\n")
 
-
 def report_multiverse_debug(
     ohlcv_data: dict,
     synthetic_arr: dict,
@@ -752,7 +750,7 @@ def report_multiverse_debug(
     block_size: int,
     timeframe: str,
 ) -> None:
-    """Debug-only orchestrator: path generation validation, WFO cross-check, null distribution."""
+
     print_multiverse_path_validation(
         ohlcv_data, synthetic_arr, layout_info, ref_symbol, n_ref_rows, timeframe, block_size,
     )

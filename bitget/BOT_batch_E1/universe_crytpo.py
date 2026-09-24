@@ -192,6 +192,8 @@ def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timefram
 # =============================================================================
 SYMBOLS_COL_WIDTH  = 20
 REPORT_LINE_WIDTH  = 100
+HEADER_LABEL_WIDTH = 24
+HEADER_INDENT       = " " * (2 + HEADER_LABEL_WIDTH + 3)   # aligns continuation lines under the value
 REPORT_LEFT_WIDTH  = 58
 REPORT_RIGHT_WIDTH = REPORT_LINE_WIDTH - REPORT_LEFT_WIDTH
 
@@ -245,6 +247,26 @@ def _build_common_percentile_summary(
 
     return pd.DataFrame(rows).sort_values(["p_min", "symbols"]) if rows else pd.DataFrame(columns=["symbols", "p_min", "p_max"])
 
+def _header_line(label: str, value: str) -> str:
+    """One header row, label padded to HEADER_LABEL_WIDTH; value's own newlines get HEADER_INDENT."""
+    value = value.replace("\n", "\n" + HEADER_INDENT)
+    return f"  {label:<{HEADER_LABEL_WIDTH}} : {value}"
+
+
+def _format_param_grid(grid: dict) -> str:
+    """PARAM_GRID_BY_TIMEFRAME as a multi-line list for the run header (one timeframe per line)."""
+    lines = [f"'{tf}': {params}," for tf, params in grid.items()]
+    return "\n".join(lines)
+
+
+def _format_symbol_pool(pool: list, per_line: int = 5) -> str:
+    """SYMBOL_POOL as a multi-line list for the run header (max `per_line` symbols per line)."""
+    lines = []
+    for i in range(0, len(pool), per_line):
+        chunk = ", ".join(f"'{s}'" for s in pool[i:i + per_line])
+        lines.append(chunk + ",")
+    return "\n".join(lines)
+
 def _log_common_percentile_summary(summary_df: pd.DataFrame) -> None:
     logger.info(f"\n{'=' * REPORT_LINE_WIDTH}")
     logger.info("  COMMON PERCENTILE RANGE ── PASSING IN ALL TIMEFRAMES")
@@ -267,12 +289,13 @@ if __name__ == "__main__":
     logger.info(f"\n{'─' * 100}")
     logger.info("  FF BOOTSTRAP — SYMBOL COMBINATION EXPERIMENT")
     logger.info(f"{'─' * 100}")
-    logger.info(f"  DATASET            : {DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET])}")
-    logger.info(f"  SYMBOL_POOL        : {SYMBOL_POOL}")
-    logger.info(f"  COMBO_SIZES        : {COMBO_SIZES}")
-    logger.info(f"  PARAM_GRID_BY_TIMEFRAME : {PARAM_GRID_BY_TIMEFRAME}")
-    logger.info(f"  N_SAMPLES_PER_SIZE : {N_SAMPLES_PER_SIZE}")
-    logger.info(f"  RANK_PERCENTILES   : {RANK_PERCENTILES}")
+    logger.info(_header_line("DATASET", f"{DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET])}"))
+    logger.info(_header_line("BACKTEST", str(settings.BACKTEST_MODE)))
+    logger.info(_header_line("SYMBOL_POOL", _format_symbol_pool(SYMBOL_POOL)))
+    logger.info(_header_line("COMBO_SIZES", str(COMBO_SIZES)))
+    logger.info(_header_line("PARAM_GRID_BY_TIMEFRAME", _format_param_grid(PARAM_GRID_BY_TIMEFRAME)))
+    logger.info(_header_line("N_SAMPLES_PER_SIZE", str(N_SAMPLES_PER_SIZE)))
+    logger.info(_header_line("RANK_PERCENTILES", str(RANK_PERCENTILES)))
     logger.info(f"{'─' * 100}\n")
 
     ohlcv_data_by_timeframe = build_universe(

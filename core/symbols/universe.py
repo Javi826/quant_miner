@@ -1,3 +1,4 @@
+# core/symbols/universe.py
 """
 Fecha de referencia: 2026-09-04
 N  | Símbolos incluidos                                                                         | Mínimo común
@@ -9,8 +10,6 @@ N  | Símbolos incluidos                                                        
 8  | BNBUSDT, BTCUSDT, ETHUSDT, XRPUSDT, BCHUSDT, LINKUSDT, ADAUSDT, UNIUSDT                    | 2020-09-22
 10 | BNBUSDT, BTCUSDT, ETHUSDT, XRPUSDT, BCHUSDT, LINKUSDT, ADAUSDT, UNIUSDT, XLMUSDT, DOGEUSDT | 2021-05-21
 """
-
-# core/symbols/universe.py
 import os
 import sys
 import logging

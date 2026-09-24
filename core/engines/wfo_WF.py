@@ -20,7 +20,7 @@ MIN_COOLDOWN_BARS = 100
 # =============================================================================
 
 def _decimals_for_values(values) -> int:
-    """Max number of decimal places present in a list of numeric param values."""
+
     max_decimals = 0
     for v in values:
         s = f"{float(v):.10f}".rstrip("0")
@@ -29,7 +29,7 @@ def _decimals_for_values(values) -> int:
     return max_decimals
 
 def _snap_to_grid(value: float, grid_values: list):
-    """Snap a continuous EMA value to the closest valid value in its param grid."""
+
     return min(grid_values, key=lambda g: abs(g - value))
 
 
@@ -71,7 +71,7 @@ def _find_window_indices(
     return t0, t1, test0, test1
 
 def _evaluate_with_shm(params: dict, shm_metadata: dict, evaluate_fn, train_start_ts) -> tuple:
-    """Worker: reconstruct base_arrays from shared memory and evaluate."""
+
     base_arrays, shm_handles = arrays_from_shared_memory(shm_metadata)
     try:
         return evaluate_fn(params, base_arrays, train_start_ts)
@@ -109,7 +109,6 @@ def walk_forward_optimization(
     best_params_list   = []
     best_criteria_list = []
     window_idx         = 1
-    #last_test_end_ref  = length_train_set + length_test
 
     train_start_dates  = []
     train_end_dates    = []
@@ -130,9 +129,7 @@ def walk_forward_optimization(
     ref_sym    = max(ohlcv_arr.keys(), key=lambda k: len(ohlcv_arr[k]['ts']))
     ref_ts     = ohlcv_arr[ref_sym]['ts']
     max_length = len(ref_ts)
-
-    # Align windows to the present: the last test ends at the last candle.
-    # Leftover (< length_test candles) at the start is discarded (used only as warmup).
+    
     offset            = 0 if anchored else (max_length - length_train_set) % length_test
     start             = offset
     end               = offset + length_train_set
@@ -386,7 +383,7 @@ def walk_forward_optimization(
     valid_train_criteria  = [c for c in train_criteria_list if np.isfinite(c)]
     train_net_gain_is_avg = float(np.mean(valid_train_criteria)) if valid_train_criteria else 0.0
 
-    valid_test_criteria  = [c for c in best_criteria_list if np.isfinite(c)]
+    valid_test_criteria   = [c for c in best_criteria_list if np.isfinite(c)]
     test_net_gain_oos_avg = float(np.mean(valid_test_criteria)) if valid_test_criteria else 0.0
 
     return final_params, df_results, wfo_train_trades, wfo_test_trades, window_idx, train_net_gain_is_avg, test_net_gain_oos_avg

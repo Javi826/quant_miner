@@ -17,38 +17,6 @@ def _to_trading_days(days: np.ndarray) -> np.ndarray:
 
     return np.busday_offset(days, 0, roll="preceding", weekmask=settings.WEEKMASK)
 
-
-def _trading_days_between(start_day, end_day):
-
-    return np.busday_count(start_day, end_day, weekmask=settings.WEEKMASK)
-
-
-_TRADING_DAY_TABLE_PAD = 366   # extra calendar days cached on each side of the requested range
-_TRADING_DAY_TABLES: dict = {}  # weekmask key -> (first calendar day, trading day per calendar day, business-day index)
-
-
-def _trading_day_table(first_day: int, last_day: int) -> tuple:
-    # Calendar day (days since epoch) -> trading day (_to_trading_days) and its business-day index.
-    # Reads settings.WEEKMASK on every call; one table per weekmask, widened only when a date
-    # falls outside the cached range.
-    weekmask = settings.WEEKMASK
-    key   = weekmask if isinstance(weekmask, str) else tuple(np.asarray(weekmask).ravel().tolist())
-    table = _TRADING_DAY_TABLES.get(key)
-    if table is not None:
-        table_first = table[0]
-        table_last  = table_first + table[1].shape[0] - 1
-        if table_first <= first_day and last_day <= table_last:
-            return table
-        first_day, last_day = min(first_day, table_first), max(last_day, table_last)
-    first_day -= _TRADING_DAY_TABLE_PAD
-    last_day  += _TRADING_DAY_TABLE_PAD
-    calendar_days = np.arange(first_day, last_day + 1, dtype=np.int64).astype("datetime64[D]")
-    trading_days  = _to_trading_days(calendar_days)
-    trading_index = _trading_days_between(trading_days[0], trading_days)
-    table = (first_day, trading_days, trading_index)
-    _TRADING_DAY_TABLES[key] = table
-    return table
-
 # =============================================================================
 # R_SQUARED
 # =============================================================================
@@ -79,13 +47,8 @@ def _r_squared_linear_trend(y: np.ndarray) -> float:
     return float(1.0 - ss_res / ss_tot)
 
 def sharpe_from_daily_values(daily_values: np.ndarray) -> float:
-    # Same reductions as ndarray.mean()/ndarray.std() (bit-identical), without their Python overhead.
-    n          = daily_values.size
-    daily_mean = np.add.reduce(daily_values, axis=None) / n
-    dev        = daily_values - daily_mean
-    np.multiply(dev, dev, out=dev)
-    daily_std  = np.sqrt(np.add.reduce(dev, axis=None) / n)
-    sharpe = (round(float(daily_mean / daily_std * np.sqrt(settings.DAYS_PER_YEAR)), 3)
+    daily_std = daily_values.std()
+    sharpe = (round(float(daily_values.mean() / daily_std * np.sqrt(settings.DAYS_PER_YEAR)), 3)
               if daily_std > 0 else np.nan)
     if sharpe is not None and np.isfinite(sharpe) and abs(sharpe) > SHARPE_ABS_CAP:
         sharpe = np.nan
@@ -104,25 +67,14 @@ def skew_kurtosis_from_daily_values(daily_values: np.ndarray) -> tuple:
 
 def daily_values_from_sell_days(sell_days_ns: np.ndarray, profits: np.ndarray) -> tuple:
 
-    sell_days = sell_days_ns.astype("datetime64[D]").view(np.int64)
-    first_day = int(sell_days.min())
-    last_day  = int(sell_days.max())
-    if first_day == np.iinfo(np.int64).min:
-        raise ValueError("Cannot compute a business day count with a NaT (not-a-time) date")
-    table_first, trading_days, trading_index = _trading_day_table(first_day, last_day)
-    start_pos    = first_day - table_first
-    day_offset   = trading_index.take(sell_days - table_first)
-    day_offset  -= trading_index[start_pos]
-    daily_values = np.bincount(day_offset, weights=profits)
-    return daily_values, daily_values.shape[0], trading_days[start_pos]
-
-def equity_from_daily_values(daily_values: np.ndarray, capital: float) -> tuple:
-
-    eq       = capital + np.cumsum(daily_values)
-    cm       = np.maximum.accumulate(eq)
-    max_dd   = ((eq - cm) / cm * 100).min()
-    net_gain = (eq[-1] - capital) / capital * 100
-    return eq, max_dd, net_gain
+    sell_days  = sell_days_ns.astype("datetime64[D]")
+    sell_days  = _to_trading_days(sell_days)
+    start_day  = sell_days.min()
+    end_day    = sell_days.max()
+    n_days     = int(np.busday_count(start_day, end_day, weekmask=settings.WEEKMASK)) + 1
+    day_offset = np.busday_count(start_day, sell_days, weekmask=settings.WEEKMASK)
+    daily_values = np.bincount(day_offset, weights=profits, minlength=n_days)
+    return daily_values, n_days, start_day
 
 # =============================================================================
 # COMPUTE METRICS
@@ -147,7 +99,10 @@ def compute_metrics(
         tl["sell_time"].values, profits,
     )
     date_index    = pd.bdate_range(start=start_day, periods=n_days, freq=CustomBusinessDay(weekmask=settings.WEEKMASK))
-    eq, max_dd, net_gain = equity_from_daily_values(daily_values, capital)
+    eq            = capital + np.cumsum(daily_values)
+    cm            = np.maximum.accumulate(eq)
+    max_dd        = ((eq - cm) / cm * 100).min()
+    net_gain      = (eq[-1] - capital) / capital * 100
     profit_abs    = round(float(eq[-1] - capital), 2)
     calmar        = round(float(net_gain / abs(max_dd)), 3) if max_dd < 0 else np.nan
     if include_weekly:

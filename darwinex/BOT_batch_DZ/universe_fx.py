@@ -61,8 +61,8 @@ SYMBOL_POOL = [
 ]
 
 TIMEFRAMES   = ["1H","4H"]
-TIMEFRAMES   = ["1H"]
-COMBO_SIZES  = [2]
+TIMEFRAMES   = ["4H"]
+COMBO_SIZES  = [1,2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {
@@ -83,8 +83,11 @@ PARAM_GRID_BY_TIMEFRAME = {
     },
 }
 
-RANK_PERCENTILES    = [95,96,97,98,99,99.9]
+RANK_PERCENTILES    = [95,98,99,99.9]
 PCT_BELOW_THRESHOLD = 90  
+
+RANK_WEIGHTS = {95: 4, 98: 3, 99: 2, 99.9: 1}
+RANK_TOP_N   = 30
 
 # =============================================================================
 # COMBO GENERATION
@@ -185,6 +188,8 @@ def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timefram
 # =============================================================================
 SYMBOLS_COL_WIDTH  = 20
 REPORT_LINE_WIDTH  = 100
+HEADER_LABEL_WIDTH = 24
+HEADER_INDENT       = " " * (2 + HEADER_LABEL_WIDTH + 3)   # aligns continuation lines under the value
 REPORT_LEFT_WIDTH  = 58
 REPORT_RIGHT_WIDTH = REPORT_LINE_WIDTH - REPORT_LEFT_WIDTH
 
@@ -196,24 +201,43 @@ def _log_threshold_report(subset: pd.DataFrame, rank_percentiles: list, threshol
         passing     = subset[subset[col] > threshold].sort_values(col, ascending=False)
         header_left = f"  Pct {p:<6} ── {len(passing)}/{len(subset)} combo(s) pass"
 
-        logger.info(f"\n{'-' * REPORT_LINE_WIDTH}")
-        logger.info(f"{header_left:<{REPORT_LEFT_WIDTH}}{header_right:>{REPORT_RIGHT_WIDTH}}")
-        logger.info(f"{'-' * REPORT_LINE_WIDTH}")
+        logger.debug(f"\n{'-' * REPORT_LINE_WIDTH}")
+        logger.debug(f"{header_left:<{REPORT_LEFT_WIDTH}}{header_right:>{REPORT_RIGHT_WIDTH}}")
+        logger.debug(f"{'-' * REPORT_LINE_WIDTH}")
 
         if passing.empty:
-            logger.info("  No combo(s) passed this threshold.")
+            logger.debug("  No combo(s) passed this threshold.")
             continue
 
         table = passing[["symbols", "n_symbols", col]].copy()
         table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
         table[col] = table[col].round(2)
-        logger.info(table.to_string(index=False))
+        logger.debug(table.to_string(index=False))
 
         # --- NUEVO: la misma lista de "symbols", pero como literal Python ---
-        _log_symbols_as_python_list(passing)
+        _log_symbols_as_python_list(passing, level=logging.DEBUG)
+        
+def _header_line(label: str, value: str) -> str:
+    """One header row, label padded to HEADER_LABEL_WIDTH; value's own newlines get HEADER_INDENT."""
+    value = value.replace("\n", "\n" + HEADER_INDENT)
+    return f"  {label:<{HEADER_LABEL_WIDTH}} : {value}"
 
 
-def _log_symbols_as_python_list(passing: pd.DataFrame) -> None:
+def _format_param_grid(grid: dict) -> str:
+    """PARAM_GRID_BY_TIMEFRAME as a multi-line list for the run header (one timeframe per line)."""
+    lines = [f"'{tf}': {params}," for tf, params in grid.items()]
+    return "\n".join(lines)
+
+
+def _format_symbol_pool(pool: list, per_line: int = 5) -> str:
+    """SYMBOL_POOL as a multi-line list for the run header (max `per_line` symbols per line)."""
+    lines = []
+    for i in range(0, len(pool), per_line):
+        chunk = ", ".join(f"'{s}'" for s in pool[i:i + per_line])
+        lines.append(chunk + ",")
+    return "\n".join(lines)
+
+def _log_symbols_as_python_list(passing: pd.DataFrame, level: int = logging.INFO) -> None:
     """Print the passing 'symbols' column as a Python list-of-lists literal, ready to paste."""
     lines = []
     for symbols_str in passing["symbols"].str.strip():
@@ -221,48 +245,48 @@ def _log_symbols_as_python_list(passing: pd.DataFrame) -> None:
         formatted = ", ".join(f'"{s}"' for s in syms)
         lines.append(f"    [{formatted}],")
 
-    logger.info("[\n" + "\n".join(lines) + "\n]")
+    logger.log(level, "[\n" + "\n".join(lines) + "\n]")
 
 # =============================================================================
-# CROSS-TIMEFRAME SUMMARY — combos passing the threshold in every timeframe,
+# RANKING ── continuous score per combo
 # =============================================================================
-def _build_common_percentile_summary(
-    results_df: pd.DataFrame,
-    timeframes: list,
+def _build_ranking(
+    subset: pd.DataFrame,
     rank_percentiles: list,
     threshold: float,
+    weights: dict,
 ) -> pd.DataFrame:
-    rows = []
-    for symbols, group in results_df.groupby("symbols"):
-        if set(group["timeframe"]) != set(timeframes):
-            continue
+    """One timeframe: n_pass and weighted %<Real score per combo, sorted best first."""
+    cols = [f"pct_below_{p}" for p in rank_percentiles]
+    w    = np.array([weights.get(p, 1.0) for p in rank_percentiles], dtype=float)
+    w   /= w.sum()
 
-        common_passing = None
-        for _, row in group.iterrows():
-            passing_here = {p for p in rank_percentiles if row[f"pct_below_{p}"] > threshold}
-            common_passing = passing_here if common_passing is None else common_passing & passing_here
+    df = subset.copy()
+    df["score"]  = df[cols].to_numpy() @ w
+    df["n_pass"] = (df[cols] > threshold).sum(axis=1)
 
-        if common_passing:
-            rows.append({
-                "symbols": symbols,
-                "p_min":   min(common_passing),
-                "p_max":   max(common_passing),
-            })
+    return df.sort_values(["n_pass", "score"], ascending=False).reset_index(drop=True)
 
-    return pd.DataFrame(rows).sort_values(["p_min", "symbols"]) if rows else pd.DataFrame(columns=["symbols", "p_min", "p_max"])
 
-def _log_common_percentile_summary(summary_df: pd.DataFrame) -> None:
+def _log_ranking(ranking: pd.DataFrame, timeframe: str, rank_percentiles: list, top_n: int) -> None:
+    """Top-N combos by (n_pass, score); combos passing no percentile are left out."""
+    candidates = ranking[ranking["n_pass"] > 0]
+    shortlist  = candidates.head(top_n)
+
     logger.info(f"\n{'=' * REPORT_LINE_WIDTH}")
-    logger.info("  COMMON PERCENTILE RANGE ── PASSING IN ALL TIMEFRAMES")
+    logger.info(f"  RANKING {timeframe.upper()} ── TOP {len(shortlist)} of {len(candidates)} candidate(s)")
     logger.info(f"{'=' * REPORT_LINE_WIDTH}")
 
-    if summary_df.empty:
-        logger.info("  No combo(s) passed the threshold in every timeframe.")
+    if shortlist.empty:
+        logger.info("  No combo(s) to rank.")
         return
 
-    table = summary_df.copy()
+    rename = {f"pct_below_{p}": f"p{p}" for p in rank_percentiles}
+    table  = shortlist[["symbols", "n_symbols", "n_pass", "score", *rename]].rename(columns=rename)
     table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
-    logger.info(table.to_string(index=False))
+    logger.info(table.round(2).to_string(index=False))
+
+    _log_symbols_as_python_list(shortlist)
 
 # =============================================================================
 # MAIN
@@ -273,13 +297,13 @@ if __name__ == "__main__":
     logger.info(f"\n{'─' * 100}")
     logger.info("  FF BOOTSTRAP — SYMBOL COMBINATION EXPERIMENT")
     logger.info(f"{'─' * 100}")
-    logger.info(f"  DATASET            : {DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET])}")
-    logger.info(f"  BACKTEST           : {settings.BACKTEST_MODE}")
-    logger.info(f"  SYMBOL_POOL        : {SYMBOL_POOL}")
-    logger.info(f"  COMBO_SIZES        : {COMBO_SIZES}")
-    logger.info(f"  PARAM_GRID_BY_TIMEFRAME : {PARAM_GRID_BY_TIMEFRAME}")
-    logger.info(f"  N_SAMPLES_PER_SIZE : {N_SAMPLES_PER_SIZE}")
-    logger.info(f"  RANK_PERCENTILES   : {RANK_PERCENTILES}")
+    logger.info(_header_line("DATASET", f"{DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET])}"))
+    logger.info(_header_line("BACKTEST", str(settings.BACKTEST_MODE)))
+    logger.info(_header_line("SYMBOL_POOL", _format_symbol_pool(SYMBOL_POOL)))
+    logger.info(_header_line("COMBO_SIZES", str(COMBO_SIZES)))
+    logger.info(_header_line("PARAM_GRID_BY_TIMEFRAME", _format_param_grid(PARAM_GRID_BY_TIMEFRAME)))
+    logger.info(_header_line("N_SAMPLES_PER_SIZE", str(N_SAMPLES_PER_SIZE)))
+    logger.info(_header_line("RANK_PERCENTILES", str(RANK_PERCENTILES)))
     logger.info(f"{'─' * 100}\n")
 
     ohlcv_data_by_timeframe = build_universe(
@@ -317,13 +341,15 @@ if __name__ == "__main__":
 
     for timeframe in TIMEFRAMES:
         subset = results_df[results_df["timeframe"] == timeframe]
-        logger.info(f"\n{'=' * REPORT_LINE_WIDTH}")
-        logger.info(f"  TIMEFRAME: {timeframe.upper()}")
-        logger.info(f"{'=' * REPORT_LINE_WIDTH}")
+        logger.debug(f"\n{'=' * REPORT_LINE_WIDTH}")
+        logger.debug(f"  TIMEFRAME: {timeframe.upper()}")
+        logger.debug(f"{'=' * REPORT_LINE_WIDTH}")
         _log_threshold_report(subset, RANK_PERCENTILES, PCT_BELOW_THRESHOLD)
 
-    summary_df = _build_common_percentile_summary(results_df, TIMEFRAMES, RANK_PERCENTILES, PCT_BELOW_THRESHOLD)
-    _log_common_percentile_summary(summary_df)
+    for timeframe in TIMEFRAMES:
+        subset  = results_df[results_df["timeframe"] == timeframe]
+        ranking = _build_ranking(subset, RANK_PERCENTILES, PCT_BELOW_THRESHOLD, RANK_WEIGHTS)
+        _log_ranking(ranking, timeframe, RANK_PERCENTILES, RANK_TOP_N)
 
     elapsed = int(time.time() - start)
     logger.info(f"\n🏁 TOTAL — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")

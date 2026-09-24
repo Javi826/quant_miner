@@ -47,7 +47,7 @@ logger = logging.getLogger("BOT_batch.pipeline.wfo")
 # =============================================================================
 # WFO APPROVAL THRESHOLDS
 # =============================================================================
-WFO_NET_GAIN_TH = 1
+WFO_NET_GAIN_TH = 20
 WFO_DD_TH       = 1
 WFO_R2_TH       = 0.1
 WFO_WFR_TH      = 0.1
@@ -65,10 +65,10 @@ WFO_WINDOW_CONFIG = {
     "1Dutc":  {"train_months": 12, "test_months": 3},
 }
 
-ANCHORED    = False
-METRIC_MODE = "NET_GAIN_PCT"   # "NET_GAIN_PCT" or "CALMAR"
-EMA_ALPHA   = 0.3
-
+ANCHORED             = False
+METRIC_MODE          = "NET_GAIN_PCT"   # "NET_GAIN_PCT" or "CALMAR"
+EMA_ALPHA            = 0.3
+WFO_BLOCK_SELL_AFTER = True
 # =============================================================================
 # WFO PARALLELIZATION
 # =============================================================================
@@ -78,7 +78,6 @@ INNER_N_JOBS = 1   # parallelizes the param grid search within each rule's windo
 # =============================================================================
 # BLOCKED SELL_AFTER: taken from the rule's StepM best column, TP/SL stay free
 # =============================================================================
-WFO_BLOCK_SELL_AFTER = True
 
 def _combo_lookup(param_grid: dict) -> dict:
     keys = list(param_grid.keys())
