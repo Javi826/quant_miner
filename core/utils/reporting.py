@@ -10,7 +10,7 @@ logger = logging.getLogger("BOT_batch.utils.reporting")
 # =============================================================================
 # PRINT HELPERS
 # =============================================================================
-def print_rule_mining_min_by_group_train(rows: list, stage_label: str) -> None:
+def print_rule_mining_min_by_group_is(rows: list, stage_label: str, candidate_rows: list) -> None:
     if not rows:
         return
 
@@ -19,28 +19,38 @@ def print_rule_mining_min_by_group_train(rows: list, stage_label: str) -> None:
         key = (r.get("timeframe", ""), r.get("side", ""))
         groups.setdefault(key, []).append(r)
 
-    n_total = len(rows)
+    candidate_groups = {}
+    for r in candidate_rows:
+        key = (r.get("timeframe", ""), r.get("side", ""))
+        candidate_groups.setdefault(key, []).append(r)
+
+    n_total_passed    = len(rows)
+    n_total_candidate = len(candidate_rows)
+    total_pass_pct    = n_total_passed / n_total_candidate if n_total_candidate else 0.0
 
     logger.info(f"\n{'─' * 142}")
-    logger.info(f"  RULE MINING RESULTS (TRAIN) — {stage_label} ── {n_total} candidates")
+    logger.info(f"  RULE MINING RESULTS (IS) — {stage_label} ── {n_total_passed} / {n_total_candidate} passed ({total_pass_pct:.1%}) ✅")
     logger.info(f"{'─' * 142}")
     logger.info(
-        f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}"
-        f"{'NET_GAIN_TR% min/max':<22}{'MAX_DD_TR% min/max':<20}"
+        f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}{'PASS%':<9}"
+        f"{'NET_GAIN_IS% min/max':<22}{'MAX_DD_IS% min/max':<20}"
         f"{'DAYS/CANDLES p90':<20}"
     )
     logger.info(f"{'─' * 142}")
     for (tf, side), group_rows in sorted(groups.items()):
-        net_gain_values = [r.get("net_gain_train", 0.0) for r in group_rows]
-        max_dd_values    = [r.get("max_dd_train", 0.0) for r in group_rows]
-        duration_values  = [r.get("duration_train", 0.0) for r in group_rows]
+        n_group_candidates = len(candidate_groups.get((tf, side), []))
+        group_pass_pct     = len(group_rows) / n_group_candidates if n_group_candidates else 0.0
+
+        net_gain_values = [r.get("net_gain_is", 0.0) for r in group_rows]
+        max_dd_values    = [r.get("max_dd_is", 0.0) for r in group_rows]
+        duration_values  = [r.get("duration_is", 0.0) for r in group_rows]
         bars_per_day = get_bars_per_day(tf) * settings.DAYS_PER_YEAR / 365.0
 
         p90_duration = np.percentile(duration_values, 90)
         p90_candles  = p90_duration * bars_per_day
 
         logger.info(
-            f"{tf:<12}{side:<8}{len(group_rows):<6}"
+            f"{tf:<12}{side:<8}{len(group_rows):<6}{f'{group_pass_pct:.1%}':<9}"
             f"{f'{min(net_gain_values):.1f} / {max(net_gain_values):.1f}':<22}"
             f"{f'{min(max_dd_values):.1f} / {max(max_dd_values):.1f}':<20}"
             f"{f'{p90_duration:.2f}d / {p90_candles:.1f}c':<20}"
@@ -265,7 +275,8 @@ def _short_id(rule_id: str) -> str:
 def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_label: str, survivor_ids: list = None) -> None:
     if not logger.isEnabledFor(logging.DEBUG):
         return
-    rows = [r for r in all_raw_results if r["rule_id"] in set(candidate_ids)]
+    candidate_set = set(candidate_ids)
+    rows = [r for r in all_raw_results if r["rule_id"] in candidate_set]
     rows.sort(key=lambda r: int(r["rule_id"].split("_")[0]))
 
     show_status  = survivor_ids is not None
@@ -278,7 +289,7 @@ def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_
     count_str = f"{len(survivor_ids)} / {len(candidate_ids)} passed" if show_status else f"{len(rows)} / {len(candidate_ids)} tested"
 
     log_fn(f"\n{'─' * 180}")
-    log_fn(f"  RULE MINING RESULTS — {stage_label} ── {count_str}")
+    log_fn(f"  RULE MINING RESULTS (OOS) — {stage_label} ── {count_str}")
     log_fn(f"{'─' * 180}")
 
     status_header = f"  {'STATUS':<8}" if show_status else ""
@@ -303,7 +314,8 @@ def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_
 
 
 def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, stage_label: str, candidate_ids: list) -> None:
-    rows = [r for r in all_raw_results if r["rule_id"] in set(highlight_ids)]
+    highlight_set = set(highlight_ids)
+    rows = [r for r in all_raw_results if r["rule_id"] in highlight_set]
     if not rows:
         return
     threshold_metrics = ["net_gain", "max_dd", "r_squared", "stepm_p", "wfr"]
@@ -318,7 +330,8 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
             for m in threshold_metrics
         }
 
-    candidate_rows = [r for r in all_raw_results if r["rule_id"] in set(candidate_ids)]
+    candidate_set  = set(candidate_ids)
+    candidate_rows = [r for r in all_raw_results if r["rule_id"] in candidate_set]
     candidate_groups = {}
     for r in candidate_rows:
         key = (r["timeframe"], r["side"])
@@ -329,7 +342,7 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
     total_pass_pct    = n_total_passed / n_total_candidate if n_total_candidate else 0.0
 
     logger.info(f"\n{'─' * 142}")
-    logger.info(f"  RULE MINING RESULTS — {stage_label} ── {n_total_passed} / {n_total_candidate} passed ({total_pass_pct:.1%}) ✅")
+    logger.info(f"  RULE MINING RESULTS (OOS) — {stage_label} ── {n_total_passed} / {n_total_candidate} passed ({total_pass_pct:.1%}) ✅")
     logger.info(f"{'─' * 142}")
     logger.info(
         f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}{'PASS%':<9}"
@@ -397,7 +410,7 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
 # DSR — debug-only reporting (moved from pipeline/dsr.py)
 # =============================================================================
 
-def _dsr_train_period_str(r: dict) -> str:
+def _dsr_is_period_str(r: dict) -> str:
     combo_daily_profit = r.get("combo_daily_profit") or {}
     best_combo_id       = r.get("best_combo_id")
     if best_combo_id is None or best_combo_id not in combo_daily_profit:
@@ -414,7 +427,7 @@ def _dsr_train_period_str(r: dict) -> str:
     end_dt   = end.astype("datetime64[D]").astype(object)
     return f"{start_dt:%Y-%m-%d}..{end_dt:%Y-%m-%d}"
 
-def print_dsr_train_metrics(raw_by_id: dict, dsr_by_id: dict, sr_by_id: dict, candidate_ids: set, passed_ids: set, sr0: float) -> None:
+def print_dsr_is_metrics(raw_by_id: dict, dsr_by_id: dict, sr_by_id: dict, candidate_ids: set, passed_ids: set, sr0: float) -> None:
 
     rows = [raw_by_id[rid] for rid in candidate_ids if rid in raw_by_id]
     rows.sort(key=lambda r: dsr_by_id.get(r["rule_id"], 0.0), reverse=True)
@@ -425,15 +438,15 @@ def print_dsr_train_metrics(raw_by_id: dict, dsr_by_id: dict, sr_by_id: dict, ca
     id_width     = max((len(_short_id(r["rule_id"])) for r in rows), default=8) + 2
     label_width  = max((len(r.get("label", "")) for r in rows), default=8) + 2
     combo_width  = max((len(r.get("best_combo_id", "") or "") for r in rows), default=8) + 2
-    period_width = max((len(_dsr_train_period_str(r)) for r in rows), default=8) + 2
+    period_width = max((len(_dsr_is_period_str(r)) for r in rows), default=8) + 2
 
     logger.debug(f"\n{'─' * 200}")
-    logger.debug(f"  DSR TRAIN METRICS (full-period grid search) ── SR0={sr0:.4f} ── {len(rows)} candidates")
+    logger.debug(f"  DSR IS METRICS (full-period grid search) ── SR0={sr0:.4f} ── {len(rows)} candidates")
     logger.debug(f"{'─' * 200}")
     logger.debug(
         f"{'ID':<{id_width}}{'SIDE':<6}{'NET_GAIN_TR':<13}{'MAX_DD_TR':<11}{'SR_ANN':<10}{'SR_UNANN':<11}"
         f"{'SKEW_TR':<10}{'KURT_TR':<10}{'N_DAYS_TR':<11}{'DSR':<9}{'BEST_COMBO':<{combo_width}}"
-        f"{'TRAIN_PERIOD':<{period_width}}{'RULE':<{label_width}}{'STATUS':<8}"
+        f"{'IS_PERIOD':<{period_width}}{'RULE':<{label_width}}{'STATUS':<8}"
     )
     logger.debug(f"{'─' * 200}")
 
@@ -442,12 +455,12 @@ def print_dsr_train_metrics(raw_by_id: dict, dsr_by_id: dict, sr_by_id: dict, ca
         status  = "✅" if rule_id in passed_ids else "❌"
         logger.debug(
             f"{_short_id(rule_id):<{id_width}}{r.get('side', ''):<6}"
-            f"{r.get('net_gain_train', float('nan')):<13.1f}{r.get('max_dd_train', float('nan')):<11.1f}"
-            f"{r.get('sharpe_train', float('nan')):<10.4f}{sr_by_id.get(rule_id, float('nan')):<11.4f}"
-            f"{r.get('skew_train', float('nan')):<10.4f}{r.get('kurtosis_train', float('nan')):<10.4f}"
-            f"{r.get('n_days_train', 0):<11}{dsr_by_id.get(rule_id, 0.0):<9.4f}"
+            f"{r.get('net_gain_is', float('nan')):<13.1f}{r.get('max_dd_is', float('nan')):<11.1f}"
+            f"{r.get('sharpe_is', float('nan')):<10.4f}{sr_by_id.get(rule_id, float('nan')):<11.4f}"
+            f"{r.get('skew_is', float('nan')):<10.4f}{r.get('kurtosis_is', float('nan')):<10.4f}"
+            f"{r.get('n_days_is', 0):<11}{dsr_by_id.get(rule_id, 0.0):<9.4f}"
             f"{(r.get('best_combo_id', '') or 'n/a'):<{combo_width}}"
-            f"{_dsr_train_period_str(r):<{period_width}}"
+            f"{_dsr_is_period_str(r):<{period_width}}"
             f"{r.get('label', ''):<{label_width}}{status:<8}"
         )
     logger.debug(f"{'─' * 200}\n")

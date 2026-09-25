@@ -23,7 +23,7 @@ logging.getLogger("BOT_batch.pipeline.dsr").setLevel(DSR_LOG_LEVEL)
 logging.getLogger("BOT_batch.pipeline.backtest_runner").setLevel(DSR_LOG_LEVEL)
 
 STEPM_LOG_LEVEL = logging.INFO
-logging.getLogger("BOT_batch.pipeline.stepM").setLevel(STEPM_LOG_LEVEL)
+logging.getLogger("BOT_batch.pipeline.stepM_is").setLevel(STEPM_LOG_LEVEL)
 #------------------------------------------------------------------------------
 REPORTING_LOG_LEVEL = logging.INFO
 logging.getLogger("BOT_batch.utils.reporting").setLevel(REPORTING_LOG_LEVEL)
@@ -39,7 +39,7 @@ from utils.ohlcv_utils import prepare_ohlcv_arrays
 from setup.config_backtest import ORDER_AMOUNT
 from pipeline import backtest_runner as backtest_module
 from dsr import pipe_dsr
-from pipeline.stepM import pipe_stepm, STEPM_ALPHA, WHITE_PVALUE_TH, WHITE_N_BOOTSTRAP, WHITE_BLOCK_SIZE
+from pipeline.stepM_is import pipe_stepm, STEPM_ALPHA, WHITE_PVALUE_TH, WHITE_N_BOOTSTRAP, WHITE_BLOCK_SIZE
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 # =============================================================================
 # UNIVERSE / SEARCH SPACE CONFIGURATION — mirror main_COMP.py

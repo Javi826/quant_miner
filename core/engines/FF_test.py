@@ -1,124 +1,60 @@
 # core/engines/FF_test.py
-import os
 import time
 import logging
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-from pipeline.stepM import compute_deviation_matrix, WHITE_N_BOOTSTRAP
-from pipeline.stepM import WHITE_BLOCK_SIZE, RANDOM_SEED, CROSS_SECTIONAL_PERCENTILES
-from pipeline.stepM import _to_host
+from pipeline.stepM_is import compute_bootstrap_null, WHITE_N_BOOTSTRAP
+from pipeline.stepM_is import WHITE_BLOCK_SIZE, RANDOM_SEED, CROSS_SECTIONAL_PERCENTILES
 logger = logging.getLogger("BOT_batch.pipeline.FF_test")
 
 # =============================================================================
 # CONFIG — every knob that affects the null is inherited from stepM.py so the
 # =============================================================================
-FF_N_BOOTSTRAP = WHITE_N_BOOTSTRAP
-FF_BLOCK_SIZE  = WHITE_BLOCK_SIZE
-FF_RANDOM_SEED = RANDOM_SEED
-FF_PERCENTILES = CROSS_SECTIONAL_PERCENTILES
-
-# =============================================================================
-# MEMORY-CHUNKING CONFIG — percentile phase processes replicas in batches
-# =============================================================================
-BOOTSTRAP_CHUNK_SIZE = 500
-
-# =============================================================================
-# PERCENTILE THREADING CONFIG — replica rows are reduced independently, so the
-# =============================================================================
-FF_PERCENTILE_N_THREADS   = 0
-FF_PERCENTILE_MAX_THREADS = 32
+FF_N_BOOTSTRAP    = WHITE_N_BOOTSTRAP
+FF_BLOCK_SIZE     = WHITE_BLOCK_SIZE
+FF_RANDOM_SEED    = RANDOM_SEED
+FF_MIN_PERCENTILE = 90      # lowest percentile of the table: the top-M kept per replica is ~(100 - it)% of the columns
+FF_PERCENTILES    = CROSS_SECTIONAL_PERCENTILES[CROSS_SECTIONAL_PERCENTILES >= FF_MIN_PERCENTILE]
 
 
 def _format_thousands(value: int) -> str:
     return format(value, ",").replace(",", ".")
 
 
+def _prefix(timeframe: str) -> str:
+    return f"{'FF BOOTSTRAP':<15}{timeframe}"
+
 # =============================================================================
-# THREADED ROW-WISE PERCENTILES — one cross-section per bootstrap replica.
+# PERCENTILES FROM THE TOP-M: stepM v3 keeps, per replica, only the M largest
+# studentized deviations (descending). A percentile p of the full cross-section
+# only needs the order statistics above it, so it is read exactly from the top-M
+# as long as M covers (100 - p)% of the columns. Same linear interpolation as
+# np.percentile on the full row.
 # =============================================================================
-def _resolve_percentile_threads(n_rows: int, n_threads: int = FF_PERCENTILE_N_THREADS) -> int:
-    if n_threads <= 0:
-        n_threads = min(FF_PERCENTILE_MAX_THREADS, os.cpu_count() or 1)
-    return max(1, min(n_threads, n_rows))
+def _percentile_ranks(pct: float, n_cols: int) -> tuple:
+    """Descending top-M ranks of the two order statistics np.percentile interpolates, and the weight."""
+    idx          = (pct / 100.0) * (n_cols - 1.0)
+    idx_below    = int(np.floor(idx))
+    weight_above = idx - idx_below
+    rank_bottom  = n_cols - 1 - idx_below          # ascending order statistic -> descending top-M rank
+    rank_top     = max(rank_bottom - 1, 0)         # pct=100: weight_above is 0, the upper operand is unused
+    return rank_bottom, rank_top, weight_above
 
 
-def _percentile_row_range(
-    deviations_batch: np.ndarray,
-    percentiles: np.ndarray,
-    out: np.ndarray,
-    row_start: int,
-    row_end: int,
-) -> int:
-
-    n_empty = 0
-    for r in range(row_start, row_end):
-        row    = deviations_batch[r]
-        finite = row[np.isfinite(row)]
-        if finite.size == 0:
-            out[r] = np.nan
-            n_empty += 1
-        else:
-            out[r] = np.percentile(finite, percentiles, overwrite_input=True)
-    return n_empty
+def _topm_size_for(percentiles: np.ndarray, n_cols: int) -> int:
+    rank_bottom, _, _ = _percentile_ranks(float(np.min(percentiles)), n_cols)
+    return rank_bottom + 1
 
 
-def _percentiles_rows_threaded(
-    deviations_batch: np.ndarray,
-    percentiles: np.ndarray,
-    n_threads: int = FF_PERCENTILE_N_THREADS,
-) -> np.ndarray:
-
-    n_rows = deviations_batch.shape[0]
-    n_pct  = percentiles.shape[0]
-
-    out_dtype = np.percentile(np.zeros(2, dtype=deviations_batch.dtype), percentiles).dtype
-    out       = np.empty((n_rows, n_pct), dtype=out_dtype)
-
-    n_threads = _resolve_percentile_threads(n_rows, n_threads)
-    if n_threads == 1:
-        n_empty = _percentile_row_range(deviations_batch, percentiles, out, 0, n_rows)
-    else:
-        bounds = np.linspace(0, n_rows, n_threads + 1).astype(np.int64)
-        with ThreadPoolExecutor(max_workers=n_threads) as pool:
-            futures = [
-                pool.submit(_percentile_row_range, deviations_batch, percentiles, out, int(lo), int(hi))
-                for lo, hi in zip(bounds[:-1], bounds[1:]) if hi > lo
-            ]
-            n_empty = sum(future.result() for future in futures)
-
-    if n_empty:
-        logger.warning(f"FF BOOTSTRAP ── {n_empty} all-non-finite replica row(s) encountered")
-
+def _null_percentiles(topm_vals: np.ndarray, n_cols: int, percentiles: np.ndarray) -> np.ndarray:
+    """(n_bootstrap, n_pct): np.percentile(full_row, percentiles) for every replica, from the top-M."""
+    out = np.empty((topm_vals.shape[0], percentiles.shape[0]), dtype=np.float64)
+    for i, pct in enumerate(percentiles):
+        rank_bottom, rank_top, weight_above = _percentile_ranks(float(pct), n_cols)
+        a    = topm_vals[:, rank_bottom].astype(np.float64)
+        b    = topm_vals[:, rank_top].astype(np.float64)
+        diff = b - a
+        out[:, i] = np.where(weight_above >= 0.5, b - diff * (1.0 - weight_above), a + diff * weight_above)
     return out
-
-
-def _cross_sectional_percentiles(
-    studentized_deviations: np.ndarray,
-    real_percentiles: np.ndarray,
-    percentiles: np.ndarray,
-    chunk_size: int,
-) -> tuple:
-
-    n_bootstrap = studentized_deviations.shape[0]
-
-    percentile_sum   = np.zeros(percentiles.shape[0], dtype=np.float64)
-    below_actual_cnt = np.zeros(percentiles.shape[0], dtype=np.int64)
-    n_valid_runs     = 0
-
-    for start in range(0, n_bootstrap, chunk_size):
-        end   = min(start + chunk_size, n_bootstrap)
-        batch = _to_host(studentized_deviations[start:end])   # stepM GPU v2: CuPy chunk -> NumPy
-
-        batch_percentiles = _percentiles_rows_threaded(batch, percentiles)  # (n_runs, n_pct)
-
-        percentile_sum   += batch_percentiles.sum(axis=0)
-        below_actual_cnt += (batch_percentiles < real_percentiles[None, :]).sum(axis=0)
-        n_valid_runs     += end - start
-
-    avg_sim_percentiles = percentile_sum / n_valid_runs
-    pct_below_actual    = 100.0 * below_actual_cnt / n_valid_runs
-    return avg_sim_percentiles, pct_below_actual
-
 
 # =============================================================================
 # REPORT
@@ -173,89 +109,77 @@ def pipe_FF_test(
     col_names: np.ndarray = None,
     n_bootstrap: int = FF_N_BOOTSTRAP,
     percentiles: np.ndarray = FF_PERCENTILES,
-    chunk_size: int = BOOTSTRAP_CHUNK_SIZE,
     seed: int = FF_RANDOM_SEED,
     block_size: int = FF_BLOCK_SIZE,
     enabled: bool = True,
     timeframe: str = "",
-    n_sample_replicas: int = 0,
-    bootstrap_result: dict = None,
 ) -> dict:
-    """Cross-sectional percentile diagnostic on StepM's own null.
+    """Cross-sectional percentile diagnostic on StepM's own null (same seed, block and replicas).
 
-    WARNING: `compute_deviation_matrix` compacts degenerate columns in place,
+    WARNING: `compute_bootstrap_null` compacts non-finite Sharpe columns in place,
     so `matrix_arr` may be reordered and truncated by this call. Pass a copy if
-    the caller needs the original layout afterwards, or reuse a single
-    `bootstrap_result` across both this diagnostic and `pipe_stepm`.
+    the caller needs the original layout afterwards.
 
-    Pass `bootstrap_result` to skip the resampling entirely and reuse the dict
-    returned by `compute_deviation_matrix`. That is the cheapest path when the
-    StepM pipeline runs on the same matrix in the same session, and it makes
-    the two views bit-identical rather than merely equivalent.
+    Cost: the top-M kept per replica covers (100 - min(percentiles))% of the columns,
+    so lowering the grid below FF_MIN_PERCENTILE grows RAM and VRAM accordingly.
     """
     if not enabled:
         logger.info(f"FF BOOTSTRAP ── {timeframe} ── disabled, skipping")
         return None
 
-    if bootstrap_result is None:
-        if matrix_arr is None or matrix_arr.shape[1] < 2:
-            logger.warning(f"FF BOOTSTRAP ── {timeframe} ── insufficient columns — skipping")
-            return None
-        if matrix_arr.shape[0] < 2:
-            raise ValueError(
-                f"FF BOOTSTRAP ── {timeframe} ── n_obs ({matrix_arr.shape[0]}) must be >= 2 "
-                f"to compute a sample variance."
-            )
-        if block_size > matrix_arr.shape[0]:
-            raise ValueError(
-                f"FF BOOTSTRAP ── {timeframe} ── block_size ({block_size}) exceeds "
-                f"n_obs ({matrix_arr.shape[0]}); cannot form a single block."
-            )
+    if matrix_arr is None or matrix_arr.shape[1] < 2:
+        logger.warning(f"FF BOOTSTRAP ── {timeframe} ── insufficient columns — skipping")
+        return None
+    if matrix_arr.shape[0] < 2:
+        raise ValueError(
+            f"FF BOOTSTRAP ── {timeframe} ── n_obs ({matrix_arr.shape[0]}) must be >= 2 "
+            f"to compute a sample variance."
+        )
+    if block_size > matrix_arr.shape[0]:
+        raise ValueError(
+            f"FF BOOTSTRAP ── {timeframe} ── block_size ({block_size}) exceeds "
+            f"n_obs ({matrix_arr.shape[0]}); cannot form a single block."
+        )
 
-    start = time.time()
+    start       = time.time()
+    percentiles = np.asarray(percentiles, dtype=np.float64)
 
     # ---- Phase A: the null. Delegated wholesale to stepM ------------------
-    if bootstrap_result is None:
-        n_cols_built = matrix_arr.shape[1]
-        if col_names is None:
-            col_names = np.arange(n_cols_built)
+    n_cols_built = matrix_arr.shape[1]
+    if col_names is None:
+        col_names = np.arange(n_cols_built)
 
-        bootstrap_result = compute_deviation_matrix(
-            matrix_arr, list(col_names), n_bootstrap=n_bootstrap,
-            block_size=block_size, seed=seed, progress_label=timeframe,
-        )
-    else:
-        logger.info(f"FF BOOTSTRAP ── {timeframe} ── reusing precomputed StepM null")
-        n_cols_built = int(bootstrap_result["kept_columns"].shape[0])
-
-    studentized_deviations = bootstrap_result["studentized_deviations"]
-    z_stat                 = bootstrap_result["z_stat"]
-    real_sharpe            = bootstrap_result["real_sharpe"]
-    sigma_hat              = bootstrap_result["sigma_hat"]
-    kept_columns            = bootstrap_result["kept_columns"]
-
-    n_kept     = int(kept_columns.shape[0])
-    n_dropped  = n_cols_built - n_kept
-    n_replicas = int(studentized_deviations.shape[0])
-
-    logger.info(
-        f"FF BOOTSTRAP    {timeframe}: {_format_thousands(n_dropped)} degenerate "
-        f"columns dropped ── {_format_thousands(n_kept)} columns remain"
+    null = compute_bootstrap_null(
+        matrix_arr, list(col_names), n_bootstrap=n_bootstrap, block_size=block_size, seed=seed,
+        topm_size=_topm_size_for(percentiles, n_cols_built),
+        progress_label=f"FF {timeframe}", desc=f"{'FF BST':<15} {timeframe}",
     )
 
-    # ---- Sample of raw null replicas, kept only for plotting purposes ------
-    sim_z_sample = _to_host(studentized_deviations[:n_sample_replicas]).copy() if n_sample_replicas > 0 else None
+    n_kept     = null.n_kept
+    n_dropped  = n_cols_built - n_kept
+    n_replicas = null.n_bootstrap
+
+    logger.info(
+        f"{_prefix(timeframe)}: {_format_thousands(n_dropped)} degenerate "
+        f"columns dropped ── {_format_thousands(n_kept)} columns remain"
+    )
+    if n_kept < 2:
+        logger.warning(f"{_prefix(timeframe)}: fewer than 2 columns with a valid bootstrap sigma ── skipping")
+        return None
+
+    null.ensure_topm(_topm_size_for(percentiles, n_kept))   # no-op: the first pass already holds enough ranks
 
     # ---- Phase B: real cross-section --------------------------------------
+    z_stat           = null.z_stat
     real_percentiles = np.percentile(z_stat, percentiles)
 
     sorted_z_asc    = np.sort(z_stat)
     n_ge_percentile = sorted_z_asc.shape[0] - np.searchsorted(sorted_z_asc, real_percentiles, side="left")
 
-    # ---- Phase C: null cross-sections, replica-chunked ---------------------
-    sim_percentiles, pct_below_actual = _cross_sectional_percentiles(
-        studentized_deviations, real_percentiles, percentiles, chunk_size,
-    )
+    # ---- Phase C: null cross-sections, read from the top-M ------------------
+    null_pct         = _null_percentiles(null.topm_vals, n_kept, percentiles)   # (n_replicas, n_pct)
+    sim_percentiles  = null_pct.mean(axis=0)
+    pct_below_actual = 100.0 * (null_pct < real_percentiles[None, :]).mean(axis=0)
 
     _log_ff_report(
         percentiles, real_percentiles, sim_percentiles, pct_below_actual, n_ge_percentile,
@@ -268,16 +192,14 @@ def pipe_FF_test(
         "sim_percentiles":  sim_percentiles,
         "pct_below_actual": pct_below_actual,
         "real_z_stat":      z_stat,
-        "real_sharpe":      real_sharpe,
-        "sigma_hat":        sigma_hat,
-        "sim_z_sample":     sim_z_sample,
-        "kept_columns":     kept_columns,
+        "real_sharpe":      null.real_sharpe,
+        "sigma_hat":        null.sigma_hat,
+        "kept_columns":     null.kept_columns,
         "n_cols_built":     n_cols_built,
         "n_dropped":        n_dropped,
         "n_bootstrap":      n_replicas,
         "block_size":       block_size,
         "timeframe":        timeframe,
-        "bootstrap_result": bootstrap_result,
     }
 
     elapsed = int(time.time() - start)

@@ -76,7 +76,7 @@ def _build_full_period_ohlcv(ohlcv_arr: dict, signal_fn: callable, condition_ban
     return ohlcv_arrays
 
 
-def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sharpe: float, duration_train: float) -> dict:
+def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sharpe: float, duration_is: float) -> dict:
     _, max_dd, net_gain = equity_from_daily_values(daily_values, INITIAL_BALANCE)
 
     if n_days > 2:
@@ -85,25 +85,25 @@ def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sha
         skew_val, kurt_val = np.nan, np.nan
 
     return {
-        "sharpe_train":   sharpe,
-        "skew_train":     skew_val,
-        "kurtosis_train": kurt_val,
-        "n_days_train":   n_days,
-        "net_gain_train": round(float(net_gain), 2),
-        "max_dd_train":   round(float(max_dd), 2),
-        "duration_train": round(float(duration_train), 2),
+        "sharpe_is":   sharpe,
+        "skew_is":     skew_val,
+        "kurtosis_is": kurt_val,
+        "n_days_is":   n_days,
+        "net_gain_is": round(float(net_gain), 2),
+        "max_dd_is":   round(float(max_dd), 2),
+        "duration_is": round(float(duration_is), 2),
     }
 
 
 def _empty_winner_metrics() -> dict:
     return {
-        "sharpe_train":   np.nan,
-        "skew_train":     np.nan,
-        "kurtosis_train": np.nan,
-        "n_days_train":   0,
-        "net_gain_train": np.nan,
-        "max_dd_train":   np.nan,
-        "duration_train": np.nan,
+        "sharpe_is":   np.nan,
+        "skew_is":     np.nan,
+        "kurtosis_is": np.nan,
+        "n_days_is":   0,
+        "net_gain_is": np.nan,
+        "max_dd_is":   np.nan,
+        "duration_is": np.nan,
     }
 
 # =============================================================================
@@ -213,9 +213,9 @@ def _run_full_period_for_rule(
         winner_metrics = _empty_winner_metrics()
     else:
         best_daily_values, best_n_days, best_sharpe_metric, best_buy, best_sell = best
-        best_duration_train = float(np.mean(best_sell - best_buy)) / 1e9 / 86400.0
+        best_duration_is = float(np.mean(best_sell - best_buy)) / 1e9 / 86400.0
         winner_metrics = _winner_metrics_from_daily_values(
-            best_daily_values, best_n_days, best_sharpe_metric, best_duration_train,
+            best_daily_values, best_n_days, best_sharpe_metric, best_duration_is,
         )
 
     return rule_id, {**winner_metrics, "best_combo_id": combo_ids[best_idx]}

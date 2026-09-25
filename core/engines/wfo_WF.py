@@ -78,7 +78,23 @@ def _evaluate_with_shm(params: dict, shm_metadata: dict, evaluate_fn, train_star
     finally:
         for shm in shm_handles:
             shm.close()
-          
+# =============================================================================
+# WINDOW ARRAY SLICING
+# =============================================================================
+def slice_window_arrays(arr_dict: dict, start: int, end: int) -> dict:
+
+    return {
+        "ts":        arr_dict["ts"][start:end],
+        "open":      arr_dict["open"][start:end],
+        "high":      arr_dict["high"][start:end],
+        "low":       arr_dict["low"][start:end],
+        "close":     arr_dict["close"][start:end],
+        "volume":    arr_dict.get("volume", arr_dict["close"] * 0)[start:end],
+        "low_time":  arr_dict["low_time"][start:end],
+        "high_time": arr_dict["high_time"][start:end],
+    }
+
+        
 # =============================================================================
 # WALK FORWARD OPTIMIZATION
 # =============================================================================
@@ -196,34 +212,15 @@ def walk_forward_optimization(
         # -----------------------------------------------------------
         base_arrays = {}
         for sym, (t0_sym, t1_sym) in train_indices.items():
-            arr_dict   = ohlcv_arr[sym]
-            warm_start = max(0, t0_sym - WARMUP_BARS)
-            base_arrays[sym] = {
-                'ts':        arr_dict['ts'][warm_start:t1_sym],
-                'open':      arr_dict['open'][warm_start:t1_sym],
-                'high':      arr_dict['high'][warm_start:t1_sym],
-                'low':       arr_dict['low'][warm_start:t1_sym],
-                'close':     arr_dict['close'][warm_start:t1_sym],
-                'volume':    arr_dict.get('volume', arr_dict['close'] * 0)[warm_start:t1_sym],
-                'low_time':  arr_dict['low_time'][warm_start:t1_sym],
-                'high_time': arr_dict['high_time'][warm_start:t1_sym],
-            }
+            warm_start       = max(0, t0_sym - WARMUP_BARS)
+            base_arrays[sym] = slice_window_arrays(ohlcv_arr[sym], warm_start, t1_sym)
 
         base_arrays_test = {}
         for sym, (t0_sym, t1_sym) in test_indices.items():
-            arr_dict   = ohlcv_arr[sym]
-            warm_start = max(0, t0_sym - WARMUP_BARS)
-            cool_end   = min(len(arr_dict['ts']), t1_sym + COOLDOWN_BARS + 1)
-            base_arrays_test[sym] = {
-                'ts':        arr_dict['ts'][warm_start:cool_end],
-                'open':      arr_dict['open'][warm_start:cool_end],
-                'high':      arr_dict['high'][warm_start:cool_end],
-                'low':       arr_dict['low'][warm_start:cool_end],
-                'close':     arr_dict['close'][warm_start:cool_end],
-                'volume':    arr_dict.get('volume', arr_dict['close'] * 0)[warm_start:cool_end],
-                'low_time':  arr_dict['low_time'][warm_start:cool_end],
-                'high_time': arr_dict['high_time'][warm_start:cool_end],
-            }
+            arr_dict              = ohlcv_arr[sym]
+            warm_start            = max(0, t0_sym - WARMUP_BARS)
+            cool_end              = min(len(arr_dict["ts"]), t1_sym + COOLDOWN_BARS + 1)
+            base_arrays_test[sym] = slice_window_arrays(arr_dict, warm_start, cool_end)
         # -----------------------------------------------------------
         # Parallel evaluation via shared memory
         # -----------------------------------------------------------
@@ -381,9 +378,9 @@ def walk_forward_optimization(
     wfo_test_trades  = pd.concat(test_trades_list,  ignore_index=True) if test_trades_list  else pd.DataFrame()
 
     valid_train_criteria  = [c for c in train_criteria_list if np.isfinite(c)]
-    train_net_gain_is_avg = float(np.mean(valid_train_criteria)) if valid_train_criteria else 0.0
+    train_net_gain_avg    = float(np.mean(valid_train_criteria)) if valid_train_criteria else 0.0
 
     valid_test_criteria   = [c for c in best_criteria_list if np.isfinite(c)]
-    test_net_gain_oos_avg = float(np.mean(valid_test_criteria)) if valid_test_criteria else 0.0
+    test_net_gain_avg     = float(np.mean(valid_test_criteria)) if valid_test_criteria else 0.0
 
-    return final_params, df_results, wfo_train_trades, wfo_test_trades, window_idx, train_net_gain_is_avg, test_net_gain_oos_avg
+    return final_params, df_results, wfo_train_trades, wfo_test_trades, window_idx, train_net_gain_avg, test_net_gain_avg

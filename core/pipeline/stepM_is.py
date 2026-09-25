@@ -1,4 +1,4 @@
-# core/pipeline/stepM.py  (GPU v2)
+# core/pipeline/stepM.py  (GPU v3 — streaming top-M)
 import logging
 import os
 import sys
@@ -12,15 +12,15 @@ from utils.paralelization import compact_columns_inplace
 from utils.reporting import print_stepm_matrix_debug, print_stepm_real_variance_filter_debug, print_stepm_block_starts_debug
 from utils.reporting import print_stepm_bootstrap_replicas_debug, print_stepm_se_filter_debug, print_stepm_studentization_debug
 from utils.reporting import print_stepm_pvalue_quantile_equivalence_debug, print_stepm_monotonicity_debug, print_stepm_brc_equivalence_debug
-logger = logging.getLogger("BOT_batch.pipeline.stepM")
+logger = logging.getLogger("BOT_batch.pipeline.stepM_is")
 
 # =============================================================================
 # STATISTICAL TEST CONFIG + STEPDOWN / K-FWE CONFIG -ROmano Wolf
 # =============================================================================
 STEPM_ALPHA         = 0.10      # significance level used inside the Romano-Wolf stepdown search
-FDP_GAMMA           = 0.10 
+FDP_GAMMA           = 0.10
 # =============================================================================
-# STATISTICAL TEST 
+# STATISTICAL TEST
 # =============================================================================
 FDP_K_MAX            = 8192           # upper bound of the geometric k sweep: 1, 2, 4, ... FDP_K_MAX
 WHITE_PVALUE_TH      = STEPM_ALPHA
@@ -35,9 +35,28 @@ CROSS_SECTIONAL_PERCENTILES = np.array([50, 90, 95, 96, 97, 98, 99, 99.9, 99.99,
 COLUMN_CHUNK_SIZE    = 5000     # columns processed per chunk for chunked reductions/compaction over dense matrices
 PARTITION_ROW_CHUNK  = 50       # bootstrap replicas processed per np.partition call in the stepdown
 BOOTSTRAP_CHUNK_SIZE = 8192     # columns processed per GEMM call in the bootstrap moment computation
-FDP_TOPM_BUILD_MB    = 1024     # total scratch budget (MB) across threads for the top-M build
 RANDOM_SEED          = 42
-FDP_TOPM_WORKERS     = max(1, min(os.cpu_count() or 1, 16))  # threads for the one-pass top-M build (numpy releases the GIL)
+FDP_TOPM_WORKERS     = max(1, min(os.cpu_count() or 1, 16))  # threads for the suffix k-th queries on the top-M index
+# =============================================================================
+# GPU CONFIG (CuPy, streaming top-M) — VRAM is bounded by n_bootstrap x (M + staging), not by N
+# =============================================================================
+GPU_TOPM_STAGING_COLS    = 65536    # candidate keys staged per row between two top-M merges (>= BOOTSTRAP_CHUNK_SIZE)
+GPU_TOPM_BUDGET_MB       = 2048     # VRAM budget for the row-blocked sort that merges the top-M
+GPU_SORT_BYTES_PER_ELEM  = 32       # sort workspace estimate per uint64 key
+GPU_CHUNK_BYTES_PER_ELEM = 96       # peak temporaries per (replica, column) element of one bootstrap chunk
+GPU_VRAM_MARGIN_MB       = 512      # VRAM kept free on top of the estimated streaming footprint
+
+if os.environ.get("CUPY_TF32", "0") not in ("", "0"):
+    raise RuntimeError("CUPY_TF32 is set: GEMMs would run in TF32 (lower precision). Unset it.")
+if GPU_TOPM_STAGING_COLS < BOOTSTRAP_CHUNK_SIZE:
+    raise ValueError("GPU_TOPM_STAGING_COLS must be >= BOOTSTRAP_CHUNK_SIZE.")
+
+_SIGN32  = np.uint32(0x80000000)
+_MAG32   = np.uint32(0x7FFFFFFF)
+_SHIFT32 = np.uint64(32)
+_LOW32   = np.uint64(0xFFFFFFFF)
+_ZERO64  = np.uint64(0)
+
 # =============================================================================
 # CHUNKED REDUCTIONS — column-wise mean/std without materializing a full-size
 # =============================================================================
@@ -140,11 +159,9 @@ def _bootstrap_moments_chunk(
 
     return deviations_chunk, sigma_chunk
 
+# Hansen (2005) SPA_c: recenter clearly-losing columns (z_stat below a slowly-growing
+# threshold) to 0 instead of their own negative mean, before computing the bootstrap null
 def apply_spa_recentering(studentized_deviations: np.ndarray, z_stat: np.ndarray, n_obs: int) -> tuple:
-    """Hansen (2005) SPA_c: recenter clearly-losing columns (z_stat below a
-    slowly-growing threshold) to 0 instead of their own negative mean, before
-    computing the bootstrap null. 
-    """
     threshold = -np.sqrt(2.0 * np.log(np.log(max(n_obs, 3))))
     bad_mask  = z_stat < threshold
     if bad_mask.any():
@@ -175,26 +192,9 @@ def _sharpe_per_column_parallel(matrix_arr: np.ndarray, ex) -> np.ndarray:
         sharpe = (means / stds) * np.sqrt(settings.DAYS_PER_YEAR)
     return np.where(stds > 0, sharpe, -np.inf)
 
-
 # =============================================================================
-# GPU V2 (CuPy, no CPU fallback). The whole bootstrap runs on the GPU and the
+# GPU HELPERS
 # =============================================================================
-if os.environ.get("CUPY_TF32", "0") not in ("", "0"):
-    raise RuntimeError("CUPY_TF32 is set: GEMMs would run in TF32 (lower precision). Unset it.")
-
-GPU_VRAM_MARGIN_MB = 1536       # VRAM kept free on top of the resident deviation matrix (chunk temporaries)
-GPU_TOPM_BUDGET_MB = 2048       # VRAM budget for the per-row sort that builds the FDP top-M index
-GPU_PCT_BUDGET_MB  = 1024       # VRAM budget for the per-row percentiles of the cut diagnostic
-
-
-def _is_gpu(a) -> bool:
-    return isinstance(a, cp.ndarray)
-
-
-def _to_host(a):
-    return cp.asnumpy(a) if _is_gpu(a) else a
-
-
 def _free_gpu_pools() -> None:
     cp.get_default_memory_pool().free_all_blocks()
     cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -213,351 +213,234 @@ def _sharpe_dtype_and_scale():
     return dt, dt.type(sqrt_days)
 
 
-def _gpu_bootstrap_chunk(w_gpu, x, real_blk, n_obs, fuse_student, spa_threshold, sharpe_dt, sharpe_scale):
-    """Same expressions as _bootstrap_moments_chunk + studentization + SPA, on the GPU."""
-    total_sum   = w_gpu @ x
-    total_sumsq = w_gpu @ (x * x)
-    means = total_sum / n_obs
-    var   = (total_sumsq - n_obs * means * means) / (n_obs - 1)
-    var   = cp.maximum(var, 0.0)
-    stds  = cp.sqrt(var)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        boot_sharpe = (means / stds).astype(sharpe_dt, copy=False) * sharpe_scale
-        boot_sharpe = cp.where(stds > 0, boot_sharpe, -cp.inf)
-        deviations  = boot_sharpe - real_blk[None, :]
-        sigma       = deviations.std(axis=0, ddof=1)
-        dev32 = deviations.astype(cp.float32)                  # same rounding as the float32 store on CPU
-        if fuse_student:
-            # Columns with sigma <= 0 become garbage here; they are dropped by the valid_se compaction.
-            dev32 = (dev32.astype(cp.float64) / sigma[None, :]).astype(cp.float32)
-            if spa_threshold is not None:
-                z   = real_blk / sigma
-                bad = z < spa_threshold
-                dev32 = cp.where(bad[None, :], (dev32.astype(cp.float64) + z[None, :]).astype(cp.float32), dev32)
-    return dev32, sigma
-
-
 def _copy_into_pinned(ex, dst: np.ndarray, src: np.ndarray, n_parts: int) -> None:
     rows = dst.shape[0]
     step = max(1, -(-rows // n_parts))
     list(ex.map(lambda r: np.copyto(dst[r:r + step], src[r:r + step]), range(0, rows, step)))
 
 
-def _gpu_studentize_columns(dev, sigma_g, block: int = BOOTSTRAP_CHUNK_SIZE) -> None:
-    """DEBUG path only: same op as `deviations /= sigma_hat`, by column blocks."""
-    n = dev.shape[1]
-    for a in range(0, n, block):
-        b = min(a + block, n)
-        dev[:, a:b] = (dev[:, a:b].astype(cp.float64) / sigma_g[None, a:b]).astype(cp.float32)
+def _gpu_bootstrap_deviations(w_gpu, x, real_blk, n_obs, sharpe_dt, sharpe_scale) -> tuple:
+    # same expressions as _bootstrap_moments_chunk, float32 GEMMs
+    total_sum   = w_gpu @ x
+    total_sumsq = w_gpu @ (x * x)
+    means = total_sum / n_obs
+    var   = (total_sumsq - n_obs * means * means) / (n_obs - 1)
+    var   = cp.maximum(var, 0.0)
+    stds  = cp.sqrt(var)
+    boot_sharpe = (means / stds).astype(sharpe_dt, copy=False) * sharpe_scale
+    boot_sharpe = cp.where(stds > 0, boot_sharpe, -cp.inf)
+    deviations  = boot_sharpe - real_blk[None, :]
+    sigma       = deviations.std(axis=0, ddof=1)
+    return deviations.astype(cp.float32), sigma
 
 
-def _gpu_spa_columns(dev, z_g, spa_threshold: float, block: int = BOOTSTRAP_CHUNK_SIZE) -> None:
-    """DEBUG path only: same op as apply_spa_recentering, by column blocks."""
-    n = dev.shape[1]
-    for a in range(0, n, block):
-        b = min(a + block, n)
-        z = z_g[a:b]
-        blk = dev[:, a:b]
-        dev[:, a:b] = cp.where((z < spa_threshold)[None, :], (blk.astype(cp.float64) + z[None, :]).astype(cp.float32), blk)
+def _gpu_studentize(dev32, sigma):
+    # columns with sigma <= 0 become garbage here; they are excluded from the top-M by the valid mask
+    return (dev32.astype(cp.float64) / sigma[None, :]).astype(cp.float32)
 
 
-def _gpu_compact_columns(dev, keep_mask: np.ndarray):
-    """Move kept columns to the front, in place (by row chunks), and return the [:, :n_keep] view."""
-    keep_idx = cp.asarray(np.flatnonzero(keep_mask))
-    n_keep = int(keep_idx.size)
-    rows = _rows_for_budget(n_keep, 4, 512, dev.shape[0])
-    for r0 in range(0, dev.shape[0], rows):
-        r1 = min(r0 + rows, dev.shape[0])
-        dev[r0:r1, :n_keep] = dev[r0:r1][:, keep_idx]
-    return dev[:, :n_keep]
+def _gpu_spa_recenter(dev32, real_blk, sigma, threshold: float):
+    # same op as apply_spa_recentering, on already studentized float32 deviations
+    z   = real_blk / sigma
+    bad = z < threshold
+    return cp.where(bad[None, :], (dev32.astype(cp.float64) + z[None, :]).astype(cp.float32), dev32)
 
 
-def _gpu_topm(dev, order: np.ndarray, m: int):
-    """Per row, the top-m values (desc) and their z-sorted positions: same keys and same
-    selection as _SuffixKthIndex on CPU, but with a full GPU sort of each row's packed keys."""
-    n_rows, n_cols = dev.shape
-    m = int(min(m, n_cols))
-    inv_order = np.empty(n_cols, dtype=np.uint64)
-    inv_order[order] = np.arange(n_cols, dtype=np.uint64)
-    inv_g = cp.asarray(inv_order)
-    shift, sign, low32 = np.uint64(32), np.uint32(0x80000000), np.uint64(0xFFFFFFFF)
-    vals = np.empty((n_rows, m), dtype=np.float32)
-    pos  = np.empty((n_rows, m), dtype=np.int32)
-    rows = _rows_for_budget(n_cols, 8 * 4, GPU_TOPM_BUDGET_MB, n_rows)
-    for r0 in range(0, n_rows, rows):
-        r1  = min(r0 + rows, n_rows)
-        u   = cp.ascontiguousarray(dev[r0:r1]).view(cp.uint32)
-        key = cp.where(u >= sign, ~u, u | sign).astype(cp.uint64)
-        del u
-        key <<= shift
-        key |= inv_g[None, :]
-        key = cp.sort(key, axis=1)[:, n_cols - m:][:, ::-1]      # top-m keys, descending
-        hi  = (key >> shift).astype(cp.uint32)
-        vals[r0:r1] = cp.asnumpy(cp.ascontiguousarray(cp.where(hi >= sign, hi & ~sign, ~hi)).view(cp.float32))
-        pos[r0:r1]  = cp.asnumpy((key & low32).astype(cp.int32))
-        del key, hi
-    del inv_g
-    cp.get_default_memory_pool().free_all_blocks()
-    return vals, pos
+def _pack_keys(values, valid, col_offset: int):
+    # order-preserving float32 -> uint32 key in the high word, finite-space column index in the low word;
+    # invalid columns get key 0, strictly below any real key
+    u   = cp.ascontiguousarray(values).view(cp.uint32)
+    key = cp.where(u >= _SIGN32, ~u, u | _SIGN32).astype(cp.uint64)
+    key <<= _SHIFT32
+    key |= cp.arange(col_offset, col_offset + values.shape[1], dtype=cp.uint64)[None, :]
+    return cp.where(valid[None, :], key, _ZERO64)
 
 
-def compute_deviation_matrix(
-    matrix_arr: np.ndarray,
-    col_names: list,
-    n_bootstrap: int = WHITE_N_BOOTSTRAP,
-    block_size: int = WHITE_BLOCK_SIZE,
-    seed: int = RANDOM_SEED,
-    progress_label: str = "",
-    workers: int = None,
-) -> dict:
-    """GPU V2: 'studentized_deviations' is returned as a cupy array resident on the GPU."""
+def _unpack_keys(keys) -> tuple:
+    hi   = (keys >> _SHIFT32).astype(cp.uint32)
+    vals = cp.ascontiguousarray(cp.where(hi >= _SIGN32, hi & _MAG32, ~hi)).view(cp.float32)
+    cols = (keys & _LOW32).astype(cp.int64)
+    return vals, cols
 
-    workers = STEPM_WORKERS if workers is None else max(1, int(workers))
-    debug   = logger.isEnabledFor(logging.DEBUG)
-    # DEBUG prints the non-studentized replicas, so keep the original (unfused) order there
-    fuse_student = not debug
 
-    n_cols_built  = matrix_arr.shape[1]
-    col_names_arr = np.asarray(col_names)
-
-    with ThreadPoolExecutor(workers) as ex:
-        real_sharpe = _sharpe_per_column_parallel(matrix_arr, ex)
-
-        if debug:
-            day_offsets = np.arange(matrix_arr.shape[0])
-            print_stepm_matrix_debug(col_names, matrix_arr, matrix_arr.shape[0], day_offsets)
-
-        finite_mask = np.isfinite(real_sharpe)
-        if finite_mask.all():
-            kept_columns = col_names_arr
-        else:
-            n_keep       = compact_columns_inplace(finite_mask, matrix_arr, real_sharpe, col_names_arr, chunk_size=COLUMN_CHUNK_SIZE)
-            matrix_arr   = matrix_arr[:, :n_keep]
-            real_sharpe  = real_sharpe[:n_keep]
-            kept_columns = col_names_arr[:n_keep]
-
-        if debug:
-            print_stepm_real_variance_filter_debug(progress_label, n_cols_built, matrix_arr.shape[1])
-
-        n_obs  = matrix_arr.shape[0]
-        n_cols = matrix_arr.shape[1]
-
-        rng = np.random.default_rng(seed)
-        starts_full, starts_last, len_last, n_blocks_needed = _generate_block_starts(
-            n_obs, block_size, n_bootstrap, rng,
+def _check_streaming_vram(n_bootstrap: int, n_obs: int, n_cols: int, m: int, g: int, label: str) -> None:
+    chunk_w = min(BOOTSTRAP_CHUNK_SIZE, max(n_cols, 1))
+    need_b = (
+        n_bootstrap * n_obs * 4                                  # bootstrap weight matrix
+        + n_obs * BOOTSTRAP_CHUNK_SIZE * 4                       # device buffer of one input chunk
+        + n_bootstrap * chunk_w * GPU_CHUNK_BYTES_PER_ELEM       # bootstrap chunk temporaries
+        + n_bootstrap * (g + m) * 8                              # staging + running top-M keys
+        + n_cols * 8 * 2                                         # real Sharpe + sigma
+        + GPU_VRAM_MARGIN_MB * 2**20
+    )
+    _free_gpu_pools()
+    free_b = cp.cuda.runtime.memGetInfo()[0]
+    if need_b > free_b:
+        raise MemoryError(
+            f"STEPM GPU {label}: needs ~{need_b / 2**30:.1f} GB free VRAM "
+            f"(top-M {n_bootstrap}x{m} + staging {g} + chunk workspace), only {free_b / 2**30:.1f} GB free"
         )
 
-        if debug:
-            print_stepm_block_starts_debug(progress_label, n_blocks_needed, block_size, len_last, n_obs, n_cols)
+# =============================================================================
+# STREAMING TOP-M — exact per-row top-M of packed keys, fed chunk by chunk
+# =============================================================================
+class _TopMAccumulator:
+    # Row layout: [staging (g) | running top-m (m)]. An ascending in-place sort leaves the running
+    # top-m in the tail; only keys above the current m-th largest (thr) are staged. Keys are unique
+    # and > 0, so stale staging entries (all <= thr) can never re-enter the top-m.
 
-        weight_matrix = _build_bootstrap_weight_matrix(
-            starts_full, starts_last, block_size, len_last, n_obs, n_bootstrap,
-        )
+    def __init__(self, n_rows: int, m: int, g: int):
+        self.n_rows, self.m, self.g = n_rows, m, g
+        self.buf      = cp.zeros((n_rows, g + m), dtype=cp.uint64)
+        self.thr      = cp.zeros(n_rows, dtype=cp.uint64)
+        self.fill     = cp.zeros(n_rows, dtype=cp.int64)
+        self._pending = False
 
-        matrix_arr32 = matrix_arr  # already float32 — no extra copy needed
+    def push(self, keys) -> None:
+        cand = keys > self.thr[:, None]
+        cnt  = cand.sum(axis=1, dtype=cp.int64)
+        if int((self.fill + cnt).max()) > self.g:
+            self._flush()
+            cand = keys > self.thr[:, None]
+            cnt  = cand.sum(axis=1, dtype=cp.int64)
+        rows, cols = cp.nonzero(cand)
+        if rows.size == 0:
+            return
+        rank = cp.cumsum(cand, axis=1, dtype=cp.int32)
+        self.buf[rows, self.fill[rows] + rank[rows, cols] - 1] = keys[rows, cols]
+        self.fill += cnt
+        self._pending = True
 
-        n_batches = int(np.ceil(n_cols / BOOTSTRAP_CHUNK_SIZE))
-        batch_bounds = [
-            (i * BOOTSTRAP_CHUNK_SIZE, min((i + 1) * BOOTSTRAP_CHUNK_SIZE, n_cols))
-            for i in range(n_batches)
-        ]
+    def finalize(self, m_eff: int) -> tuple:
+        if self._pending:
+            self._flush()
+        return _unpack_keys(self.buf[:, self.g + self.m - m_eff:][:, ::-1])
 
-        # ---- VRAM check: the deviation matrix stays resident on the GPU
-        need_b = n_bootstrap * n_cols * 4 + n_cols * 8 * 2 + GPU_VRAM_MARGIN_MB * 2**20
-        _free_gpu_pools()
-        free_b = cp.cuda.runtime.memGetInfo()[0]
-        if need_b > free_b:
-            raise MemoryError(
-                f"STEPM GPU V2 {progress_label}: needs ~{need_b / 2**30:.1f} GB free VRAM "
-                f"(deviations {n_bootstrap}x{n_cols} float32 + workspace), only {free_b / 2**30:.1f} GB free"
-            )
-
-        spa_threshold = -np.sqrt(2.0 * np.log(np.log(max(n_obs, 3)))) if STEPM_USE_SPA else None
-        sharpe_dt, sharpe_scale = _sharpe_dtype_and_scale()
-
-        dev_gpu   = cp.empty((n_bootstrap, n_cols), dtype=cp.float32)
-        sigma_gpu = cp.empty(n_cols, dtype=cp.float64)
-        real_gpu  = cp.asarray(real_sharpe)
-        w_gpu     = cp.asarray(weight_matrix)                     # uploaded once
-        cp.cuda.Device().synchronize()                            # uploads done before the non-blocking streams start
-
-        # double buffering: pinned host staging + device buffer + stream per slot
-        chunk_w  = BOOTSTRAP_CHUNK_SIZE
-        streams  = [cp.cuda.Stream(non_blocking=True) for _ in range(2)]
-        pin_flat = [cupyx.empty_pinned(n_obs * chunk_w, dtype=np.float32) for _ in range(2)]
-        dev_flat = [cp.empty(n_obs * chunk_w, dtype=cp.float32) for _ in range(2)]
-
-        desc = f"STEPM BOOTSTRAP {progress_label}".strip()
-        for i, (start, end) in enumerate(tqdm(batch_bounds, desc=desc, dynamic_ncols=True)):
-            slot, w = i % 2, end - start
-            stream  = streams[slot]
-            stream.synchronize()                                  # chunk i-2 released this slot
-            host_buf = pin_flat[slot][: n_obs * w].reshape(n_obs, w)
-            _copy_into_pinned(ex, host_buf, matrix_arr32[:, start:end], workers)
-            with stream:
-                x = dev_flat[slot][: n_obs * w].reshape(n_obs, w)
-                x.set(host_buf, stream=stream)                    # async H2D from pinned memory
-                dev32, sigma = _gpu_bootstrap_chunk(
-                    w_gpu, x, real_gpu[start:end], n_obs, fuse_student, spa_threshold, sharpe_dt, sharpe_scale,
-                )
-                dev_gpu[:, start:end]  = dev32
-                sigma_gpu[start:end]   = sigma
-        for s in streams:
-            s.synchronize()
-        del streams, pin_flat, dev_flat, w_gpu
-        sigma_hat = cp.asnumpy(sigma_gpu)
-        _free_gpu_pools()
-
-    sys.stderr.flush()
-    sys.stdout.flush()
-
-    if debug:
-        print_stepm_bootstrap_replicas_debug(progress_label, cp.asnumpy(dev_gpu), n_cols, n_bootstrap)
-
-    deviations = dev_gpu
-    valid_se = sigma_hat > 0
-    if not valid_se.all():
-        deviations   = _gpu_compact_columns(dev_gpu, valid_se)
-        real_sharpe  = real_sharpe[valid_se]
-        sigma_hat    = sigma_hat[valid_se]
-        kept_columns = kept_columns[valid_se]
-        real_gpu     = real_gpu[cp.asarray(valid_se)]
-        sigma_gpu    = sigma_gpu[cp.asarray(valid_se)]
-
-    if debug:
-        print_stepm_se_filter_debug(progress_label, n_cols, kept_columns.shape[0], sigma_hat)
-
-    if not fuse_student:
-        _gpu_studentize_columns(deviations, sigma_gpu)
-    studentized_deviations = deviations
-    z_stat = real_sharpe / sigma_hat
-    del real_gpu, sigma_gpu
-
-    if debug:
-        print_stepm_studentization_debug(
-            progress_label, cp.asnumpy(studentized_deviations), z_stat, n_cols_built, n_cols, kept_columns.shape[0],
-        )
-
-    if STEPM_USE_SPA and not fuse_student:
-        _gpu_spa_columns(studentized_deviations, cp.asarray(z_stat), spa_threshold)
-        spa_mask = z_stat < spa_threshold
-        logger.debug(
-            f"SPA RECENTERING {progress_label} ── threshold={spa_threshold:.4f} ── "
-            f"{int(spa_mask.sum())}/{spa_mask.shape[0]} columns recentered to 0"
-        )
-
-    return {
-        "real_sharpe":            real_sharpe,
-        "sigma_hat":              sigma_hat,
-        "studentized_deviations": studentized_deviations,   # cupy array (GPU)
-        "z_stat":                 z_stat,
-        "kept_columns":           kept_columns,
-    }
+    def _flush(self) -> None:
+        rows = _rows_for_budget(self.g + self.m, GPU_SORT_BYTES_PER_ELEM, GPU_TOPM_BUDGET_MB, self.n_rows)
+        for r0 in range(0, self.n_rows, rows):
+            self.buf[r0:r0 + rows].sort(axis=1)
+        self.thr = self.buf[:, self.g].copy()
+        self.fill.fill(0)
+        self._pending = False
 
 # =============================================================================
-# GLOBAL P-VALUE — single number per timeframe, the original White (2000) test.
+# STREAMING BOOTSTRAP — one GPU pass over the column chunks; nothing of size
+# n_bootstrap x n_cols is ever materialized (except the host copies in DEBUG)
 # =============================================================================
-def compute_global_pvalue(deviations, statistic: np.ndarray) -> dict:
+class _StreamingBootstrap:
 
-    if _is_gpu(deviations):
-        max_deviation = cp.asnumpy(deviations.max(axis=1))   # (n_bootstrap,), max is exact on GPU
-    else:
-        max_deviation = np.max(deviations, axis=1)
-    best_col_idx   = int(np.argmax(statistic))
-    best_statistic = float(statistic[best_col_idx])
+    def __init__(self, matrix_arr: np.ndarray, real_sharpe: np.ndarray, weight_matrix: np.ndarray,
+                 progress_label: str, workers: int):
+        self.matrix_arr     = matrix_arr
+        self.real_sharpe    = real_sharpe
+        self.weight_matrix  = weight_matrix
+        self.progress_label = progress_label
+        self.workers        = workers
+        self.n_bootstrap    = weight_matrix.shape[0]
+        self.n_obs, self.n_cols = matrix_arr.shape
+        self.spa_threshold  = -np.sqrt(2.0 * np.log(np.log(max(self.n_obs, 3)))) if STEPM_USE_SPA else None
+        self.sharpe_dt, self.sharpe_scale = _sharpe_dtype_and_scale()
 
-    global_p = float(np.mean(max_deviation >= best_statistic))
+    def run(self, m: int, capture: bool = False, desc: str = "") -> dict:
+        try:
+            return self._run(m, capture, desc)
+        finally:
+            _free_gpu_pools()
+            sys.stderr.flush()
+            sys.stdout.flush()
 
-    return {
-        "global_p":       global_p,
-        "best_col_idx":    best_col_idx,
-        "best_statistic":  best_statistic,
-    }
+    def _stage(self, ex, pinned: list, bounds: list, i: int) -> np.ndarray:
+        start, end = bounds[i]
+        host = pinned[i % 2][: self.n_obs * (end - start)].reshape(self.n_obs, end - start)
+        _copy_into_pinned(ex, host, self.matrix_arr[:, start:end], self.workers)
+        return host
+
+    def _run(self, m: int, capture: bool, desc: str) -> dict:
+        n_boot, n_obs, n_cols = self.n_bootstrap, self.n_obs, self.n_cols
+        chunk_w = BOOTSTRAP_CHUNK_SIZE
+        m_alloc = min(int(m), n_cols)
+        g       = max(1, min(GPU_TOPM_STAGING_COLS, n_cols))
+        _check_streaming_vram(n_boot, n_obs, n_cols, m_alloc, g, self.progress_label)
+
+        bounds    = [(s, min(s + chunk_w, n_cols)) for s in range(0, n_cols, chunk_w)]
+        raw_host  = np.empty((n_boot, n_cols), dtype=np.float32) if capture else None
+        stud_host = np.empty((n_boot, n_cols), dtype=np.float32) if capture else None
+        pinned    = [cupyx.empty_pinned(n_obs * chunk_w, dtype=np.float32) for _ in range(2)]
+        staged    = [None, None]
+        stream    = cp.cuda.Stream(non_blocking=True)
+
+        with ThreadPoolExecutor(self.workers) as ex, stream:
+            w_gpu     = cp.asarray(self.weight_matrix)
+            real_gpu  = cp.asarray(self.real_sharpe)
+            sigma_gpu = cp.empty(n_cols, dtype=cp.float64)
+            x_flat    = cp.empty(n_obs * chunk_w, dtype=cp.float32)
+            nan_found = cp.zeros((), dtype=cp.bool_)
+            topm      = _TopMAccumulator(n_boot, m_alloc, g)
+
+            if bounds:
+                staged[0] = self._stage(ex, pinned, bounds, 0)
+            for i, (start, end) in enumerate(tqdm(bounds, desc=desc, dynamic_ncols=True)):
+                x = x_flat[: n_obs * (end - start)].reshape(n_obs, end - start)
+                x.set(staged[i % 2], stream=stream)                       # async H2D from pinned memory
+                real_blk = real_gpu[start:end]
+                dev32, sigma = _gpu_bootstrap_deviations(w_gpu, x, real_blk, n_obs, self.sharpe_dt, self.sharpe_scale)
+                if capture:
+                    raw_host[:, start:end] = cp.asnumpy(dev32)
+                dev32 = _gpu_studentize(dev32, sigma)
+                if capture:
+                    stud_host[:, start:end] = cp.asnumpy(dev32)
+                if self.spa_threshold is not None:
+                    dev32 = _gpu_spa_recenter(dev32, real_blk, sigma, self.spa_threshold)
+                valid = sigma > 0
+                nan_found |= (cp.isnan(dev32) & valid[None, :]).any()
+                sigma_gpu[start:end] = sigma
+                keys = _pack_keys(dev32, valid, start)
+                del dev32
+                if i + 1 < len(bounds):
+                    staged[(i + 1) % 2] = self._stage(ex, pinned, bounds, i + 1)   # overlaps the queued GPU work
+                topm.push(keys)                                            # synchronizes the stream
+                del keys
+
+            sigma_all = cp.asnumpy(sigma_gpu)
+            valid_se  = sigma_all > 0
+            vals_g, cols_g = topm.finalize(min(m_alloc, int(valid_se.sum())))
+            remap_g   = cp.asarray(np.cumsum(valid_se, dtype=np.int64) - 1)   # finite-space -> kept-space index
+            topm_vals = cp.asnumpy(vals_g)
+            topm_cols = cp.asnumpy(remap_g[cols_g]).astype(np.int32)
+            has_nan   = bool(nan_found)
+            stream.synchronize()
+
+        if has_nan:
+            raise ValueError(f"STEPM {self.progress_label}: NaN in the studentized deviations of a kept column")
+
+        return {"sigma": sigma_all, "vals": topm_vals, "cols": topm_cols, "raw": raw_host, "studentized": stud_host}
 
 # =============================================================================
-# ROW-CHUNKED K-TH LARGEST — same np.partition(...)[:, part_idx] result, but
+# SUFFIX K-TH LARGEST INDEX — exact k-th largest of any suffix dev_sorted[:, s:]
+# from the per-row top-M, as long as k + s <= M
 # =============================================================================
-def _kth_largest_by_row_chunks(values: np.ndarray, k_eff: int, chunk_size: int = PARTITION_ROW_CHUNK) -> np.ndarray:
-    n_rows, n_cols = values.shape
-    part_idx = n_cols - k_eff
-    result = np.empty(n_rows, dtype=values.dtype)
-    for start in range(0, n_rows, chunk_size):
-        end = min(start + chunk_size, n_rows)
-        result[start:end] = np.partition(values[start:end], part_idx, axis=1)[:, part_idx]
-    return result
+class _TopMTooSmall(Exception):
 
-# =============================================================================
-# SUFFIX K-TH LARGEST INDEX: exact replacement of _kth_largest_by_row_chunks
-# =============================================================================
+    def __init__(self, needed: int):
+        super().__init__(f"top-M index too small: need {needed}")
+        self.needed = int(needed)
+
+
 class _SuffixKthIndex:
 
-    def __init__(self, deviations: np.ndarray, order: np.ndarray, m: int,
-                 workers: int = FDP_TOPM_WORKERS, build_mb: int = FDP_TOPM_BUILD_MB):
-        n_rows, n_cols = deviations.shape
-        if deviations.dtype != np.float32:
+    def __init__(self, vals: np.ndarray, pos: np.ndarray, n_cols: int, workers: int = FDP_TOPM_WORKERS):
+        if vals.dtype != np.float32:
             raise ValueError("_SuffixKthIndex expects float32 deviations")
-        m = int(min(m, n_cols))
-        self.m, self.n_cols = m, n_cols
-        self.workers = max(1, int(workers))
-        self._rows = np.arange(n_rows)
-
-        inv_order = np.empty(n_cols, dtype=np.uint64)
-        inv_order[order] = np.arange(n_cols, dtype=np.uint64)
-
-        self.vals = np.empty((n_rows, m), dtype=np.float32)
-        self.pos  = np.empty((n_rows, m), dtype=np.int32)
-        cut = n_cols - m
-        shift = np.uint64(32)
-        sign  = np.uint32(0x80000000)
-        low32 = np.uint64(0xFFFFFFFF)
-        row_chunk = max(1, int(build_mb * 2**20 // (max(1, workers) * n_cols * 16)))
-        has_nan = [False]
-
-        def _build(start):
-            end   = min(start + row_chunk, n_rows)
-            chunk = deviations[start:end]
-            if np.isnan(chunk).any():
-                has_nan[0] = True
-                return
-            if cut > 0:
-                idx = np.argpartition(chunk, cut, axis=1)[:, cut:]
-                v   = np.take_along_axis(chunk, idx, axis=1)
-            else:
-                idx = np.broadcast_to(np.arange(n_cols), chunk.shape)
-                v   = np.ascontiguousarray(chunk, dtype=np.float32)
-            # order-preserving float32 -> uint32 key, packed with the z-sorted position
-            u   = np.ascontiguousarray(v, dtype=np.float32).view(np.uint32)
-            k32 = np.where(u >= sign, ~u, u | sign)
-            key = k32.astype(np.uint64)
-            key <<= shift
-            key |= inv_order[idx]
-            key.sort(axis=1)
-            key = key[:, ::-1]                                   # descending
-            hi  = (key >> shift).astype(np.uint32)
-            self.vals[start:end] = np.where(hi >= sign, hi & ~sign, ~hi).view(np.float32)
-            self.pos[start:end]  = (key & low32).astype(np.int32)
-
-        starts = range(0, n_rows, row_chunk)
-        if workers > 1:
-            with ThreadPoolExecutor(workers) as ex:
-                list(ex.map(_build, starts))
-        else:
-            for st in starts:
-                _build(st)
-        if has_nan[0]:
-            raise ValueError("NaN in deviations: _SuffixKthIndex not applicable")
-        self._build_sparse()
-
-    @classmethod
-    def from_topm(cls, vals: np.ndarray, pos: np.ndarray, n_cols: int, workers: int = FDP_TOPM_WORKERS):
-        """Index from a top-M already built elsewhere (GPU): same vals/pos layout as __init__."""
-        self = cls.__new__(cls)
+        self.vals, self.pos = vals, pos
         self.m, self.n_cols = int(vals.shape[1]), int(n_cols)
         self.workers = max(1, int(workers))
         self._rows = np.arange(vals.shape[0])
-        self.vals, self.pos = vals, pos
         self._build_sparse()
-        return self
+
+    @property
+    def shape(self) -> tuple:
+        return self.vals.shape[0], self.n_cols
 
     def _build_sparse(self) -> None:
         m, n_cols, n_rows = self.m, self.n_cols, self.vals.shape[0]
@@ -575,10 +458,9 @@ class _SuffixKthIndex:
         self.c = c
 
     def kth_largest_suffix(self, s: int, k_eff: int) -> np.ndarray:
-        """Exact equivalent of the k_eff-th largest per row of dev_sorted[:, s:]."""
         L = k_eff + s
         if L > self.m:
-            raise RuntimeError(f"_SuffixKthIndex too small: need {L}, have {self.m}")
+            raise _TopMTooSmall(L)
         if s == 0:
             return self.vals[:, k_eff - 1].copy()
         n_rows = self.vals.shape[0]
@@ -605,49 +487,226 @@ class _SuffixKthIndex:
         cnt = np.cumsum(self.pos[r0:r1, :L] >= s, axis=1, dtype=np.int32)
         return np.argmax(cnt >= k_eff, axis=1)
 
+# =============================================================================
+# BOOTSTRAP NULL — studentized deviations reduced to what StepM consumes: the
+# per-row top-M (values desc + kept-column index); grows on demand by re-streaming
+# =============================================================================
+def _fdp_topm_size(k_max: int, gamma: float) -> int:
+    if not 0.0 < gamma < 1.0:
+        raise ValueError(f"FDP_GAMMA must lie in (0, 1), got {gamma}.")
+    return int(np.ceil(k_max / gamma - 1.0)) + 1          # abort_at(k_max), same formula as _fdp_try_k
+
+
+class BootstrapNull:
+
+    def __init__(self, engine: _StreamingBootstrap, run: dict, real_sharpe: np.ndarray, kept_columns: np.ndarray):
+        valid_se = run["sigma"] > 0
+        self._engine      = engine
+        self._sigma_all   = run["sigma"]
+        self._presorted   = None
+        self.kept_columns = kept_columns[valid_se]
+        self.real_sharpe  = real_sharpe[valid_se]
+        self.sigma_hat    = run["sigma"][valid_se]
+        self.z_stat       = self.real_sharpe / self.sigma_hat
+        self.n_bootstrap  = engine.n_bootstrap
+        self.n_kept       = int(valid_se.sum())
+        self.topm_vals    = run["vals"]
+        self.topm_cols    = run["cols"]
+
+    @property
+    def m(self) -> int:
+        return self.topm_vals.shape[1]
+
+    @property
+    def row_max(self) -> np.ndarray:
+        return self.topm_vals[:, 0]
+
+    def ensure_topm(self, m: int) -> bool:
+        m = min(int(m), self.n_kept)
+        if m <= self.m:
+            return False
+        label = self._engine.progress_label
+        run = self._engine.run(m, desc=f"STEPM TOP-M {label} m={m:,}".replace(",", ".").strip())
+        if not np.array_equal(run["sigma"], self._sigma_all, equal_nan=True):
+            raise RuntimeError(f"STEPM {label}: bootstrap re-stream is not bit-reproducible (sigma mismatch)")
+        self.topm_vals, self.topm_cols = run["vals"], run["cols"]
+        self._presorted = None
+        return True
+
+    def presorted(self) -> tuple:
+        if self._presorted is None:
+            order     = np.argsort(-self.z_stat)
+            inv_order = np.empty(self.n_kept, dtype=np.int32)
+            inv_order[order] = np.arange(self.n_kept, dtype=np.int32)
+            index = _SuffixKthIndex(self.topm_vals, inv_order[self.topm_cols], self.n_kept)
+            self._presorted = (order, index, self.z_stat[order])
+        return self._presorted
+
+
+def compute_bootstrap_null(
+    matrix_arr: np.ndarray,
+    col_names: list,
+    n_bootstrap: int = WHITE_N_BOOTSTRAP,
+    block_size: int = WHITE_BLOCK_SIZE,
+    seed: int = RANDOM_SEED,
+    topm_size: int = None,
+    progress_label: str = "",
+    workers: int = None,
+    desc: str = None,
+) -> BootstrapNull:
+
+    workers   = STEPM_WORKERS if workers is None else max(1, int(workers))
+    topm_size = _fdp_topm_size(FDP_K_MAX, FDP_GAMMA) if topm_size is None else int(topm_size)
+    debug     = logger.isEnabledFor(logging.DEBUG)
+
+    n_cols_built  = matrix_arr.shape[1]
+    col_names_arr = np.asarray(col_names)
+
+    with ThreadPoolExecutor(workers) as ex:
+        real_sharpe = _sharpe_per_column_parallel(matrix_arr, ex)
+
+    if debug:
+        day_offsets = np.arange(matrix_arr.shape[0])
+        print_stepm_matrix_debug(col_names, matrix_arr, matrix_arr.shape[0], day_offsets)
+
+    finite_mask = np.isfinite(real_sharpe)
+    if finite_mask.all():
+        kept_columns = col_names_arr
+    else:
+        n_keep       = compact_columns_inplace(finite_mask, matrix_arr, real_sharpe, col_names_arr, chunk_size=COLUMN_CHUNK_SIZE)
+        matrix_arr   = matrix_arr[:, :n_keep]
+        real_sharpe  = real_sharpe[:n_keep]
+        kept_columns = col_names_arr[:n_keep]
+
+    if debug:
+        print_stepm_real_variance_filter_debug(progress_label, n_cols_built, matrix_arr.shape[1])
+
+    n_obs, n_cols = matrix_arr.shape
+
+    rng = np.random.default_rng(seed)
+    starts_full, starts_last, len_last, n_blocks_needed = _generate_block_starts(
+        n_obs, block_size, n_bootstrap, rng,
+    )
+
+    if debug:
+        print_stepm_block_starts_debug(progress_label, n_blocks_needed, block_size, len_last, n_obs, n_cols)
+
+    weight_matrix = _build_bootstrap_weight_matrix(
+        starts_full, starts_last, block_size, len_last, n_obs, n_bootstrap,
+    )
+
+    engine = _StreamingBootstrap(matrix_arr, real_sharpe, weight_matrix, progress_label, workers)
+    run    = engine.run(topm_size, capture=debug, desc=desc or f"STEPM BOOTSTRAP {progress_label}".strip())
+    null   = BootstrapNull(engine, run, real_sharpe, kept_columns)
+
+    if debug:
+        _log_bootstrap_debug(progress_label, run, null, engine.spa_threshold, n_cols_built, n_cols)
+
+    return null
+
+
+def _log_bootstrap_debug(progress_label: str, run: dict, null: BootstrapNull, spa_threshold,
+                         n_cols_built: int, n_cols: int) -> None:
+    valid_se = run["sigma"] > 0
+    print_stepm_bootstrap_replicas_debug(progress_label, run["raw"], n_cols, null.n_bootstrap)
+    print_stepm_se_filter_debug(progress_label, n_cols, null.n_kept, null.sigma_hat)
+    print_stepm_studentization_debug(
+        progress_label, run["studentized"][:, valid_se], null.z_stat, n_cols_built, n_cols, null.n_kept,
+    )
+    if spa_threshold is not None:
+        spa_mask = null.z_stat < spa_threshold
+        logger.debug(
+            f"SPA RECENTERING {progress_label} ── threshold={spa_threshold:.4f} ── "
+            f"{int(spa_mask.sum())}/{spa_mask.shape[0]} columns recentered to 0"
+        )
+
+# =============================================================================
+# GLOBAL P-VALUE — single number per timeframe, the original White (2000) test.
+# =============================================================================
+def compute_global_pvalue(max_deviation: np.ndarray, statistic: np.ndarray) -> dict:
+    # max_deviation: per-replica max of the studentized deviations, shape (n_bootstrap,);
+    # a full (n_bootstrap, n_cols) matrix is also accepted and reduced here
+    if max_deviation.ndim == 2:
+        max_deviation = np.max(max_deviation, axis=1)
+    best_col_idx   = int(np.argmax(statistic))
+    best_statistic = float(statistic[best_col_idx])
+
+    global_p = float(np.mean(max_deviation >= best_statistic))
+
+    return {
+        "global_p":       global_p,
+        "best_col_idx":    best_col_idx,
+        "best_statistic":  best_statistic,
+    }
+
+# =============================================================================
+# ROW-CHUNKED K-TH LARGEST — same np.partition(...)[:, part_idx] result, but
+# =============================================================================
+def _kth_largest_by_row_chunks(values: np.ndarray, k_eff: int, chunk_size: int = PARTITION_ROW_CHUNK) -> np.ndarray:
+    n_rows, n_cols = values.shape
+    part_idx = n_cols - k_eff
+    result = np.empty(n_rows, dtype=values.dtype)
+    for start in range(0, n_rows, chunk_size):
+        end = min(start + chunk_size, n_rows)
+        result[start:end] = np.partition(values[start:end], part_idx, axis=1)[:, part_idx]
+    return result
 
 # =============================================================================
 # CUT DIAGNOSTIC — where the stepdown cut k lands on the cross-sectional grid
 # =============================================================================
+# Same operands, expression and compilation path as the linear-interpolation kernel
+# of cupy.percentile, applied to the two order statistics read from the top-M
+_PERCENTILE_LERP = cp.ElementwiseKernel(
+    "T a_bottom, T a_top, float64 weight_above",
+    "float64 ret",
+    """
+    double diff = a_top - a_bottom;
+    if (weight_above < 0.5) {
+        ret = a_bottom + diff * weight_above;
+    } else {
+        ret = a_top - diff * (1 - weight_above);
+    }
+    """,
+    "stepm_percentile_lerp",
+)
+
+
 def _percentile_from_k(k: int, n_cols: int, grid: np.ndarray = CROSS_SECTIONAL_PERCENTILES) -> float:
 
     exact = 100.0 * (n_cols - k) / max(n_cols - 1, 1)
     return float(grid[np.argmin(np.abs(grid - exact))])
 
 
-def compute_cut_diagnostic(
-    studentized_deviations,
-    z_stat: np.ndarray,
-    k: int,
-    chunk_size: int = PARTITION_ROW_CHUNK,
-) -> dict:
+def compute_cut_diagnostic(null: BootstrapNull, k: int) -> dict:
 
-    pct  = _percentile_from_k(k, z_stat.shape[0])
-    real = float(np.percentile(z_stat, pct))
+    n_cols = null.n_kept
+    pct    = _percentile_from_k(k, n_cols)
+    real   = float(np.percentile(null.z_stat, pct))
 
-    below = 0
-    n_rows = studentized_deviations.shape[0]
-    if _is_gpu(studentized_deviations):
-        rows = _rows_for_budget(studentized_deviations.shape[1], 4 * 3, GPU_PCT_BUDGET_MB, n_rows)
-        for start in range(0, n_rows, rows):
-            batch  = studentized_deviations[start:start + rows]
-            below += int((cp.asnumpy(cp.percentile(batch, pct, axis=1)) < real).sum())
-        cp.get_default_memory_pool().free_all_blocks()
-    else:
-        for start in range(0, n_rows, chunk_size):
-            batch  = studentized_deviations[start:start + chunk_size]
-            below += int((np.percentile(batch, pct, axis=1) < real).sum())
+    # same float64 index arithmetic as cupy.percentile (linear)
+    idx          = (pct / 100.0) * (n_cols - 1.0)
+    idx_below    = int(np.floor(idx))
+    weight_above = idx - idx_below
+    rank_bottom  = n_cols - 1 - idx_below          # ascending order statistic -> descending top-M rank
+    rank_top     = max(rank_bottom - 1, 0)         # pct=100: weight_above is 0, the upper operand is unused
+    null.ensure_topm(rank_bottom + 1)
+
+    a_bottom = cp.asarray(null.topm_vals[:, rank_bottom])
+    a_top    = cp.asarray(null.topm_vals[:, rank_top])
+    values   = cp.asnumpy(_PERCENTILE_LERP(a_bottom, a_top, weight_above))
+    del a_bottom, a_top
+    below    = int((values < real).sum())
 
     return {
         "percentile":  pct,
         "real":        real,
-        "pct_below":   100.0 * below / n_rows,
+        "pct_below":   100.0 * below / null.n_bootstrap,
     }
 # =============================================================================
 # STEPM (ROMANO & WOLF, 2005) — stepdown per-rule p-values controlling FWER
 # =============================================================================
 def stepwise_reality_check_pvalues(
-    deviations: np.ndarray,
+    deviations,
     statistic: np.ndarray,
     alpha: float = STEPM_ALPHA,
     max_iterations: int = STEPM_MAX_ITERATIONS,
@@ -662,6 +721,8 @@ def stepwise_reality_check_pvalues(
     n_bootstrap, n_cols = deviations.shape
 
     if _presorted is None:
+        if isinstance(deviations, _SuffixKthIndex):
+            raise ValueError("a _SuffixKthIndex must be passed with its (order, index, stat_sorted) as _presorted")
         order       = np.argsort(-statistic)
         dev_sorted  = deviations[:, order]
         stat_sorted = statistic[order]
@@ -669,8 +730,8 @@ def stepwise_reality_check_pvalues(
         order, dev_sorted, stat_sorted = _presorted
 
     kth_index = dev_sorted if isinstance(dev_sorted, _SuffixKthIndex) else None
-    if kth_index is not None and (_abort_at is None or min(int(_abort_at), n_cols) > kth_index.m):
-        raise ValueError("_SuffixKthIndex requires _abort_at <= its M (see resolve_k_by_fdp)")
+    if kth_index is not None and _abort_at is not None and min(int(_abort_at), n_cols) > kth_index.m:
+        raise _TopMTooSmall(min(int(_abort_at), n_cols))
 
     raw_pval_sorted = np.full(n_cols, np.nan, dtype=np.float64)
     active_start = 0
@@ -759,11 +820,24 @@ def stepwise_reality_check_pvalues(
 
     return adjusted_pval
 
+
+def _full_stepdown_pvalues(null: BootstrapNull, k: int, alpha: float = STEPM_ALPHA) -> np.ndarray:
+    # full (non-aborting) stepdown on the top-M index; the index is re-streamed larger until it covers the run
+    while True:
+        order, index, stat_sorted = null.presorted()
+        try:
+            return stepwise_reality_check_pvalues(
+                index, null.z_stat, alpha=alpha, k=k, _presorted=(order, index, stat_sorted),
+            )
+        except _TopMTooSmall as exc:
+            if not null.ensure_topm(max(2 * index.m, exc.needed)):
+                raise RuntimeError(f"StepM top-M cannot grow beyond {index.m} columns") from exc
+
 # =============================================================================
-# FDP CONTROL (ROMANO & WOLF, 2007, ALGORITHM 4.1) 
+# FDP CONTROL (ROMANO & WOLF, 2007, ALGORITHM 4.1)
 # =============================================================================
 def _fdp_try_k(
-    deviations: np.ndarray,
+    deviations,
     statistic: np.ndarray,
     k: int,
     gamma: float,
@@ -800,39 +874,24 @@ def _fdp_try_k(
 
 
 def resolve_k_by_fdp(
-    deviations: np.ndarray,
-    statistic: np.ndarray,
+    null: BootstrapNull,
     gamma: float = FDP_GAMMA,
     alpha: float = STEPM_ALPHA,
     k_max: int = FDP_K_MAX,
     timeframe: str = "",
 ) -> tuple:
 
-    if not 0.0 < gamma < 1.0:
-        raise ValueError(f"FDP_GAMMA must lie in (0, 1), got {gamma}.")
-
-    order       = np.argsort(-statistic)
-    stat_sorted = statistic[order]
-    m_needed    = int(np.ceil(k_max / gamma - 1.0)) + 1          # abort_at(k_max), same formula as _fdp_try_k
-    if _is_gpu(deviations):
-        if deviations.dtype != cp.float32 or bool(cp.isnan(deviations).any()):
-            kth_index = cp.asnumpy(deviations)[:, order]          # NaN -> exact legacy path, as on CPU
-        else:
-            vals, pos = _gpu_topm(deviations, order, m_needed)    # top-M built on GPU, only B x M comes back
-            kth_index = _SuffixKthIndex.from_topm(vals, pos, deviations.shape[1])
-    else:
-        try:
-            kth_index = _SuffixKthIndex(deviations, order, m_needed)
-        except ValueError:                                        # NaN or non-float32 -> exact legacy path
-            kth_index = deviations[:, order]
-    presorted   = (order, kth_index, stat_sorted)
+    null.ensure_topm(_fdp_topm_size(k_max, gamma))
+    presorted = null.presorted()
+    index     = presorted[1]
+    statistic = null.z_stat
 
     k        = 1
     k_fail   = 0      # last k that failed the criterion (0 = none yet)
     last_run = None
 
     while k <= k_max:
-        last_run, ok = _fdp_try_k(deviations, statistic, k, gamma, alpha, presorted, timeframe)
+        last_run, ok = _fdp_try_k(index, statistic, k, gamma, alpha, presorted, timeframe)
         if ok:
             break
         k_fail = k
@@ -848,7 +907,7 @@ def resolve_k_by_fdp(
     while hi - lo > 1:
         mid = (lo + hi) // 2
         run_mid, ok_mid = _fdp_try_k(
-            deviations, statistic, mid, gamma, alpha, presorted, timeframe, tag="  (bisect)",
+            index, statistic, mid, gamma, alpha, presorted, timeframe, tag="  (bisect)",
         )
         if ok_mid:
             hi, best = mid, run_mid
@@ -884,7 +943,7 @@ def _best_col_idx_by_rule(kept_columns: np.ndarray, stepm_pvals: np.ndarray, z_s
 
 
 def empty_stepm_fields() -> dict:
-    """Placeholder StepM fields for rules that were never evaluated (pipe skipped)."""
+    # placeholder StepM fields for rules that were never evaluated (pipe skipped)
     return {
         "passed_stepm": True,
         "passed_mbias": True,
@@ -909,39 +968,38 @@ def pipe_stepm(
     if matrix_arr.shape[1] < 2:
         logger.warning(f"STEPM ── {timeframe} ── insufficient columns — skipping, passing all rules through untouched")
         return [{**r, **empty_stepm_fields()} for r in raw_results]
-    bootstrap_result = compute_deviation_matrix(
+    null = compute_bootstrap_null(
         matrix_arr, col_names, n_bootstrap=n_bootstrap, block_size=block_size,
-        seed=seed, progress_label=timeframe,
+        seed=seed, progress_label=timeframe, desc=f"{'STEPM BST IS':<16}{timeframe}",
     )
-    kept_columns            = bootstrap_result["kept_columns"]
-    real_sharpe             = bootstrap_result["real_sharpe"]
-    sigma_hat               = bootstrap_result["sigma_hat"]
-    studentized_deviations  = bootstrap_result["studentized_deviations"]
-    z_stat                  = bootstrap_result["z_stat"]
+    kept_columns = null.kept_columns
+    real_sharpe  = null.real_sharpe
+    sigma_hat    = null.sigma_hat
+    z_stat       = null.z_stat
 
     logger.debug(
         f"STEPM ── {timeframe} ── {matrix_arr.shape[1] - len(kept_columns)} degenerate "
         f"columns dropped ── {len(kept_columns)} columns remain"
     )
 
-    global_result = compute_global_pvalue(studentized_deviations, z_stat)
+    if null.n_kept == 0:
+        logger.warning(f"STEPM ── {timeframe} ── no non-degenerate columns — skipping, passing all rules through untouched")
+        return [{**r, **empty_stepm_fields()} for r in raw_results]
+
+    global_result = compute_global_pvalue(null.row_max, z_stat)
     best_col_idx  = global_result["best_col_idx"]
     best_col_name = str(kept_columns[best_col_idx])
 
     best_raw_idx  = int(np.argmax(real_sharpe))
     best_raw_name = str(kept_columns[best_raw_idx])
-    
-    k_fwe, stepm_pvals, _ = resolve_k_by_fdp(
-        studentized_deviations, z_stat, timeframe=timeframe,
-    )
+
+    k_fwe, stepm_pvals, _ = resolve_k_by_fdp(null, timeframe=timeframe)
     logger.debug(f"\n{'─' * 70}")
     logger.debug(f"  MAX RAW SHARPE (no bootstrap adjustment) ── {timeframe}")
     logger.debug(f"{'─' * 70}")
     logger.debug(f"  best column       : {best_raw_name}")
     logger.debug(f"  best real Sharpe  : {real_sharpe[best_raw_idx]:.4f}")
     logger.debug(f"{'─' * 70}\n")
-
-    logger.info(f"\n{'─' * 70}")
 
     logger.info(f"\n{'─' * 70}")
     logger.info(f"  GLOBAL WHITE p-value (studentized) ── {timeframe}")
@@ -951,7 +1009,7 @@ def pipe_stepm(
     logger.debug(f" best z-statistic: {global_result['best_statistic']:.4f}  (sigma_hat={sigma_hat[best_col_idx]:.4f})")
     logger.info(f"  global p-value : {global_result['global_p']:.4f}")
 
-    cut = compute_cut_diagnostic(studentized_deviations, z_stat, k_fwe)
+    cut = compute_cut_diagnostic(null, k_fwe)
     logger.info(
         f"  P{cut['percentile']:<14.6g}: {cut['pct_below']:.2f}% <Real  "
         f"(k={f'{k_fwe:,}'.replace(',', '.')})"
@@ -961,9 +1019,8 @@ def pipe_stepm(
     logger.debug(f"STEPM ── {timeframe} ── k-FWE level k={k_fwe}" + (" (strict FWE)" if k_fwe == 1 else " (relaxed control — reasoned extension, see module docstring)"))
 
     if stepm_pvals is None:
-        stepm_pvals = stepwise_reality_check_pvalues(_to_host(studentized_deviations), z_stat, alpha=STEPM_ALPHA, k=k_fwe)
-    del studentized_deviations, bootstrap_result                  # release the GPU-resident matrix
-    _free_gpu_pools()
+        stepm_pvals = _full_stepdown_pvalues(null, k_fwe, STEPM_ALPHA)
+    del null                                                      # release the top-M index and its host buffers
 
     if logger.isEnabledFor(logging.DEBUG):
         print_stepm_brc_equivalence_debug(timeframe, k_fwe, global_result["global_p"], dict(zip(kept_columns, stepm_pvals)), best_col_name)
@@ -981,7 +1038,7 @@ def pipe_stepm(
         z_val         = z_stat[idx] if idx is not None else float("nan")
         passed        = bool(np.isfinite(stepm_p) and stepm_p <= STEPM_ALPHA)
         n_passed     += int(passed)
-    
+
         results.append({
             **r,
             "best_combo_id": best_combo_id,

@@ -19,9 +19,10 @@ MODULE_LOG_LEVELS = {
     "BOT_batch.rule_mining.generator":      logging.INFO,
     "BOT_batch.pipeline.signal_cleaning":   logging.INFO,
     "BOT_batch.pipeline.backtest_runner":   logging.INFO,
-    "BOT_batch.pipeline.stepM":             logging.INFO,
-    "BOT_batch.pipeline.wfo":               logging.INFO,
-    "BOT_batch.engines.wfo_WF":             logging.INFO,
+    "BOT_batch.pipeline.stepM_is":          logging.INFO,
+    "BOT_batch.pipeline.stepM_oos":         logging.INFO,
+    "BOT_batch.pipeline.wfo":               logging.DEBUG,
+    "BOT_batch.engines.wfo_WF":             logging.DEBUG,
     "BOT_batch.pipeline.correlation":       logging.INFO,
     "BOT_batch.pipeline.multiverse":        logging.INFO,
     "BOT_batch.runs.run_best_wfo_portfolio":logging.INFO,
@@ -38,7 +39,7 @@ for noisy_logger in ("joblib", "matplotlib", "numba"):
 from symbols.universe import build_universe, MIN_START_DATE_BY_DATASET
 from setup.config_paths import DATA_FOLDER_BY_DATASET
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
-from pipeline.wfo import WFO_WINDOW_CONFIG, EMA_ALPHA, WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH
+from pipeline.wfo import WFO_TRAIN_MONTHS, WFO_TEST_MONTHS, EMA_ALPHA, WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH
 from pipeline.correlation import CORRELATION_DD_TH
 from pipeline.multiverse import MULTIVERSE_PVALUE_TH
 from pipeline.signal_cleaning import JACCARD_SIMILARITY_TH
@@ -55,51 +56,83 @@ SAVE_TRADES   = False
 RUN_DEPLOY    = True
 SPLIT_MODE    = True
 
-DATASET_MINING, DATASET_VALIDATION = ("IS", "OOS") if SPLIT_MODE else ("MERGED", "MERGED")
+DATASET_IS, DATASET_OOS = ("IS", "OOS") if SPLIT_MODE else ("MERGED", "MERGED")
 
 # =============================================================================
-TIMEFRAMES = ["4H"]
+TIMEFRAMES = ["1H","4H"]
 
 SYMBOL_COMBOS_BY_TIMEFRAME = {
     "1H": [
     ["CHFJPY", "AUDCAD"],
     ["CHFJPY"],
-    ["CHFJPY", "EURCAD"],
-    ["EURCHF", "AUDCAD"],
-    ["EURGBP", "CHFJPY"],
-    ["AUDCAD", "GBPCHF"],
-    ["EURUSD", "CHFJPY"],
-    ["CHFJPY", "EURAUD"],
-    ["AUDUSD", "CHFJPY"],
-    ["EURJPY", "CHFJPY"],
-    ["GBPJPY", "CHFJPY"],
-    ["CHFJPY", "GBPCAD"],
-    ["EURCHF"],
-    ["EURCHF", "GBPCHF"],
-    ["AUDCAD"],
-    ["AUDCAD", "GBPCAD"],
-    ["EURJPY", "AUDCAD"],
-    ["EURGBP", "GBPCHF"],
-    ["EURGBP", "AUDCAD"],
-    ["USDCHF", "AUDCAD"],
-    ["USDCAD", "CHFJPY"],
-    ["USDJPY", "CHFJPY"],
-    ["AUDJPY", "CHFJPY"],
-    ["GBPUSD", "CHFJPY"],
-    ["EURJPY", "EURCAD"],
-    ["EURAUD", "AUDCAD"],
-    ["EURGBP", "GBPCAD"],
-    ["EURCHF", "GBPCAD"],
-    ["EURCAD", "AUDCAD"],
-    ["EURJPY", "GBPCAD"],
+# =============================================================================
+#     ["CHFJPY", "EURCAD"],
+#     ["EURCHF", "AUDCAD"],
+#     ["EURGBP", "CHFJPY"],
+#     ["AUDCAD", "GBPCHF"],
+#     ["EURUSD", "CHFJPY"],
+#     ["CHFJPY", "EURAUD"],
+#     ["AUDUSD", "CHFJPY"],
+#     ["EURJPY", "CHFJPY"],
+# =============================================================================
+# =============================================================================
+#     ["GBPJPY", "CHFJPY"],
+#     ["CHFJPY", "GBPCAD"],
+#     ["EURCHF"],
+#     ["EURCHF", "GBPCHF"],
+#     ["AUDCAD"],
+#     ["AUDCAD", "GBPCAD"],
+#     ["EURJPY", "AUDCAD"],
+#     ["EURGBP", "GBPCHF"],
+#     ["EURGBP", "AUDCAD"],
+#     ["USDCHF", "AUDCAD"],
+#     ["USDCAD", "CHFJPY"],
+#     ["USDJPY", "CHFJPY"],
+#     ["AUDJPY", "CHFJPY"],
+#     ["GBPUSD", "CHFJPY"],
+#     ["EURJPY", "EURCAD"],
+#     ["EURAUD", "AUDCAD"],
+#     ["EURGBP", "GBPCAD"],
+#     ["EURCHF", "GBPCAD"],
+#     ["EURCAD", "AUDCAD"],
+#     ["EURJPY", "GBPCAD"],
+# =============================================================================
     ],
     "4H": [
-    ["EURGBP", "GBPCHF"],
     ["CHFJPY"],
-    ["USDCAD", "CHFJPY"],
-    ["EURGBP", "CHFJPY"],
-    ["AUDJPY", "CHFJPY"],
     ["EURJPY", "CHFJPY"],
+# =============================================================================
+#     ["CHFJPY", "EURCAD"],
+#     ["USDCAD", "CHFJPY"],
+#     ["GBPJPY", "CHFJPY"],
+#     ["CHFJPY", "EURAUD"],
+#     ["CHFJPY", "AUDCAD"],
+#     ["CHFJPY", "GBPCAD"],
+#     ["EURGBP", "CHFJPY"],
+#     ["USDJPY", "CHFJPY"],
+# =============================================================================
+# =============================================================================
+#     ["EURUSD", "CHFJPY"],
+#     ["AUDJPY", "CHFJPY"],
+#     ["EURJPY", "EURCAD"],
+#     ["GBPUSD", "CHFJPY"],
+#     ["AUDUSD", "CHFJPY"],
+#     ["USDCAD", "EURJPY"],
+#     ["EURJPY"],
+#     ["EURJPY", "GBPCAD"],
+#     ["EURCHF", "CHFJPY"],
+#     ["EURJPY", "AUDCAD"],
+#     ["EURGBP", "GBPCHF"],
+#     ["CHFJPY", "NZDJPY"],
+#     ["EURJPY", "GBPJPY"],
+#     ["EURJPY", "AUDJPY"],
+#     ["EURJPY", "EURAUD"],
+#     ["EURJPY", "EURGBP"],
+#     ["EURGBP", "AUDCAD"],
+#     ["GBPJPY", "EURGBP"],
+#     ["EURCHF", "AUDCAD"],
+#     ["USDCHF", "AUDCAD"],
+# =============================================================================
     ]
 }
 
@@ -116,7 +149,6 @@ PARAM_GRID_BY_TIMEFRAME = {
     },
 }
 
-
 # =============================================================================
 # PATHS
 # =============================================================================
@@ -127,8 +159,10 @@ DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_DZ_FOLDER, "rules_files", "rules_
 # =============================================================================
 # RUN CONFIG — single source of truth: printed at startup AND persisted
 # =============================================================================
-run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_MINING": DATASET_MINING, "DATASET_VALIDATION": DATASET_VALIDATION, 
-              "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, 
+run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_IS": DATASET_IS, 
+              "DATASET_OOS": DATASET_OOS, 
+              "TIMEFRAMES": TIMEFRAMES, 
+              "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, 
               "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME}
 # =============================================================================
 # COMBOS — each timeframe can be mined with several independent symbol baskets
@@ -160,11 +194,6 @@ def load_ohlcv_by_combo(combos: list, data_folder: str, dataset: str) -> tuple:
 # =============================================================================
 # LOGGING HELPERS — render the startup banner from run_config
 # =============================================================================
-def _format_wfo_windows(wfo_window_config: dict) -> str:
-    return "  |  ".join(
-        f"{tf}: train={cfg.get('train_months')}m test={cfg.get('test_months')}m"
-        for tf, cfg in wfo_window_config.items()
-    )
 def _pipeline_icon(enabled: bool) -> str:
     return "🟢" if enabled else "⚪"
 
@@ -174,15 +203,15 @@ def log_run_config() -> None:
     logger.info(f"{'─' * 115}")
     if SPLIT_MODE:
         logger.info(
-            f"  DATASET     : SPLIT ── mining: {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_MINING])} "
-            f"({MIN_START_DATE_BY_DATASET[DATASET_MINING]}) | "
-            f"validation: {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_VALIDATION])} "
-            f"({MIN_START_DATE_BY_DATASET[DATASET_VALIDATION]})"
+            f"  DATASET     : SPLIT ── IS: {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_IS])} "
+            f"({MIN_START_DATE_BY_DATASET[DATASET_IS]}) | "
+            f"OOS: {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_OOS])} "
+            f"({MIN_START_DATE_BY_DATASET[DATASET_OOS]})"
         )
     else:
         logger.info(
-            f"  DATASET     : {DATASET_MINING} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_MINING])} "
-            f"({MIN_START_DATE_BY_DATASET[DATASET_MINING]})"
+            f"  DATASET     : {DATASET_IS} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_IS])} "
+            f"({MIN_START_DATE_BY_DATASET[DATASET_IS]})"
         )
     logger.info(f"  SYMBOLS     :")
     for combo in build_combos():
@@ -191,7 +220,7 @@ def log_run_config() -> None:
     logger.info(f"  BACKTEST    : {settings.BACKTEST_MODE}")
     logger.debug(f"  MAX DEPTH  : {RULE_MAX_DEPTH}")
     logger.info(f"  PARAM GRID  : {PARAM_GRID_BY_TIMEFRAME}")
-    logger.info(f"  WFO WINDOWS : {_format_wfo_windows({tf: WFO_WINDOW_CONFIG.get(tf, {}) for tf in TIMEFRAMES})} | EMA_ALPHA: {EMA_ALPHA}")
+    logger.info(f"  WFO WINDOWS : train={WFO_TRAIN_MONTHS}m test={WFO_TEST_MONTHS}m | EMA_ALPHA: {EMA_ALPHA}")
     logger.info(
         f"  PIPES       : JACCARD_TH={JACCARD_SIMILARITY_TH} | "
         f"NET_GAIN_TH={WFO_NET_GAIN_TH} DD_TH={WFO_DD_TH} R2_TH={WFO_R2_TH} WFR_TH={WFO_WFR_TH} | "
@@ -219,29 +248,29 @@ if __name__ == "__main__":
         # -------------------------------------------------------------------
         combos = build_combos()
 
-        ohlcv_data_mining_by_combo, ohlcv_arr_mining_by_combo = load_ohlcv_by_combo(
-            combos, DATA_FOLDER_BY_DATASET[DATASET_MINING], DATASET_MINING,
+        ohlcv_data_is_by_combo, ohlcv_arr_is_by_combo = load_ohlcv_by_combo(
+            combos, DATA_FOLDER_BY_DATASET[DATASET_IS], DATASET_IS,
         )
 
         if SPLIT_MODE:
-            ohlcv_data_validation_by_combo, ohlcv_arr_validation_by_combo = load_ohlcv_by_combo(
-                combos, DATA_FOLDER_BY_DATASET[DATASET_VALIDATION], DATASET_VALIDATION,
+            ohlcv_data_oos_by_combo, ohlcv_arr_oos_by_combo = load_ohlcv_by_combo(
+                combos, DATA_FOLDER_BY_DATASET[DATASET_OOS], DATASET_OOS,
             )
         else:
-            ohlcv_data_validation_by_combo = ohlcv_data_mining_by_combo
-            ohlcv_arr_validation_by_combo  = ohlcv_arr_mining_by_combo
+            ohlcv_data_oos_by_combo = ohlcv_data_is_by_combo
+            ohlcv_arr_oos_by_combo  = ohlcv_arr_is_by_combo
         # -------------------------------------------------------------------
         # RULE MINING — Phase A: DSR for every timeframe, then a combined
         # -------------------------------------------------------------------
         validated_wfo_test, all_mbias_results  = run_rule_mining_pipeline(
-            ohlcv_data_mining_by_combo         = ohlcv_data_mining_by_combo,
-            ohlcv_arr_mining_by_combo          = ohlcv_arr_mining_by_combo,
-            ohlcv_data_validation_by_combo     = ohlcv_data_validation_by_combo,
-            ohlcv_arr_validation_by_combo      = ohlcv_arr_validation_by_combo,
+            ohlcv_data_is_by_combo             = ohlcv_data_is_by_combo,
+            ohlcv_arr_is_by_combo              = ohlcv_arr_is_by_combo,
+            ohlcv_data_oos_by_combo            = ohlcv_data_oos_by_combo,
+            ohlcv_arr_oos_by_combo             = ohlcv_arr_oos_by_combo,
             combos                             = combos,
             param_grid                         = PARAM_GRID_BY_TIMEFRAME,
             order_amount                       = ORDER_AMOUNT,
-            data_folder                        = DATA_FOLDER_BY_DATASET[DATASET_VALIDATION],
+            data_folder                        = DATA_FOLDER_BY_DATASET[DATASET_OOS],
             max_depth                          = RULE_MAX_DEPTH,
             log_level                          = MODULE_LOG_LEVELS["BOT_batch.pipeline.wfo"],
             save_trades                        = SAVE_TRADES,

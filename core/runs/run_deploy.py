@@ -3,15 +3,11 @@ import itertools
 import logging
 import numpy as np
 import pandas as pd
+from functools import partial
 from joblib import Parallel, delayed
-import importlib
-from setup.config_core import settings
-_bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
-run_grid_backtest = _bt.run_grid_backtest
-from pipeline.wfo import EMA_ALPHA, WFO_WINDOW_CONFIG, build_ohlcv_with_signal, compute_metric
-from engines.wfo_WF import WARMUP_BARS, update_ema_state, round_params_dict
-from utils.ohlcv_utils import prepare_ohlcv_arrays, get_bars_per_year
-from setup.config_core import settings
+from pipeline.wfo import EMA_ALPHA, wfo_window_lengths, _evaluate_fn
+from engines.wfo_WF import WARMUP_BARS, update_ema_state, round_params_dict, slice_window_arrays
+from utils.ohlcv_utils import prepare_ohlcv_arrays
 logger = logging.getLogger("BOT_batch.runs.run_deploy")
 
 # =============================================================================
@@ -31,7 +27,7 @@ def _backward_frompresent_window_bounds(max_length: int, length_train_set: int, 
     return windows
 
 def run_wfo_deploy_ema(
-    ohlcv_is: dict,
+    ohlcv_oos: dict,
     timeframe: str,
     param_grid: dict,
     signal_fn: callable,
@@ -39,16 +35,8 @@ def run_wfo_deploy_ema(
     n_jobs: int,
 ) -> tuple:
 
-    _wfo_cfg = WFO_WINDOW_CONFIG.get(timeframe)
-    if _wfo_cfg is None:
-        raise ValueError(f"No WFO window config for timeframe: {timeframe}")
-
-    bars_per_month   = get_bars_per_year(timeframe) / 12
-    length_train_set = int(_wfo_cfg["train_months"] * bars_per_month)
-    pct_train_set    = _wfo_cfg["train_months"] / (_wfo_cfg["train_months"] + _wfo_cfg["test_months"])
-    length_test      = int(length_train_set / pct_train_set - length_train_set)
-
-    ohlcv_arr  = prepare_ohlcv_arrays(ohlcv_is)
+    length_train_set, _, length_test = wfo_window_lengths(timeframe)
+    ohlcv_arr  = prepare_ohlcv_arrays(ohlcv_oos)
     ref_sym    = max(ohlcv_arr.keys(), key=lambda k: len(ohlcv_arr[k]["ts"]))
     ref_ts     = ohlcv_arr[ref_sym]["ts"]
     max_length = len(ref_ts)
@@ -58,24 +46,14 @@ def run_wfo_deploy_ema(
     param_ranges      = dict(zip(param_names, lists_for_grid))
     dict_combinations = [dict(zip(param_names, comb)) for comb in itertools.product(*lists_for_grid)]
 
-    def _evaluate(params, base_arrays, train_start_ts):
-        arrays      = build_ohlcv_with_signal(base_arrays, signal_fn, [], params)
-        results     = run_grid_backtest(
-            arrays,
-            sell_after   = params["SELL_AFTER"],
-            tp_pct       = params["TP_PCT"],
-            sl_pct       = params["SL_PCT"],
-            order_amount = order_amount,
-        )
-        trade_log   = results["__PORTFOLIO__"]["trade_log"]
-        n_before    = len(trade_log)
-        if not trade_log.empty:
-            truncated_mask    = trade_log["exit_reason"] == "END_OF_DATA"
-            below_warmup_mask = trade_log["buy_time"] < pd.Timestamp(train_start_ts)
-            trade_log = trade_log[~truncated_mask & ~below_warmup_mask]
-            results   = {"__PORTFOLIO__": {"trade_log": trade_log}}
-        n_after = len(trade_log)
-        return compute_metric(results), params, n_before, n_after
+    evaluate_fn = partial(
+        _evaluate_fn,
+        signal_fn          = signal_fn,
+        signal_params_keys = [],
+        order_amount       = order_amount,
+        _signal_cache      = {},
+        _prepared_cache    = {},
+    )
 
     windows = _backward_frompresent_window_bounds(max_length, length_train_set, length_test)
     if not windows:
@@ -108,23 +86,13 @@ def run_wfo_deploy_ema(
 
         base_arrays = {}
         for sym, (t0, t1, _, _) in selected.items():
-            arr_dict   = ohlcv_arr[sym]
-            warm_start = max(0, t0 - WARMUP_BARS)
-            base_arrays[sym] = {
-                "ts":        arr_dict["ts"][warm_start:t1],
-                "open":      arr_dict["open"][warm_start:t1],
-                "high":      arr_dict["high"][warm_start:t1],
-                "low":       arr_dict["low"][warm_start:t1],
-                "close":     arr_dict["close"][warm_start:t1],
-                "volume":    arr_dict.get("volume", arr_dict["close"] * 0)[warm_start:t1],
-                "low_time":  arr_dict["low_time"][warm_start:t1],
-                "high_time": arr_dict["high_time"][warm_start:t1],
-            }
+            warm_start       = max(0, t0 - WARMUP_BARS)
+            base_arrays[sym] = slice_window_arrays(ohlcv_arr[sym], warm_start, t1)
 
         results = Parallel(n_jobs=n_jobs)(
-            delayed(_evaluate)(p, base_arrays, train_start_ts) for p in dict_combinations
+            delayed(evaluate_fn)(p, base_arrays, train_start_ts) for p in dict_combinations
         )
-        _, raw_best_params, best_n_before, best_n_after = max(results, key=lambda x: x[0])
+        _, raw_best_params = max(results, key=lambda x: x[0])
 
         ema_raw = update_ema_state(ema_raw, raw_best_params, alpha=EMA_ALPHA)
 
@@ -134,7 +102,6 @@ def run_wfo_deploy_ema(
         logger.debug(
             f"DEPLOY EMA ── window [{pd.Timestamp(train_start_ts).date()} .. {pd.Timestamp(train_end_ts).date()}] "
             f"| symbols={len(deploy_symbols)} "
-            f"| trades={best_n_before}->{best_n_after} "
             f"| raw_best={raw_best_params} "
             f"| ema_state={round_params_dict(ema_raw, param_ranges)}"
         )

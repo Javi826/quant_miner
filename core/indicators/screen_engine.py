@@ -1,14 +1,4 @@
 # core/indicators/screen_engine.py
-"""Indicator screening engine: phase 1 (every indicator alone) and phase 2 (every pair A + B), each against its null.
-
-Market agnostic. The caller gives:
-    ohlcv_arr   {symbol: {"ts", "open", "high", "low", "close", "high_time", "low_time", ...}}, 1D arrays
-    symbols     the symbols to screen, in order (the symbol axis of every result)
-    pool        IndicatorPool: registry, instances, instance_key
-    cfg         ScreenConfig: targets, nulls, pilots
-It knows nothing about the data source, the market, the paths or the selection (screen_report).
-Everything the raw results depend on is in the cache key: config, data, pool and the code of the computation.
-"""
 import os
 import sys
 import time
@@ -28,6 +18,7 @@ from .screen_kernels import MIN_SEG, MIN_PILOT_N
 from .screen_kernels import compute_targets, fill_edges, reduce_edges, path_T_all, path_edges_all
 from .screen_kernels import add_edge_moments, moments_inplace
 from .screen_kernels import pair_T, pair_null_distribution, pair_edge_moments, pair_valid_mask
+from .screen_kernels import compute_exits, npy_walk
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +30,7 @@ NULL_BATCH = 32   # phase 2 shifts per batch (in order). Speed only: the selecti
 # =============================================================================
 @dataclass(frozen=True)
 class ScreenConfig:
-    """What the raw results depend on, besides the data and the pool (n_jobs: speed only)."""
+
     tp_pct: tuple
     sl_pct: tuple
     sell_after: tuple
@@ -109,13 +100,6 @@ class ScreenConfig:
 # 2. INDICATOR POOL
 # =============================================================================
 class IndicatorPool:
-    """Indicators to screen.
-    registry      {name: {"fn": fn(arr, ctx, params) -> values, "thresholds": [...], ...}}. The other fields
-                  ("role", "group", "ops") are for the caller: the engine ignores them.
-    instances     [{"indicator": name, "params": {...}}], the instances of every indicator contiguous
-    instance_key  instance_key(name, params) -> unique id of one instance
-    group_names   {group: label}, for the report only
-    """
 
     def __init__(self, registry, instances, instance_key, group_names=None):
         self.registry = registry
@@ -208,7 +192,7 @@ def align_symbols(ohlcv_arr, symbols):
 # 4. SYNTHETIC PATHS
 # =============================================================================
 def _price_decimals(close):
-    """Decimals of the quotes, read from the prices themselves (the synthetic paths keep the real granularity)."""
+
     x = np.asarray(close, dtype=np.float64)
     x = x[np.isfinite(x) & (x > 0.0)]
     if len(x) == 0:
@@ -222,8 +206,7 @@ def _price_decimals(close):
 
 
 def make_synthetic(ohlcv_arr, seed, symbols):
-    """One synthetic path: every candle's log returns keep or flip their sign (the same sign on the same timestamp
-    in every symbol), so volatility, calendar and cross-symbol co-movement stay and any directional edge breaks."""
+
     all_ts = np.unique(np.concatenate([i64(ohlcv_arr[s]["ts"]) for s in symbols]))
     signs = np.random.default_rng(seed).choice([-1.0, 1.0], size=len(all_ts))
     syn = {}
@@ -256,7 +239,7 @@ def make_synthetic(ohlcv_arr, seed, symbols):
 # 5. TARGETS AND BINS
 # =============================================================================
 def build_targets(arrs, data, cfg):
-    """Targets on each symbol's native candles (arrs: real or synthetic), mapped to the common grid. Y[s, t, g]."""
+
     Y = np.full((len(data.symbols), data.n, len(cfg.targets)), np.nan)
     for si, s in enumerate(data.symbols):
         arr = arrs[s]
@@ -271,9 +254,34 @@ def build_targets(arrs, data, cfg):
             Y[si, :, 2 * ci + 1] = y_short[data.pos[s]]
     return Y
 
+def build_exits(arrs, data, cfg):
+
+    E = np.full((len(data.symbols), data.n, len(cfg.targets)), -1, dtype=np.int64)
+    for si, s in enumerate(data.symbols):
+        arr = arrs[s]
+        close = np.ascontiguousarray(arr["close"], dtype=np.float64)
+        high = np.ascontiguousarray(arr["high"], dtype=np.float64)
+        low = np.ascontiguousarray(arr["low"], dtype=np.float64)
+        ht = np.ascontiguousarray(i64(arr["high_time"]))
+        lt = np.ascontiguousarray(i64(arr["low_time"]))
+        pos = data.pos[s]
+        for ci, (tp, sl, sa) in enumerate(cfg.configs):
+            e_long, e_short = compute_exits(close, high, low, ht, lt, tp, sl, sa)
+            E[si, :, 2 * ci] = np.searchsorted(pos, e_long[pos], side="right")
+            E[si, :, 2 * ci + 1] = np.searchsorted(pos, e_short[pos], side="right")
+    return E
+
+
+def _npy_stats(m, y, free, mean_ypy):
+
+    if mean_ypy != mean_ypy:
+        return np.nan, 0
+    s, k = npy_walk(m, y, free)
+    return (s / k if k else np.nan), k
+
 
 def build_bins(arrs, data, pool):
-    """Bin of every instance, symbol and common candle (see screen_kernels), and the cuts of every instance."""
+
     bins = np.full((len(pool.instances), len(data.symbols), data.n), -1, dtype=np.int8)
     ncv = np.zeros(len(pool.instances), dtype=np.int64)
     empty = []
@@ -298,7 +306,7 @@ def build_bins(arrs, data, pool):
 # 6. PHASE 1: EVERY INDICATOR ALONE
 # =============================================================================
 def progress(label, k, total, t0):
-    """Progress line of one stage, rewritten in place. When the stage ends, its time (t0: its start)."""
+
     if not logger.isEnabledFor(logging.INFO):
         return
     sys.stdout.write(f"\r{label}: {k}/{total} ({100 * k // max(total, 1)}%)")
@@ -308,7 +316,7 @@ def progress(label, k, total, t0):
 
 
 def _path_chunk(kind, seeds, data, pool, cfg, starts, ends, z_mu, z_sd, in_worker):
-    """Pilot edges or null T1 of some synthetic paths. Everything explicit: it also runs in joblib workers."""
+
     if in_worker:
         numba.set_num_threads(1)
         if z_mu is not None:
@@ -326,7 +334,7 @@ def _path_chunk(kind, seeds, data, pool, cfg, starts, ends, z_mu, z_sd, in_worke
 
 
 def _run_paths(kind, seeds, label, data, pool, cfg, z_mu=None, z_sd=None):
-    """Results of the synthetic paths, yielded in seed order (serial or in joblib workers)."""
+
     t0 = time.time()
     starts, ends = pool.slices()
     n_jobs = effective_n_jobs(cfg.n_jobs)
@@ -348,7 +356,7 @@ def _run_paths(kind, seeds, label, data, pool, cfg, z_mu=None, z_sd=None):
 
 
 def build_pilot_moments(data, pool, cfg):
-    """Null mean and std of the edge of every combination (instance, symbol, target, cut, side), for z."""
+
     shape = (len(pool.instances), len(data.symbols), len(cfg.targets), pool.ncut, 2)
     m_n = np.zeros(shape)
     m_s = np.zeros(shape)
@@ -362,7 +370,7 @@ def build_pilot_moments(data, pool, cfg):
 
 
 def build_null_paths(data, pool, cfg, z_mu, z_sd):
-    """T1 of every indicator on every null path: (path, indicator, symbol)."""
+
     null_sym = np.empty((cfg.n_null_paths, len(pool.names), len(data.symbols)))
     seeds = [cfg.seed_null + r for r in range(cfg.n_null_paths)]
     label = f"Phase 1 null, {cfg.n_null_paths} synthetic paths"
@@ -372,20 +380,19 @@ def build_null_paths(data, pool, cfg, z_mu, z_sd):
 
 
 def _seg_mask(brow, cut, side):
-    """Candles of one instance row inside segment (cut, side)."""
+
     return ((brow >= 0) & (brow <= 2 * cut)) if side == 0 else (brow >= 2 * cut + 2)
 
 
 def _seg_mean(seg, ok, y):
-    """Mean result (%) of a segment, or NaN if it is not a valid one (MIN_SEG <= n <= valid candles - MIN_SEG)."""
+
     m = seg & ok
     n = int(m.sum())
     return float(y[m].mean()) if MIN_SEG <= n <= int(ok.sum()) - MIN_SEG else np.nan
 
 
 def _pack_rules(rules, n_sym, n):
-    """Winning rule per symbol, for the redundancy check of the report.
-    side (n_sym,): 0 long, 1 short, -1 not stored. mask (stored symbols in order, bytes): candles where it fires."""
+
     side = np.full(n_sym, -1, dtype=np.int8)
     rows = []
     for s in sorted(rules):
@@ -396,8 +403,8 @@ def _pack_rules(rules, n_sym, n):
     return {"side": side, "mask": mask}
 
 
-def screen_indicator(bins, ncv, Y, z_mu, z_sd, target_side):
-    """T1 per symbol (max z over instances, targets, cuts and sides), the mean result and the rule of its winner."""
+def screen_indicator(bins, ncv, Y, E, z_mu, z_sd, target_side):
+
     n_inst, n_sym, n = bins.shape
     ncut = z_mu.shape[3]
     shape = (n_inst, Y.shape[2], ncut, 2)
@@ -408,37 +415,40 @@ def screen_indicator(bins, ncv, Y, z_mu, z_sd, target_side):
     t_sym, arg_sym = reduce_edges(edges, osum, z_mu, z_sd)
 
     mean_sym = np.full(n_sym, np.nan)
+    mean_npy = np.full(n_sym, np.nan)
+    n_npy = np.zeros(n_sym, dtype=np.int64)
     rules = {}
     for s in range(n_sym):
         if arg_sym[s] >= 0:
             i, g, c, side = np.unravel_index(arg_sym[s], shape)
             y = Y[s, :, g]
             seg = _seg_mask(bins[i, s], c, side)
-            mean_sym[s] = _seg_mean(seg, (bins[i, s] >= 0) & np.isfinite(y), y)
+            ok = (bins[i, s] >= 0) & np.isfinite(y)
+            mean_sym[s] = _seg_mean(seg, ok, y)
+            mean_npy[s], n_npy[s] = _npy_stats(seg & ok, y, E[s, :, g], mean_sym[s])
             rules[s] = (target_side[g], seg)
-    return {"T1": t_sym, "mean1": mean_sym, **_pack_rules(rules, n_sym, n)}
-
+    return {"T1": t_sym, "mean1": mean_sym, "mean_npy1": mean_npy, "n_npy1": n_npy,
+            **_pack_rules(rules, n_sym, n)}
 
 # =============================================================================
 # 7. PHASE 2: EVERY PAIR A + B
 # =============================================================================
 def swap_pair(x, nA, nB, n_tg, ncut):
-    """Per-combination array of a pair (flat, symbols) in layout (A, B) -> the same values in layout (B, A)."""
+
     n_sym = x.shape[1]
     y = x.reshape(nA, nB, n_tg, ncut, 2, ncut, 2, n_sym).transpose(1, 0, 2, 5, 6, 3, 4, 7)
     return np.ascontiguousarray(y).reshape(nA * nB * n_tg * ncut * 2 * ncut * 2, n_sym)
 
 
 def null_stop_count(n_null, null_pct):
-    """Null values >= T2 at which a symbol cannot pass anymore: its floor (percentile null_pct) is already >= T2."""
+
     lo = int(np.floor((n_null - 1) * (null_pct / 100) - 1e-9))
     lo = min(max(lo, 0), n_null - 1)
     return n_null - lo
 
 
 def pair_null_early(bA, bB, ncvA, ncvB, Y, shifts, z1_mu, z1_sd, z2_mu, z2_sd, t_real, alive, m_stop, ncut):
-    """Null of T2 (shift, symbol) in batches of shifts; a symbol stops once it cannot pass (NaN from there on).
-    Returns the null and the symbols still alive."""
+
     n_k = shifts.shape[0]
     n_sym = t_real.shape[0]
     null = np.full((n_k, n_sym), np.nan)
@@ -457,7 +467,7 @@ def pair_null_early(bA, bB, ncvA, ncvB, Y, shifts, z1_mu, z1_sd, z2_mu, z2_sd, t
 
 
 def pilot_shifts(n, exclude, cfg):
-    """n_pilots distinct shifts in [l_shift, n - l_shift], none of them in exclude (the null's)."""
+
     cand = np.setdiff1d(np.arange(cfg.l_shift, n - cfg.l_shift + 1, dtype=np.int64),
                         np.asarray(exclude, dtype=np.int64))
     if len(cand) < cfg.n_pilots:
@@ -466,15 +476,14 @@ def pilot_shifts(n, exclude, cfg):
 
 
 def phase2_shifts(n, cfg):
-    """Null shifts and pilot shifts of phase 2 (disjoint)."""
+
     rng = np.random.default_rng(cfg.seed_null)
     shifts = rng.integers(cfg.l_shift, n - cfg.l_shift, size=cfg.n_null_paths, endpoint=True).astype(np.int64)
     return shifts, pilot_shifts(n, shifts, cfg)
 
 
-def screen_pair(bA, bB, ncvA, ncvB, Y, shifts, pilot, m_stop, target_side, ncut):
-    """T2 per symbol, its nulls shifting B and shifting A, the mean result and the rule of its winner
-    (stored only where the symbol is still alive: elsewhere it cannot pass with this cache)."""
+def screen_pair(bA, bB, ncvA, ncvB, Y, E, shifts, pilot, m_stop, target_side, ncut):
+
     nA, n_sym, n = bA.shape
     nB = bB.shape[0]
     n_tg = Y.shape[2]
@@ -491,7 +500,6 @@ def screen_pair(bA, bB, ncvA, ncvB, Y, shifts, pilot, m_stop, target_side, ncut)
     sdA_ba[~ok_ba] = np.nan
     del ok, ok_ba
 
-    # --- T2 and the null shifting B, layout (A, B)
     muA, sdA = swap_pair(muA_ba, nB, nA, n_tg, ncut), swap_pair(sdA_ba, nB, nA, n_tg, ncut)
     t_sym, arg_sym = pair_T(bA, bB, ncvA, ncvB, Y, 0, muA, sdA, muB, sdB, np.arange(n_sym, dtype=np.int64), ncut)
     null_B, alive = pair_null_early(bA, bB, ncvA, ncvB, Y, shifts, muA, sdA, muB, sdB,
@@ -499,12 +507,13 @@ def screen_pair(bA, bB, ncvA, ncvB, Y, shifts, pilot, m_stop, target_side, ncut)
     muB_ba, sdB_ba = swap_pair(muB, nA, nB, n_tg, ncut), swap_pair(sdB, nA, nB, n_tg, ncut)
     del muA, sdA, muB, sdB
 
-    # --- null shifting A, layout (B, A): only the symbols that have not failed in null2_B
     null_A, alive = pair_null_early(bB, bA, ncvB, ncvA, Y, shifts, muA_ba, sdA_ba, muB_ba, sdB_ba,
                                     t_sym, alive, m_stop, ncut)
     del muA_ba, sdA_ba, muB_ba, sdB_ba
 
     mean_sym = np.full(n_sym, np.nan)
+    mean_npy = np.full(n_sym, np.nan)
+    n_npy = np.zeros(n_sym, dtype=np.int64)
     rules = {}
     for s in range(n_sym):
         if arg_sym[s] >= 0:
@@ -513,9 +522,11 @@ def screen_pair(bA, bB, ncvA, ncvB, Y, shifts, pilot, m_stop, target_side, ncut)
             seg = _seg_mask(bA[iA, s], cA, sA) & _seg_mask(bB[iB, s], cB, sB)
             valid = (bA[iA, s] >= 0) & (bB[iB, s] >= 0) & np.isfinite(y)
             mean_sym[s] = _seg_mean(seg, valid, y)
+            mean_npy[s], n_npy[s] = _npy_stats(seg & valid, y, E[s, :, g], mean_sym[s])
             if alive[s]:
                 rules[s] = (target_side[g], seg)
-    return {"T2": t_sym, "mean2": mean_sym, "null2_A": null_A, "null2_B": null_B, **_pack_rules(rules, n_sym, n)}
+    return {"T2": t_sym, "mean2": mean_sym, "mean_npy2": mean_npy, "n_npy2": n_npy,
+            "null2_A": null_A, "null2_B": null_B, **_pack_rules(rules, n_sym, n)}
 
 
 # =============================================================================
@@ -528,25 +539,24 @@ def compute_raw(data, pool, cfg):
 
     t1 = time.time()
     Y = build_targets(data.ohlcv_arr, data, cfg)
+    E = build_exits(data.ohlcv_arr, data, cfg)
     bins, ncv, empty = build_bins(data.ohlcv_arr, data, pool)
     logger.info(f"Targets and {len(names)} indicators ({len(pool.instances)} instances): {time.time() - t1:.0f}s")
     for key, s in empty:
         logger.info(f"  WARNING: {key} has no values in {s}")
 
-    # --- phase 1: pilot (null mean and std of every combination, for z), null, T1
     z_mu, z_sd = build_pilot_moments(data, pool, cfg)
     null1 = build_null_paths(data, pool, cfg, z_mu, z_sd)
     p1 = {}
     t1 = time.time()
     for k, nm in enumerate(names):
-        p1[nm] = screen_indicator(np.ascontiguousarray(bins[by_ind[nm]]), ncv[by_ind[nm]], Y,
+        p1[nm] = screen_indicator(np.ascontiguousarray(bins[by_ind[nm]]), ncv[by_ind[nm]], Y, E,
                                   np.ascontiguousarray(z_mu[by_ind[nm]]), np.ascontiguousarray(z_sd[by_ind[nm]]),
                                   target_side)
         p1[nm]["null1"] = np.ascontiguousarray(null1[:, k, :])
         progress(f"Phase 1, {len(names)} indicators", k + 1, len(names), t1)
     del z_mu, z_sd, null1
 
-    # --- phase 2: every indicator with every other one (unordered pairs)
     shifts, pilot = phase2_shifts(n, cfg)
     m_stop = null_stop_count(cfg.n_null_paths, cfg.null_pct)
     pairs = [(names[i], names[j]) for i in range(len(names)) for j in range(i + 1, len(names))]
@@ -554,7 +564,7 @@ def compute_raw(data, pool, cfg):
     t1 = time.time()
     for k, (a, b) in enumerate(pairs):
         p2[(a, b)] = screen_pair(np.ascontiguousarray(bins[by_ind[a]]), np.ascontiguousarray(bins[by_ind[b]]),
-                                 ncv[by_ind[a]], ncv[by_ind[b]], Y, shifts, pilot, m_stop, target_side, pool.ncut)
+                                 ncv[by_ind[a]], ncv[by_ind[b]], Y, E, shifts, pilot, m_stop, target_side, pool.ncut)
         progress(f"Phase 2, {len(pairs)} pairs x 2 nulls", k + 1, len(pairs), t1)
     done = sum(int((~np.isnan(r[nk])).sum()) for r in p2.values() for nk in ("null2_A", "null2_B"))
     logger.info(f"Phase 2 early stop (NULL_PCT={cfg.null_pct}: fails at {m_stop} null values >= T2): "
@@ -566,9 +576,7 @@ def compute_raw(data, pool, cfg):
 
 
 def run_screen(ohlcv_arr, symbols, pool, cfg, cache_dir=None, cache_name="screen", cache_tag=(), source_files=()):
-    """Raw results: from the cache if nothing they depend on changed, else computed (and saved if cache_dir).
-    cache_tag: anything else identifying the data (dataset, timeframe...). source_files: code the results depend on
-    besides this engine, its kernels and the indicator functions (which are always included)."""
+
     data = align_symbols(ohlcv_arr, symbols)
     min_n = 2 * cfg.l_shift + 1
     if data.n < min_n:
@@ -597,7 +605,7 @@ def run_screen(ohlcv_arr, symbols, pool, cfg, cache_dir=None, cache_name="screen
 # 9. CACHE
 # =============================================================================
 def _h_update(h, x):
-    """Feeds one value into the hash: arrays by dtype, shape and bytes, anything else by repr."""
+
     if isinstance(x, np.ndarray):
         if x.dtype == object:
             h.update(repr(x.tolist()).encode())
@@ -625,12 +633,10 @@ def cache_key(data, pool, cfg, tag=(), source_files=()):
             _h_update(h, (s, col))
             _h_update(h, np.asarray(arr[col]))
 
-    # pool: instances and thresholds (roles, groups and ops do not change the raw results)
     _h_update(h, [pool.instance_key(inst["indicator"], inst["params"]) for inst in pool.instances])
     for nm in pool.names:
         _h_update(h, (nm, list(pool.registry[nm]["thresholds"])))
 
-    # code: this engine, its kernels, the indicator functions and whatever the caller adds
     files = {os.path.abspath(f) for f in source_files}
     files |= {os.path.abspath(__file__), os.path.abspath(kernels.__file__)}
     files |= set(pool.code_files())
@@ -646,8 +652,7 @@ def cache_path(cache_dir, name, key):
 
 
 def load_cache(path, key, names, null_pct):
-    """Raw results of the cache, or None. A cache computed with a higher null_pct stopped some phase 2 nulls
-    earlier than this run needs: not usable."""
+
     if not os.path.isfile(path):
         return None
     try:

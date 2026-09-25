@@ -1,4 +1,4 @@
-#BOT_batch_BZ/main_universe.py (forex)
+#BOT_batch_BZ/universe_fx.py (forex)
 import os
 import sys
 import time
@@ -61,8 +61,8 @@ SYMBOL_POOL = [
 ]
 
 TIMEFRAMES   = ["1H","4H"]
-TIMEFRAMES   = ["4H"]
-COMBO_SIZES  = [1,2]
+#TIMEFRAMES   = ["4H"]
+COMBO_SIZES  = [2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {

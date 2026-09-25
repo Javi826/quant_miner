@@ -24,56 +24,35 @@ logger = logging.getLogger("BOT_batch.pipeline.wfo")
 # =============================================================================
 # WFO APPROVAL THRESHOLDS
 # =============================================================================
-# =============================================================================
-# WFO_NET_GAIN_TH = 30
-# WFO_DD_TH       = 15
-# WFO_R2_TH       = 0.8
-# WFO_WFR_TH      = 0.6
-# 
-# # =============================================================================
-# # WFO EXECUTION CONFIG
-# # =============================================================================
-# WFO_WINDOW_CONFIG = {
-#     "15m":    {"train_months": 9, "test_months": 2},
-#     "30m":    {"train_months": 9, "test_months": 2},
-#     "1H":     {"train_months": 9, "test_months": 2},
-#     "4H":     {"train_months": 9, "test_months": 2},
-#     "6Hutc":  {"train_months": 9, "test_months": 2},
-#     "12Hutc": {"train_months": 9, "test_months": 2},
-#     "1Dutc":  {"train_months": 9, "test_months": 2},
-# }
-# 
-# =============================================================================
-# =============================================================================
-# WFO APPROVAL THRESHOLDS
-# =============================================================================
-WFO_NET_GAIN_TH = 20
-WFO_DD_TH       = 1
+WFO_NET_GAIN_TH = 3
+WFO_DD_TH       = 3
 WFO_R2_TH       = 0.1
 WFO_WFR_TH      = 0.1
 
 # =============================================================================
 # WFO EXECUTION CONFIG
 # =============================================================================
-WFO_WINDOW_CONFIG = {
-    "15m":    {"train_months": 12, "test_months": 3},
-    "30m":    {"train_months": 12, "test_months": 3},
-    "1H":     {"train_months": 12, "test_months": 3},
-    "4H":     {"train_months": 12, "test_months": 3},
-    "6Hutc":  {"train_months": 12, "test_months": 3},
-    "12Hutc": {"train_months": 12, "test_months": 3},
-    "1Dutc":  {"train_months": 12, "test_months": 3},
-}
-
-ANCHORED             = False
+WFO_TRAIN_MONTHS     = 12
+WFO_TEST_MONTHS      = 3
 METRIC_MODE          = "NET_GAIN_PCT"   # "NET_GAIN_PCT" or "CALMAR"
 EMA_ALPHA            = 0.3
 WFO_BLOCK_SELL_AFTER = True
-# =============================================================================
-# WFO PARALLELIZATION
-# =============================================================================
+ANCHORED             = False
+
 RULES_N_JOBS = -1  # parallelizes across rules
 INNER_N_JOBS = 1   # parallelizes the param grid search within each rule's window
+
+# =============================================================================
+# WFO WINDOW LENGTHS (in candles)
+# =============================================================================
+
+def wfo_window_lengths(timeframe: str) -> tuple:
+
+    bars_per_month   = get_bars_per_year(timeframe) / 12
+    length_train_set = int(WFO_TRAIN_MONTHS * bars_per_month)
+    pct_train_set    = WFO_TRAIN_MONTHS / (WFO_TRAIN_MONTHS + WFO_TEST_MONTHS)
+    length_test      = int(length_train_set / pct_train_set - length_train_set)
+    return length_train_set, pct_train_set, length_test
 
 # =============================================================================
 # BLOCKED SELL_AFTER: taken from the rule's StepM best column, TP/SL stay free
@@ -242,8 +221,8 @@ def _collect_trades_fn(
 # =============================================================================
 
 def _evaluate_wfo_approval(
-    train_net_gain_is_avg: float,
-    test_net_gain_oos_avg: float,
+    train_net_gain_avg: float,
+    test_net_gain_avg: float,
     wfo_test_trades: pd.DataFrame,
     net_gain_th: float,
     dd_th: float,
@@ -261,9 +240,9 @@ def _evaluate_wfo_approval(
     max_dd_pct   = m["Max_DD_pct"]
     r_squared    = m["R_Squared"]
 
-    monthly_test = test_net_gain_oos_avg / test_months
-    monthly_is   = train_net_gain_is_avg / train_months if train_months else 0.0
-    wfr          = monthly_test / monthly_is if monthly_is > 0 else 0.0
+    monthly_test  = test_net_gain_avg / test_months
+    monthly_train = train_net_gain_avg / train_months if train_months else 0.0
+    wfr           = monthly_test / monthly_train if monthly_train > 0 else 0.0
 
     approved     = (
         net_gain_pct >= net_gain_th
@@ -275,9 +254,9 @@ def _evaluate_wfo_approval(
     return approved, net_gain_pct, max_dd_pct, wfr, m
 
 # =============================================================================
-# RUN WFO IS
+# RUN WFO RULE
 # =============================================================================
-def run_wfo_is(
+def run_wfo_rule(
     ohlcv_arr: dict,
     param_names: list,
     lists_for_grid: list,
@@ -296,13 +275,7 @@ def run_wfo_is(
 
     param_ranges = dict(zip(param_names, lists_for_grid))
 
-    _wfo_cfg = WFO_WINDOW_CONFIG.get(timeframe)
-    if _wfo_cfg is None:
-        raise ValueError(f"No WFO window config for timeframe: {timeframe}")
-    bars_per_month   = get_bars_per_year(timeframe) / 12
-    length_train_set = int(_wfo_cfg["train_months"] * bars_per_month)
-    pct_train_set    = _wfo_cfg["train_months"] / (_wfo_cfg["train_months"] + _wfo_cfg["test_months"])
-
+    length_train_set, pct_train_set, _ = wfo_window_lengths(timeframe)
     _signal_cache   = {}
     _prepared_cache = {}
 
@@ -325,7 +298,7 @@ def run_wfo_is(
 
     collect_test_fn = collect_test_fn_override if collect_test_fn_override is not None else collect_train_fn
 
-    best_params, df_results, wfo_train_trades, wfo_test_trades, n_windows, train_net_gain_is_avg, test_net_gain_oos_avg = walk_forward_optimization(
+    best_params, df_results, wfo_train_trades, wfo_test_trades, n_windows, train_net_gain_avg, test_net_gain_avg = walk_forward_optimization(
         ohlcv_arr               = ohlcv_arr,
         param_ranges            = param_ranges,
         length_train_set        = length_train_set,
@@ -342,7 +315,7 @@ def run_wfo_is(
 
     logger.debug(
         f"STAGE 1 ── WFO completed  ── {n_windows} windows | "
-        f"train={_wfo_cfg['train_months']}m  test={_wfo_cfg['test_months']}m"
+        f"train={WFO_TRAIN_MONTHS}m  test={WFO_TEST_MONTHS}m"
     )
 
     has_nan_window = df_results["best_crite"].iloc[:-1].isna().any()
@@ -352,15 +325,15 @@ def run_wfo_is(
         logger.debug("STAGE 1 ── WFO rejected — at least one window had no trades (NaN)")
     else:
         approved_wfo, wfo_net_gain, wfo_max_dd, wfo_wfr, wfo_metrics = _evaluate_wfo_approval(
-            train_net_gain_is_avg = train_net_gain_is_avg,
-            test_net_gain_oos_avg = test_net_gain_oos_avg,
+            train_net_gain_avg    = train_net_gain_avg,
+            test_net_gain_avg     = test_net_gain_avg,
             wfo_test_trades       = wfo_test_trades,
             net_gain_th           = net_gain_th,
             dd_th                 = dd_th,
             r2_th                 = r2_th,
             wfr_th                = wfr_th,
-            train_months          = _wfo_cfg["train_months"],
-            test_months           = _wfo_cfg["test_months"],
+            train_months          = WFO_TRAIN_MONTHS,
+            test_months           = WFO_TEST_MONTHS,
         )
 
     return (
@@ -397,7 +370,7 @@ def _run_wfo_for_rule(
 
     (
         best_params, approved_wfo, wfo_net_gain, wfo_max_dd, wfo_test_trades, df_results, wfo_wfr, metrics,
-    ) = run_wfo_is(
+    ) = run_wfo_rule(
         ohlcv_arr           = ohlcv_arr,
         param_names         = param_names,
         lists_for_grid      = lists_for_grid,
@@ -481,7 +454,7 @@ def pipe_wfo(
             )
             for i, rule in enumerate(rules)
         ),
-        desc=f"WFO LOOP       {combo_key}".ljust(12),
+        desc=f"{'WFO LOOP ' + combo_key:<15}",
         total=total,
         dynamic_ncols=True,
     ))

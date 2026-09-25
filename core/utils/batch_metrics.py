@@ -23,14 +23,12 @@ def _trading_days_between(start_day, end_day):
     return np.busday_count(start_day, end_day, weekmask=settings.WEEKMASK)
 
 
-_TRADING_DAY_TABLE_PAD = 366   # extra calendar days cached on each side of the requested range
+_TRADING_DAY_TABLE_PAD = 366    # extra calendar days cached on each side of the requested range
 _TRADING_DAY_TABLES: dict = {}  # weekmask key -> (first calendar day, trading day per calendar day, business-day index)
 
 
 def _trading_day_table(first_day: int, last_day: int) -> tuple:
-    # Calendar day (days since epoch) -> trading day (_to_trading_days) and its business-day index.
-    # Reads settings.WEEKMASK on every call; one table per weekmask, widened only when a date
-    # falls outside the cached range.
+
     weekmask = settings.WEEKMASK
     key   = weekmask if isinstance(weekmask, str) else tuple(np.asarray(weekmask).ravel().tolist())
     table = _TRADING_DAY_TABLES.get(key)
@@ -79,7 +77,7 @@ def _r_squared_linear_trend(y: np.ndarray) -> float:
     return float(1.0 - ss_res / ss_tot)
 
 def sharpe_from_daily_values(daily_values: np.ndarray) -> float:
-    # Same reductions as ndarray.mean()/ndarray.std() (bit-identical), without their Python overhead.
+
     n          = daily_values.size
     daily_mean = np.add.reduce(daily_values, axis=None) / n
     dev        = daily_values - daily_mean

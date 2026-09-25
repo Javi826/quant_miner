@@ -6,7 +6,7 @@ from signals.signal_builder import build_signal_fn, describe_rule
 
 logger = logging.getLogger("BOT_batch.rule_mining.generator")
 
-MAX_DEPTH = 3
+MAX_DEPTH = 2
 SIDES     = ("long", "short")
 
 

@@ -4,7 +4,7 @@ import time
 import logging
 import numpy as np
 from scipy.stats import norm
-from utils.reporting import print_dsr_train_metrics
+from utils.reporting import print_dsr_is_metrics
 logger = logging.getLogger("BOT_batch.pipeline.dsr")
 
 # =============================================================================
@@ -160,7 +160,7 @@ def _compute_dsr(all_raw_results: list, matrix_arr: np.ndarray, dsr_th: float, n
     n_eff, var_sr = n_eff_var_sr
 
     sr_by_id = {
-        rule_id: _unannualize_sharpe(r.get("sharpe_train", np.nan))
+        rule_id: _unannualize_sharpe(r.get("sharpe_is", np.nan))
         for rule_id, r in raw_by_id.items()
     }
 
@@ -173,10 +173,10 @@ def _compute_dsr(all_raw_results: list, matrix_arr: np.ndarray, dsr_th: float, n
 
     dsr_by_id = {}
     for rule_id, r in raw_by_id.items():
-        t_days     = int(r.get("n_days_train", 0))
-        skew_r     = float(r.get("skew_train", np.nan))
-        kurt_r     = float(r.get("kurtosis_train", np.nan))
-        sharpe_ann = r.get("sharpe_train", np.nan)
+        t_days     = int(r.get("n_days_is", 0))
+        skew_r     = float(r.get("skew_is", np.nan))
+        kurt_r     = float(r.get("kurtosis_is", np.nan))
+        sharpe_ann = r.get("sharpe_is", np.nan)
 
         if not (np.isfinite(skew_r) and np.isfinite(kurt_r)):
             dsr_by_id[rule_id] = 0.0
@@ -195,7 +195,7 @@ def _compute_dsr(all_raw_results: list, matrix_arr: np.ndarray, dsr_th: float, n
     passed_dsr_ids = [rid for rid, dsr_val in dsr_by_id.items() if _evaluate_dsr_approval(dsr_val, dsr_th)]
 
     if logger.isEnabledFor(logging.DEBUG):
-        print_dsr_train_metrics(raw_by_id, dsr_by_id, sr_by_id, set(passed_dsr_ids), set(passed_dsr_ids), sr0)
+        print_dsr_is_metrics(raw_by_id, dsr_by_id, sr_by_id, set(passed_dsr_ids), set(passed_dsr_ids), sr0)
 
     logger.debug(
         f"DSR ── M={total_candidates} n_combos={n_combos} N_bruto={n_bruto} N_eff={n_eff:.4f} SR0={sr0:.3f} "
@@ -220,12 +220,12 @@ def empty_dsr_fields() -> dict:
         "passed_dsr":     True,
         "passed_mbias":   True,
         "dsr":            0.0,
-        "sharpe_train":   None,
-        "skew_train":     None,
-        "kurtosis_train": None,
-        "n_days_train":   None,
-        "net_gain_train": None,
-        "max_dd_train":   None,
+        "sharpe_is":      None,
+        "skew_is":        None,
+        "kurtosis_is":    None,
+        "n_days_is":      None,
+        "net_gain_is":    None,
+        "max_dd_is":      None,
         "best_combo_id":  None,
     }
 
@@ -254,12 +254,12 @@ def pipe_dsr(
             "passed_dsr":     passed,
             "passed_mbias":   passed,
             "dsr":            dsr_by_id.get(rid, 0.0),
-            "sharpe_train":   r["sharpe_train"],
-            "skew_train":     r["skew_train"],
-            "kurtosis_train": r["kurtosis_train"],
-            "n_days_train":   r["n_days_train"],
-            "net_gain_train": r["net_gain_train"],
-            "max_dd_train":   r["max_dd_train"],
+            "sharpe_is":      r["sharpe_is"],
+            "skew_is":        r["skew_is"],
+            "kurtosis_is":    r["kurtosis_is"],
+            "n_days_is":      r["n_days_is"],
+            "net_gain_is":    r["net_gain_is"],
+            "max_dd_is":      r["max_dd_is"],
             "best_combo_id":  r["best_combo_id"] if passed else None,
         })
 

@@ -25,7 +25,7 @@ logger = logging.getLogger("pipeline_fx")
 # FOLDERS
 # =============================================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data_fx_lo")
+DATA_DIR = os.path.join(BASE_DIR, "data_fx")
 RAW_DIR = os.path.join(DATA_DIR, "01_raw")
 CLEAN_DIR = os.path.join(DATA_DIR, "02_clean")
 HIGHLOW_DIR = os.path.join(DATA_DIR, "03_highlow")
@@ -78,7 +78,7 @@ TIMEFRAMES_HIGHLOW = [["4H", "5m"], ["1H", "5m"]]
 # =============================================================================
 # SPLIT DATA
 # =============================================================================
-WINDOW_OOS_MONTHS    = 20
+WINDOW_OOS_MONTHS    = 21
 SPLIT_REFERENCE_DATE = None
 REFERENCE_SYMBOL     = "EURUSD"
 

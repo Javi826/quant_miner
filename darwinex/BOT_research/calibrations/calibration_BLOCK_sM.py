@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout,
 logger = logging.getLogger("BOT_batch.main_BLOCK")
 logger.setLevel(logging.INFO)
 logging.getLogger("BOT_batch.pipeline.backtest_runner").setLevel(logging.INFO)
-logging.getLogger("BOT_batch.pipeline.stepM").setLevel(logging.WARNING)
+logging.getLogger("BOT_batch.pipeline.stepM_is").setLevel(logging.WARNING)
 logging.getLogger("joblib").setLevel(logging.WARNING)
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 

@@ -27,7 +27,7 @@ logger = logging.getLogger("BOT_batch.pipeline.universe")
 # =============================================================================
 
 MIN_START_DATE_IS     = "2017-01-02"
-MIN_START_DATE_OOS    = "2024-01-10"
+MIN_START_DATE_OOS    = "2024-01-24"
 MIN_START_DATE_MERGED = "2018-01-02"
 
 MIN_START_DATE_BY_DATASET = {

@@ -1,6 +1,7 @@
 #quant_miner/darwinex/BOT_forex/darwinex/live/strategies.py (forex)
 import sys
 import os
+import panda as pd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 from loguru import logger
@@ -16,11 +17,7 @@ def get_active_strategies():
 
 
 def get_signal(strategy, bar_time: int) -> list:
-    """
-    Evaluates the strategy on every one of its symbols using the closed bars up
-    to and including bar_time (the bar that triggered the cycle).
-    Returns one {"symbol", "buy", "sell"} per symbol.
-    """
+
     timeframe = strategy["timeframe"]
     direction = strategy["direction"]
     signal_fn = build_signal_fn(strategy["specs"], direction)
@@ -41,6 +38,7 @@ def get_signal(strategy, bar_time: int) -> list:
                 continue
 
             arr = {
+                "ts"    : pd.to_datetime(df.index, unit="s").to_numpy(dtype="datetime64[ns]"),
                 "open"  : df["open"].values,
                 "high"  : df["high"].values,
                 "low"   : df["low"].values,

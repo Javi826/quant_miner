@@ -447,7 +447,7 @@ def find_best_portfolio_combination_wfo(
         max_total_strategies = max_total_strategies,
     )
 
-    all_ids = sorted({sid for sid, _ in validated_wfo_trades})   # sorted: set order depends on the per-process hash seed
+    all_ids = list({sid for sid, _ in validated_wfo_trades})
     logger.info(f"\n{'='*115}")
     logger.info(f"  BEST WFO PORTFOLIO — {len(all_ids)} validated strategies | metric: {metric}")
     logger.info(f"{'='*115}")

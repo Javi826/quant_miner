@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 import pandas as pd
 from setup.config_core import settings
-from pipeline.wfo import INNER_N_JOBS, WFO_WINDOW_CONFIG
+from pipeline.wfo import INNER_N_JOBS, WFO_TRAIN_MONTHS, WFO_TEST_MONTHS
 from runs.run_deploy import run_wfo_deploy_ema
 
 logger = logging.getLogger("BOT_batch.rule_mining.writter")
@@ -40,17 +40,11 @@ def _build_window_summary_lines(deploy_map: dict) -> list:
         if ts is None or te is None:
             continue
 
-        wfo_cfg     = WFO_WINDOW_CONFIG.get(tf, {})
-        train_m     = wfo_cfg.get("train_months")
-        test_m      = wfo_cfg.get("test_months")
-        ts_str      = pd.Timestamp(ts).strftime("%Y-%m-%d")
-        te_str      = pd.Timestamp(te).strftime("%Y-%m-%d")
-        next_str    = (pd.Timestamp(te) + pd.DateOffset(months=int(test_m))).strftime("%Y-%m-%d") if test_m is not None else "?"
-        train_m_str = f"{int(train_m)}m train" if train_m is not None else "?m train"
-        test_m_str  = f"+{int(test_m)}m" if test_m is not None else "?"
+        ts_str   = pd.Timestamp(ts).strftime("%Y-%m-%d")
+        te_str   = pd.Timestamp(te).strftime("%Y-%m-%d")
+        next_str = (pd.Timestamp(te) + pd.DateOffset(months=WFO_TEST_MONTHS)).strftime("%Y-%m-%d")
 
-        lines.append(f'  {tf:<6}: {ts_str} → {te_str}  ({train_m_str})  |  next train: {next_str}  ({test_m_str})')
-
+        lines.append(f'  {tf:<6}: {ts_str} → {te_str}  ({WFO_TRAIN_MONTHS}m train)  |  next train: {next_str}  (+{WFO_TEST_MONTHS}m)')
     return lines
 
 
@@ -126,7 +120,7 @@ def run_deploy_rule(
     rule_id: str,
     specs: list,
     side: str,
-    ohlcv_is: dict,
+    ohlcv_oos: dict,
     signal_fn: callable,
     param_grid: dict,
     order_amount: int,
@@ -139,7 +133,7 @@ def run_deploy_rule(
     label = f"{rule_id:<{label_width}}"
 
     deploy_params, deploy_symbols, train_start_ts, train_end_ts = run_wfo_deploy_ema(
-        ohlcv_is     = ohlcv_is,
+        ohlcv_oos    = ohlcv_oos,
         timeframe    = timeframe,
         param_grid   = param_grid,
         signal_fn    = signal_fn,

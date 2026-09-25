@@ -1,8 +1,4 @@
 #quant_miner/darwinex/BOT_research/main_screen.py (forex)
-"""Indicator screening on forex. Only this script knows the market: data, symbols, commission and paths.
-The computation (indicators/screen_engine.py, screen_kernels.py) and the selection (indicators/screen_report.py)
-are market agnostic."""
-
 import os
 import sys
 import time
@@ -32,16 +28,19 @@ N_JOBS = -1
 # =============================================================================
 # CONFIG
 # =============================================================================
-GROUP_N        = 5     # symbols where an indicator (alone) or a pair must pass to be selected
-NULL_PCT       = 85    # higher: reuses the cache; lower than the cache's: recomputes (phase 2 early stop)
-PHI_TH         = 0.70  # redundancy: absorbed if its phi with a better candidate (same kind and side) is higher
-MIN_COVER      = 0.10  # redundancy: dropped on a side if its rule fires on less of its symbols' candles
-MAX_COVER      = 0.70  # redundancy: dropped on a side if its rule fires on more of its symbols' candles
+NULL_PCT       = 80
+
+TIMEFRAME      = "1H"
+MODE           = "NPY" # edge_bp: "YPY" every signal is a trade, "NPY" only signals while flat on its symbol (same cache)
+GROUP_N        = 3     # symbols where an indicator (alone) or a pair must pass to be selected
+MIN_SCORE      = 2.0   # selection: an alone or pair counts only with score >= this (~sigmas over the null); None: off
+PHI_TH         = 0.80  # redundancy: absorbed if its phi with a better candidate (same kind and side) is higher
+MIN_COVER      = 0.05  # redundancy: dropped on a side if its rule fires on less of its symbols' candles
+MAX_COVER      = 0.60  # redundancy: dropped on a side if its rule fires on more of its symbols' candles
 USE_CACHE      = True  # True: reuse the raw results if nothing that affects them changed (else compute and save)
 
 #Computation: changing any of these computes a new cache
 DATASET   = "IS"
-TIMEFRAME = "1H"
 SYMBOLS = [
     "EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD",
     "USDCHF", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP",
@@ -59,9 +58,8 @@ N_PILOTS       = 200    # pilot: paths of phase 1 = shifts per pilot and pair of
 # Validated here, at import (do not edit)
 CFG = ScreenConfig(tp_pct=TP_PCT, sl_pct=SL_PCT, sell_after=SELL_AFTER, commission=float(COMISION),
                    n_null_paths=N_NULL_PATHS, n_pilots=N_PILOTS, null_pct=NULL_PCT, n_jobs=N_JOBS)
-validate_selection(GROUP_N, len(SYMBOLS), PHI_TH, MIN_COVER, MAX_COVER)
+validate_selection(GROUP_N, len(SYMBOLS), PHI_TH, MIN_COVER, MAX_COVER, MIN_SCORE, MODE)
 
-# Cache (do not edit)
 # Cache (do not edit)
 CACHE_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screen_cache")
 INDICATORS_DIR = os.path.dirname(os.path.abspath(screen_report.__file__))
@@ -100,8 +98,7 @@ def main():
                      cache_name=f"screen_{DATASET}_{TIMEFRAME}",
                      cache_tag=(DATASET, TIMEFRAME),
                      source_files=_source_files())
-    report_selection(raw, pool, NULL_PCT, GROUP_N, PHI_TH, MIN_COVER, MAX_COVER)
-
+    report_selection(raw, pool, NULL_PCT, GROUP_N, PHI_TH, MIN_COVER, MAX_COVER, MIN_SCORE, MODE)
 
 def log_run_config() -> None:
     logger.info(f"\n{'─' * 115}")
@@ -112,10 +109,13 @@ def log_run_config() -> None:
                 f"({len(CFG.configs)} configs, {len(CFG.targets)} targets)")
     logger.info(f"  NULL FLOOR  : N_NULL_PATHS={N_NULL_PATHS} NULL_PCT={NULL_PCT}")
     logger.info(f"  PILOT (z)   : N_PILOTS={N_PILOTS} (MIN_PILOT_N={MIN_PILOT_N})")
-    logger.info(f"  SELECTION   : GROUP_N={GROUP_N} PHI_TH={PHI_TH} MIN_COVER={MIN_COVER:.0%} "
+    logger.info(f"  SELECTION   : GROUP_N={GROUP_N} MIN_SCORE={'off' if MIN_SCORE is None else MIN_SCORE} "
+                f"PHI_TH={PHI_TH} MIN_COVER={MIN_COVER:.0%} "
             f"MAX_COVER={MAX_COVER:.0%}")
+    logger.info(f"  EDGE MODE   : {MODE}")
     logger.info(f"  CACHE       : USE_CACHE={USE_CACHE}")
     logger.info(f"{'─' * 115}\n")
+    
 if __name__ == "__main__":
     start = time.time()
     try:

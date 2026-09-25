@@ -1,18 +1,19 @@
-# core/rule_mining/rule_runner.py
+# core/rule_mining/rule_runner.py NEW
 import os
 import logging
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from pipeline.wfo import pipe_wfo, block_sell_after_grid
 from pipeline.backtest_runner import pipe_backtesting
-from pipeline.stepM import pipe_stepm
-from pipeline.correlation import pipe_correlation
+from pipeline.stepM_is import pipe_stepm
+from pipeline.stepM_oos import pipe_stepm_oos
+from pipeline.correlation import pipe_correlation, pipe_correlation_is
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from utils.plotting import plot_rule_mining_filter_comparison, plot_rule_mining_portfolio_comparison
 from setup.config_backtest import INITIAL_BALANCE
 from runs.run_portfolio import find_best_portfolio_combination_wfo
 from rule_mining.rule_generator import generate_all_rules, MAX_DEPTH
 from rule_mining.rule_writter import run_deploy_rule, save_rule_deploy_batch
-from utils.reporting import print_rule_mining_ranking, print_rule_mining_min_by_group, print_rule_mining_min_by_group_train
+from utils.reporting import print_rule_mining_ranking, print_rule_mining_min_by_group, print_rule_mining_min_by_group_is
 from pipeline.multiverse import pipe_multiverse
 logger = logging.getLogger("BOT_batch.rule_mining.runner")
 
@@ -71,10 +72,10 @@ def _empty_wfo_fields() -> dict:
 # ORCHESTRATOR
 # =============================================================================
 def run_rule_mining_pipeline(
-    ohlcv_data_mining_by_combo: dict,
-    ohlcv_arr_mining_by_combo: dict,
-    ohlcv_data_validation_by_combo: dict,
-    ohlcv_arr_validation_by_combo: dict,
+    ohlcv_data_is_by_combo: dict,
+    ohlcv_arr_is_by_combo: dict,
+    ohlcv_data_oos_by_combo: dict,
+    ohlcv_arr_oos_by_combo: dict,
     combos: list,
     param_grid: dict,   # dict keyed by timeframe: {"1H": {...}, "4H": {...}}
     order_amount: int,
@@ -93,11 +94,10 @@ def run_rule_mining_pipeline(
     # BACKTESTING — one combo at a time, ALL combos before moving on.
     # -------------------------------------------------------------------
     all_mbias_results = []
-    FF_by_timeframe  = {}
     for combo in combos:
         combo_key, timeframe = combo["combo_key"], combo["timeframe"]
         rules = _build_rule_dicts(
-            ohlcv_data_mining_by_combo[combo_key], combo_key, timeframe, max_depth,
+            ohlcv_data_is_by_combo[combo_key], combo_key, timeframe, max_depth,
         )
         logger.info(f"\n\033[36m{'─' * 70}")
         logger.info(f"─ RULE MINING ── {combo_key} {combo['symbols']} ── rules: {format(len(rules), ',').replace(',', '.')}")
@@ -105,13 +105,13 @@ def run_rule_mining_pipeline(
 
         rules = pipe_signal_cleaning_jaccard(
             rules     = rules,
-            ohlcv_arr = ohlcv_arr_mining_by_combo[combo_key],
+            ohlcv_arr = ohlcv_arr_is_by_combo[combo_key],
             timeframe = timeframe,
         )
 
         raw_results, n_combos, matrix_arr, col_names = pipe_backtesting(
             rules        = rules,
-            ohlcv_arr    = ohlcv_arr_mining_by_combo[combo_key],
+            ohlcv_arr    = ohlcv_arr_is_by_combo[combo_key],
             param_grid   = param_grid[timeframe],
             order_amount = order_amount,
             timeframe    = timeframe,
@@ -124,27 +124,43 @@ def run_rule_mining_pipeline(
             timeframe   = timeframe,
         )
 
+        mbias_results = pipe_correlation_is(
+            rules      = mbias_results,
+            matrix_arr = matrix_arr,
+            col_names  = col_names,
+            label      = timeframe,
+        )
+
         del raw_results, matrix_arr
 
         all_mbias_results.extend([{**r, **_empty_wfo_fields()} for r in mbias_results])
 
-    passed_mbias_ids = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"]}
+    passed_mbias_ids  = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"]}
+    passed_decorr_ids = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"] and r["passed_decorr_is"]}
 
     print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-MBIAS", survivor_ids=list(passed_mbias_ids))
-    print_rule_mining_min_by_group_train(
+    print_rule_mining_min_by_group_is(
         [r for r in all_mbias_results if r["passed_mbias"]], "POST-MBIAS (pre-WFO)",
+        all_mbias_results,
     )
+
+    print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-CORRELATION", survivor_ids=list(passed_decorr_ids))
+    print_rule_mining_min_by_group_is(
+        [r for r in all_mbias_results if r["rule_id"] in passed_decorr_ids], "POST-CORRELATION (pre-WFO)",
+        [r for r in all_mbias_results if r["passed_mbias"]],
+    )
+
     wfo_by_id = {}
     for combo in combos:
         combo_key, timeframe = combo["combo_key"], combo["timeframe"]
         rules_this_combo = [
             r for r in all_mbias_results
-            if r["combo_key"] == combo_key and r["passed_mbias"]
+            if r["combo_key"] == combo_key and r["passed_mbias"] and r["passed_decorr_is"]
         ]
 
         wfo_results = pipe_wfo(
             rules               = rules_this_combo,
-            ohlcv_arr           = ohlcv_arr_validation_by_combo[combo_key],
+            ohlcv_arr           = ohlcv_arr_oos_by_combo[combo_key],
             param_grid          = param_grid[timeframe],
             order_amount        = order_amount,
             timeframe           = timeframe,
@@ -155,6 +171,8 @@ def run_rule_mining_pipeline(
             brief_trades_folder = brief_trades_folder,
         )
         wfo_by_id.update({r["rule_id"]: r for r in wfo_results})
+
+    pipe_stepm_oos(list(wfo_by_id.values()))       # informative only: rules are not filtered
 
     all_raw_results = [
         wfo_by_id[r["rule_id"]] if r["rule_id"] in wfo_by_id else r
@@ -205,7 +223,7 @@ def run_rule_mining_pipeline(
         rules_for_mv = [raw_by_id[rid] for rid in candidates_before_mv]
         mv_results = pipe_multiverse(
             rules               = rules_for_mv,
-            ohlcv_data_by_combo = ohlcv_data_validation_by_combo,
+            ohlcv_data_by_combo = ohlcv_data_oos_by_combo,
             param_grid          = param_grid,   # dict keyed by timeframe, resolved inside
             order_amount        = order_amount,
         )
@@ -268,7 +286,7 @@ def run_rule_mining_pipeline(
                     specs               = rule_info["specs"],
                     side                = rule_info["side"],
                     timeframe           = rule_tf,
-                    ohlcv_is            = ohlcv_data_validation_by_combo[rule_info["combo_key"]],
+                    ohlcv_oos           = ohlcv_data_oos_by_combo[rule_info["combo_key"]],
                     signal_fn           = rule_info["signal_fn"],
                     param_grid          = block_sell_after_grid(param_grid[rule_tf], rule_info.get("best_combo_id")),
                     order_amount        = order_amount,
