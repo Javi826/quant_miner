@@ -30,7 +30,7 @@ for noisy_logger in ("joblib", "matplotlib", "numba"):
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 # -----------------------------------------------------------------------------
 
-from symbols.universe import build_universe, MIN_START_DATE_BY_DATASET
+from symbols.universe import build_universe
 from setup.config_paths import DATA_FOLDER_BY_DATASET
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
 from rule_mining.rule_runner import _build_rule_dicts

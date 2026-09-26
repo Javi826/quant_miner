@@ -20,7 +20,7 @@ logger = logging.getLogger("pipeline.step0")
 # =============================================================================
 SLEEP_BETWEEN_REQUESTS = 0.06
 N_LOOKBACK             = 180     # Number of candles to compute average volume
-TIMEFRAME_SYMBOL_SEL   = "1Dutc" # Reference timeframe for volume ranking — always daily
+TIMEFRAME_SYMBOL_SEL   = "1D" # Reference timeframe for volume ranking — always daily
 
 
 # =============================================================================
@@ -57,12 +57,7 @@ def _get_rwa_symbols() -> set[str]:
         return set()
     
 def select_symbols(config: dict) -> list[str]:
-    """
-    Returns sorted list of selected symbols based on SYMBOL_MODE.
-    - "manual": returns SELECTED_SYMBOLS as-is
-    - "auto":   fetches volume data and returns top N_SYMBOLS_DOWNLOAD
-    Saves selection to data/selected_symbols.csv for reference.
-    """
+
     symbol_mode      = config.get("symbol_mode", "manual")
     selected_symbols = config.get("selected_symbols", [])
     n_symbols        = config.get("n_symbols_download", 50)

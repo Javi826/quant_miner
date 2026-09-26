@@ -85,7 +85,7 @@ MIN_CANDLES = 49
 MAX_CANDLES = 51
 
 # Valid timeframes
-VALID_TIMEFRAMES = ['1H','4H','6Hutc','12Hutc']
+VALID_TIMEFRAMES = ['1H', '4H', '6H', '12H', '1D']
 
 # ==========================================================================
 # POSTGRESQL CONFIGURATION
@@ -126,12 +126,13 @@ API_LIMIT_DATA  = 180
 # ==========================================================================
 HOUR_ZONE             = ZoneInfo('UTC')
 CHECK_INTERVAL        = 5
+CANDLE_CLOSE_BUFFER   = 20
 PERSISTENCE_DIR       = "persistence"
 
 # ==========================================================================
 # API - WEBSOCKET SETTINGS
 # ==========================================================================
-from broker_client.broker_config import BASE_URL, PRODUCT_TYPE
+from broker_client.broker_config import BASE_URL, PRODUCT_TYPE, CANDLE_GRID_OFFSET_HOURS
 # ==========================================================================
 # LOGGER SETTINGS
 # ==========================================================================

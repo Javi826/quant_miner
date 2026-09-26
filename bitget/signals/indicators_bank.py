@@ -1,4 +1,4 @@
-#signals/indicators_bank.py (fx)
+#signals/indicators_bank.py (crypto)
 import numpy as np
 from indicators.indicators_pool import CANDIDATE_REGISTRY, build_flat_specs, instance_key, describe_spec
 
@@ -7,25 +7,24 @@ from indicators.indicators_pool import CANDIDATE_REGISTRY, build_flat_specs, ins
 # =============================================================================
 SELECTED_INDICATORS_BY_TIMEFRAME = {
     "1H": [
-    "bb_pctb",
-    "acceleration",
-    "open_close_momentum",
-    "ma_dist",
-    "choppiness",
-    "parkinson_ratio",
-    "roc_spread",
-    "close_pos_in_bar",
-    "close_pct_rank",
-    ],
-    "4H": [
-    "ret_skew",
-    "histvol_regime",
-    "donchian_pos",
     "pivot_dist",
     "close_pos_in_bar",
+    "open_close_momentum",
     "ichimoku_price_vs_cloud",
-    "macd_hist",
+    "vortex",
+    "acceleration",
+    "bb_pctb_slope",
+    "tpo_density",
+    ],
+    "4H": [
+    "donchian_pos",
     "rvi",
+    "close_pos_in_bar",
+    "open_close_momentum",
+    "hurst",
+    "parkinson_ratio",
+    "choppiness",
+    "ret_skew",
     ],
 }
 

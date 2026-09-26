@@ -20,10 +20,10 @@ ADX_PDS               = [7,14,21]
 ADX_THS               = [10,20,30]
 
 MA_DIST_PDS           = [20,50,100]
-MA_DIST_THS           = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
+MA_DIST_THS           = [-1.0,-0.6,-0.3,0.0,0.3,0.6,1.0]
 
 MOMENTUM_PDS          = [10,20,30]
-MOMENTUM_THS          = [-1.0,-0.8,-0.6,-0.4,-0.2,0.2,0.4,0.6,0.8,1.0]
+MOMENTUM_THS          = [-1.0,-0.6,-0.3,0.0,0.3,0.6,1.0]
 
 ATR_REGIME_PDS        = [7,14,21]
 ATR_REGIME_SMA_PDS    = [30,60]
@@ -183,8 +183,7 @@ def _rolling_mean_skipnan(values: np.ndarray, window: int) -> np.ndarray:
 
 @njit(cache=True)
 def _fir(x: np.ndarray, w: np.ndarray) -> np.ndarray:
-    """y[t] = sum of w[k] * x[t-k], k = 0..len(w)-1 (w[0]: weight of the newest value).
-    NaN for the first len(w)-1 values and wherever a value of the window is NaN."""
+
     n   = len(x)
     win = len(w)
     out = np.full(n, np.nan)
@@ -197,8 +196,7 @@ def _fir(x: np.ndarray, w: np.ndarray) -> np.ndarray:
 
 
 def _ewm_win(x: np.ndarray, alpha: float, win: int) -> np.ndarray:
-    """EWM (adjust=False recursion) truncated to its last `win` values, weights renormalized.
-    The value at t uses x[t-win+1..t] only; NaN if any of them is NaN."""
+
     w = (1.0 - alpha) ** np.arange(win, dtype=np.float64)       # weight of x[t-k], newest first
     return _fir(np.ascontiguousarray(x, dtype=np.float64), w / w.sum())
 
@@ -441,9 +439,7 @@ def _kalman_slope_core(close: np.ndarray, q: float, r: float) -> np.ndarray:
         out[i] = s1
     return out
 def _kalman_slope_weights(q: float, r: float, win: int) -> np.ndarray:
-    """Weights of the last slope of _kalman_slope_core run on `win` closes (index 0: newest close).
-    The filter is linear in the closes (start state included) and its gains do not depend on them,
-    so its last slope is sum of w[k] * close[t-k]: one impulse per position gives w."""
+
     w = np.empty(win)
     e = np.zeros(win)
     for k in range(win):
@@ -567,9 +563,11 @@ def a_adx(arr, ctx, params):
 
 
 def a_ma_dist(arr, ctx, params):
-    """Distance from the moving average, in ATR units."""
-    dist = _safe_div(arr["close"], _sma(arr["close"], params["period"])) - 1.0
-    return _safe_div(dist, _atr_pct(arr))
+    """Distance from the moving average, in ATR units scaled to the MA horizon."""
+    period = params["period"]
+    dist = _safe_div(arr["close"], _sma(arr["close"], period)) - 1.0
+    # close - SMA(n) has ~n/3 times the variance of a one-candle change
+    return _safe_div(dist, _atr_pct_horizon(arr, period / 3.0))
 
 
 def a_momentum(arr, ctx, params):
@@ -985,15 +983,13 @@ CANDIDATE_REGISTRY = {
     "kalman_slope":             {"group": "G", "fn": g_kalman_slope, "role": "signal",
                                  "params_grid": {}, "thresholds": KALMAN_SLOPE_THS},
 
-# =============================================================================
-#     # --- H ---
-#     "day_slot":                 {"group": "H", "fn": h_day_slot, "role": "filter",
-#                                  "params_grid": {"slot": DAY_SLOT_SLOTS},
-#                                  "thresholds": DAY_SLOT_THS},
-#     "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "role": "filter",
-#                                  "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THS},
-# 
-# =============================================================================
+    # --- H ---
+    "day_slot":                 {"group": "H", "fn": h_day_slot, "role": "filter",
+                                 "params_grid": {"slot": DAY_SLOT_SLOTS},
+                                 "thresholds": DAY_SLOT_THS},
+    "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "role": "filter",
+                                 "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THS},
+
     # --- I ---
     "tpo_density":              {"group": "I", "fn": i_tpo_density, "role": "filter",
                                  "params_grid": {"period": TPO_DENSITY_PDS}, "thresholds": TPO_DENSITY_THS},

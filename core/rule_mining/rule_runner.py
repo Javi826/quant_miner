@@ -6,7 +6,7 @@ from pipeline.wfo import pipe_wfo, block_sell_after_grid
 from pipeline.backtest_runner import pipe_backtesting
 from pipeline.stepM_is import pipe_stepm
 from pipeline.stepM_oos import pipe_stepm_oos
-from pipeline.correlation import pipe_correlation, pipe_correlation_is
+from pipeline.correlation import pipe_correlation_oos, pipe_correlation_is
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from utils.plotting import plot_rule_mining_filter_comparison, plot_rule_mining_portfolio_comparison
 from setup.config_backtest import INITIAL_BALANCE
@@ -201,7 +201,7 @@ def run_rule_mining_pipeline(
     if validated_after_wfo:
         candidates_before_corr = [rid for rid, _ in validated_after_wfo]
         rules_for_corr = [raw_by_id[rid] for rid in candidates_before_corr]
-        survivors_rules = pipe_correlation(
+        survivors_rules = pipe_correlation_oos(
             rules           = rules_for_corr,
             initial_balance = INITIAL_BALANCE,
         )

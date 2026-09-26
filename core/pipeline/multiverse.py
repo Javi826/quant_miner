@@ -18,10 +18,10 @@ MULTIVERSE_PVALUE_TH    = 0.1
 
 # =============================================================================
 # BLOCK_SIZE_BY_TIMEFRAME = {
-#     "1H":     150,
-#     "4H":     120,
-#     "6Hutc":  70,
-#     "12Hutc": 30,
+#     "1H":  150,
+#     "4H":  120,
+#     "6H":  70,
+#     "12H": 30,
 # }
 # =============================================================================
 
@@ -30,13 +30,14 @@ BLOCK_SIZE_BY_TIMEFRAME = {
     "4H":     100,
 }
 
+#------------------------------------------------------------------------------
+
 N_PERMUTATIONS = 1000
 MCPT_N_JOBS    = -1
 MCPT_BASE_SEED = 42
 
 # Paths regenerated on demand for the debug plot only — independent of n_paths
 MCPT_PLOT_N_PATHS = 100
-
 
 # =============================================================================
 # SAMPLING METHOD — disjoint block permutation (Masters, 2020)

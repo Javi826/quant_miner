@@ -62,7 +62,7 @@ SYMBOL_POOL = [
 
 TIMEFRAMES   = ["1H","4H"]
 #TIMEFRAMES   = ["4H"]
-COMBO_SIZES  = [2]
+COMBO_SIZES  = [1,2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {
@@ -287,7 +287,56 @@ def _log_ranking(ranking: pd.DataFrame, timeframe: str, rank_percentiles: list, 
     logger.info(table.round(2).to_string(index=False))
 
     _log_symbols_as_python_list(shortlist)
+# =============================================================================
+# CROSS RANKING ── combos ranked in every timeframe (TOP BOTH)
+# =============================================================================
+def _build_cross_ranking(rankings_by_tf: dict) -> pd.DataFrame:
+    per_tf = []
+    for timeframe, ranking in rankings_by_tf.items():
+        candidates = ranking.loc[ranking["n_pass"] > 0, ["symbols", "n_symbols", "n_pass", "score"]]
+        per_tf.append(candidates.rename(columns={
+            "n_pass": f"n_pass_{timeframe}",
+            "score":  f"score_{timeframe}",
+        }))
 
+    merged = per_tf[0]
+    for other in per_tf[1:]:
+        merged = merged.merge(other, on=["symbols", "n_symbols"], how="inner")
+
+    n_pass_cols = [f"n_pass_{tf}" for tf in rankings_by_tf]
+    score_cols  = [f"score_{tf}" for tf in rankings_by_tf]
+
+    merged["min_n_pass"] = merged[n_pass_cols].min(axis=1)
+    merged["min_score"]  = merged[score_cols].min(axis=1)
+    merged["mean_score"] = merged[score_cols].mean(axis=1)
+
+    return merged.sort_values(
+        ["min_n_pass", "min_score", "mean_score"], ascending=False
+    ).reset_index(drop=True)
+
+
+def _log_cross_ranking(cross_ranking: pd.DataFrame, timeframes: list, top_n: int) -> None:
+    shortlist = cross_ranking.head(top_n)
+    label     = " + ".join(tf.upper() for tf in timeframes)
+
+    logger.info(f"\n{'=' * REPORT_LINE_WIDTH}")
+    logger.info(f"  RANKING TOP BOTH ({label}) ── TOP {len(shortlist)} of {len(cross_ranking)} common candidate(s)")
+    logger.info(f"{'=' * REPORT_LINE_WIDTH}")
+
+    if shortlist.empty:
+        logger.info("  No common combo(s) to rank.")
+        return
+
+    cols = [
+        "symbols", "n_symbols", "min_n_pass", "min_score", "mean_score",
+        *[f"n_pass_{tf}" for tf in timeframes],
+        *[f"score_{tf}" for tf in timeframes],
+    ]
+    table = shortlist[cols].copy()
+    table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
+    logger.info(table.round(2).to_string(index=False))
+
+    _log_symbols_as_python_list(shortlist)
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -346,10 +395,16 @@ if __name__ == "__main__":
         logger.debug(f"{'=' * REPORT_LINE_WIDTH}")
         _log_threshold_report(subset, RANK_PERCENTILES, PCT_BELOW_THRESHOLD)
 
+    rankings_by_tf = {}
     for timeframe in TIMEFRAMES:
         subset  = results_df[results_df["timeframe"] == timeframe]
         ranking = _build_ranking(subset, RANK_PERCENTILES, PCT_BELOW_THRESHOLD, RANK_WEIGHTS)
         _log_ranking(ranking, timeframe, RANK_PERCENTILES, RANK_TOP_N)
+        rankings_by_tf[timeframe] = ranking
+
+    if len(rankings_by_tf) > 1:
+        cross_ranking = _build_cross_ranking(rankings_by_tf)
+        _log_cross_ranking(cross_ranking, list(rankings_by_tf), RANK_TOP_N)
 
     elapsed = int(time.time() - start)
     logger.info(f"\n🏁 TOTAL — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")

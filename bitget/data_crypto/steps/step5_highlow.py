@@ -158,7 +158,7 @@ def _process_pair(
             errors += 1
 
     return errors
-MIN_CANDLES_1DUTC = 365
+MIN_CANDLES_1D = 365
 # =============================================================================
 # RUN
 # =============================================================================
@@ -201,17 +201,17 @@ def run(config: dict) -> bool:
 
     logger.info("✅ High/Low timestamps complete")
 
-    # Filter symbols with fewer than MIN_CANDLES_1DUTC daily candles
+    # Filter symbols with fewer than MIN_CANDLES_1D daily candles
     removed_symbols = []
     for filename in os.listdir(output_dir):
         if not filename.endswith(".parquet"):
             continue
         sym, tf = _parse_filename(filename)
-        if tf != "1Dutc":
+        if tf != "1D":
             continue
         try:
             df = pd.read_parquet(os.path.join(output_dir, filename))
-            if len(df) < MIN_CANDLES_1DUTC:
+            if len(df) < MIN_CANDLES_1D:
                 removed_symbols.append(sym)
         except Exception:
             continue
@@ -224,11 +224,11 @@ def run(config: dict) -> bool:
             if sym in removed_symbols:
                 os.remove(os.path.join(output_dir, filename))
         config["removed_symbols"] = removed_symbols
-        logger.info(f"\n🗑 Symbols removed (< {MIN_CANDLES_1DUTC} daily candles): {len(removed_symbols)}")
+        logger.info(f"\n🗑 Symbols removed (< {MIN_CANDLES_1D} daily candles): {len(removed_symbols)}")
         for sym in sorted(removed_symbols):
             logger.info(f"   - {sym}")
     else:
-        logger.info(f"✅ All symbols passed minimum candle filter ({MIN_CANDLES_1DUTC} days)")
+        logger.info(f"✅ All symbols passed minimum candle filter ({MIN_CANDLES_1D} days)")
 
     if total_errors:
         logger.warning(f"⚠ Step 5 completed with {total_errors} error(s)")

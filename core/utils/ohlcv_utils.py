@@ -7,13 +7,13 @@ import logging
 logger = logging.getLogger("shared.utils.ohlcv_utils")
 
 BARS_PER_DAY = {
-    '15m'    : 96,
-    '30m'    : 48,
-    '1H'     : 24,
-    '4H'     : 6,
-    '6Hutc'  : 4,
-    '12Hutc' : 2,
-    '1Dutc'  : 1,
+    '15m' : 96,
+    '30m' : 48,
+    '1H'  : 24,
+    '4H'  : 6,
+    '6H'  : 4,
+    '12H' : 2,
+    '1D'  : 1,
 }
 
 def get_bars_per_day(timeframe: str) -> int:

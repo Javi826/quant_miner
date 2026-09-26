@@ -55,10 +55,6 @@ def _equity_series(strategy_trades, capital: float) -> pd.Series:
 # =============================================================================
 # GREEDY CORE: shared by the OOS (post-WFO) and IS (pre-WFO) decorrelations
 # =============================================================================
-# Walks the rules in rank order and keeps a rule unless its correlation with any
-# already kept rule is > threshold. The correlation of one candidate against the whole
-# kept set is a single numpy vector (no per-pair python loop); the first kept rule
-# above the threshold is the one reported, as in the original sequential loop.
 class _DenseCorr:
     # OOS: precomputed (rounded) correlation matrix
     def __init__(self, corr_vals: np.ndarray):
@@ -75,7 +71,7 @@ class _DenseCorr:
 
 
 class _StreamCorr:
-    # IS: correlations computed on demand against the kept set only (no n x n matrix)
+
     def __init__(self, z_rows: np.ndarray):
         self.z     = z_rows                      # (n_rules, n_days) standardized series, float32
         self.kept  = np.empty_like(z_rows)
@@ -202,7 +198,7 @@ def decorrelate_by_profit(
 # =============================================================================
 # PIPE CORRELATION — greedy profit-correlation filter across all rules
 # =============================================================================
-def pipe_correlation(
+def pipe_correlation_oos(
     rules: list,
     initial_balance: float,
     threshold: float = None,
@@ -226,11 +222,6 @@ def pipe_correlation(
 # =============================================================================
 # PIPE CORRELATION IS — pre-WFO greedy over the IS matrix, one combo at a time
 # =============================================================================
-# Series: the IS daily profit column of each StepM survivor at its best_combo_id,
-# read from the matrix_arr / col_names built by pipe_backtesting (no extra backtest).
-# Rank: IS net gain of that same column (profit / INITIAL_BALANCE, in %).
-# Guard: the Sharpe recomputed from each column must match the one StepM stored for
-# the rule; a mismatch means matrix_arr columns no longer line up with col_names.
 def pipe_correlation_is(
     rules: list,
     matrix_arr: np.ndarray,

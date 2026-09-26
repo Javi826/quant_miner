@@ -1,16 +1,14 @@
-#quant_b/bitget/BOT_batch_E1/research/strategy_re_backtest.py (crypto)
+#quant_minger/bitget/develop/strategy_re_backtest.py (crypto)
 import os
 import sys
 
-_BITGET       = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bitget"))
+_BITGET       = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "bitget"))
 _BOT_BATCH_E1 = os.path.join(_BITGET, "BOT_batch_E1")
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 sys.path.append(_BITGET)
-sys.path.append(os.path.join(_BITGET, "shared"))
-sys.path.append(os.path.join(_BITGET, "shared", "shared_batchs"))
+sys.path.append(os.path.abspath(os.path.join(_BITGET, "..", "core")))
 sys.path.append(os.path.join(_BITGET, "signals"))
-
 import time
 import logging
 import importlib.util
@@ -28,19 +26,22 @@ logging.getLogger("joblib").setLevel(logging.WARNING)
 logging.getLogger("matplotlib").setLevel(logging.WARNING)
 logger = logging.getLogger("BOT_batch.main_rule_validation")
 
-from shared_batchs.symbols.universe import build_universe
+from symbols.universe import build_universe
 DATA_FOLDER_IS = os.path.join(
     _BITGET,
-    "data_crypto", "data", "04_split", "expanding", "IS", "crypto_2022-01_2026-09_IS",
+    "data_crypto", "data_cr", "04_split", "IS", "crypto_2019-01_2026-09_IS",
 )
 
-from shared_batchs.utils.ohlcv_utils import prepare_ohlcv_arrays
-from shared_batchs.setup.config_backtest import INITIAL_BALANCE, ORDER_AMOUNT
-from shared_batchs.pipeline.wfo import build_ohlcv_with_signal
-from shared_batchs.backtesters.ZX_compute_BT import prepare_backtest_data, run_backtest_from_prepared
-from shared_batchs.utils.batch_metrics import compute_metrics
+from utils.ohlcv_utils import prepare_ohlcv_arrays
+from setup.config_backtest import INITIAL_BALANCE, ORDER_AMOUNT
+from setup.config_core import settings
+from pipeline.wfo import build_ohlcv_with_signal
+from utils.batch_metrics import compute_metrics
 from signals.signal_builder import build_signal_fn
 
+_bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
+prepare_backtest_data      = _bt.prepare_backtest_data
+run_backtest_from_prepared = _bt.run_backtest_from_prepared
 # =============================================================================
 # RUN CONFIGURATION
 # =============================================================================
@@ -90,9 +91,7 @@ def _run_full_backtest_for_rule(
     save_trades: bool,
     brief_trades_folder: str,
 ) -> dict:
-    """Runs a single full backtest for one rule over the entire available data range.
-    No walk-forward windowing, no edge-candle skipping: any trade still open at the
-    end of the data closes at the last available candle's close price."""
+
     logging.basicConfig(level=log_level, format="%(message)s", force=True)
     logging.getLogger("joblib").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)

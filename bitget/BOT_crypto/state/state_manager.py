@@ -1,16 +1,4 @@
 #BOT_crypto/state/state_manager.py
-"""
-state/state_manager.py State Manager - Handles bot state persistence and broker synchronization.
-
-This module is responsible for:
-- Loading bot state from JSON file
-- Saving bot state to JSON file (PRIMARY + dual-write to PostgreSQL)
-- Synchronizing local state with broker positions
-
-This module imports from trade_logger for logging removed positions,
-but trade_logger does not import back, avoiding circular dependencies.
-"""
-
 import os
 import json
 import copy
@@ -310,8 +298,8 @@ def sync_broker(open_positions: Dict,
     # CASE 2: Local has positions but WS empty → Timing issue, skip
     if total_local > 0 and len(ws.positions) == 0:
         logger.error(
-            f"[SYNC] Local has {total_local} position(s) but WebSocket empty "
-            f"- SKIPPING (snapshot timing issue)"
+            f"[SYNC]-Error-Local-has-{total_local}-position(s)-but WebSocket empty "
+            f"-SKIPPING (snapshot timing issue)"
         )
         return
     

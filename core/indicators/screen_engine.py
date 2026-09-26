@@ -1,5 +1,6 @@
 # core/indicators/screen_engine.py
 import os
+import ast
 import sys
 import time
 import pickle
@@ -13,7 +14,6 @@ import numba
 import numpy as np
 from joblib import Parallel, delayed, effective_n_jobs
 
-from . import screen_kernels as kernels
 from .screen_kernels import MIN_SEG, MIN_PILOT_N
 from .screen_kernels import compute_targets, fill_edges, reduce_edges, path_T_all, path_edges_all
 from .screen_kernels import add_edge_moments, moments_inplace
@@ -131,17 +131,6 @@ class IndicatorPool:
         starts = np.array([self.by_ind[nm][0] for nm in self.names], dtype=np.int64)
         ends = np.array([self.by_ind[nm][-1] + 1 for nm in self.names], dtype=np.int64)
         return starts, ends
-
-    def code_files(self):
-        """Source files of the indicator functions and of instance_key."""
-        fns = [m["fn"] for nm, m in self.registry.items() if nm in self.by_ind] + [self.instance_key]
-        files = set()
-        for fn in fns:
-            f = getattr(sys.modules.get(getattr(fn, "__module__", None)), "__file__", None)
-            if f and os.path.isfile(f):
-                files.add(os.path.abspath(f))
-        return sorted(files)
-
 
 # =============================================================================
 # 3. DATA
@@ -575,7 +564,7 @@ def compute_raw(data, pool, cfg):
             "p2": p2, "null_pct": cfg.null_pct, "created": datetime.now().isoformat(timespec="seconds")}
 
 
-def run_screen(ohlcv_arr, symbols, pool, cfg, cache_dir=None, cache_name="screen", cache_tag=(), source_files=()):
+def run_screen(ohlcv_arr, symbols, pool, cfg, cache_dir=None, cache_name="screen", cache_tag=()):
 
     data = align_symbols(ohlcv_arr, symbols)
     min_n = 2 * cfg.l_shift + 1
@@ -585,7 +574,7 @@ def run_screen(ohlcv_arr, symbols, pool, cfg, cache_dir=None, cache_name="screen
         return compute_raw(data, pool, cfg)
 
     t1 = time.time()
-    key = cache_key(data, pool, cfg, cache_tag, source_files)
+    key = cache_key(data.symbols, cfg, cache_tag)
     path = cache_path(cache_dir, cache_name, key)
     raw = load_cache(path, key, pool.names, cfg.null_pct)
     if raw is not None:
@@ -617,35 +606,48 @@ def _h_update(h, x):
     h.update(b"|")
 
 
-def cache_key(data, pool, cfg, tag=(), source_files=()):
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))   # core/indicators: its code is part of the cache key
+CODE_EXCLUDE = ("screen_report.py",)                     # relative to CODE_DIR: does not change the raw results
 
+
+def cache_key(symbols, cfg, tag=()):
+    """Only the tag, the symbols, the TP/SL/SELL_AFTER grid, N_NULL_PATHS, N_PILOTS and the code of CODE_DIR."""
     h = hashlib.sha256()
-    _h_update(h, (np.__version__, numba.__version__, tuple(sys.version_info[:2])))
     _h_update(h, tuple(tag))
-    _h_update(h, (list(data.symbols), cfg.identity(), MIN_PILOT_N, MIN_SEG, pool.ncut, NULL_BATCH))
-
-    # data: common grid and every column of every symbol
-    _h_update(h, np.asarray(data.grid))
-    for s in data.symbols:
-        arr = data.ohlcv_arr[s]
-        cols = sorted(arr.keys()) if hasattr(arr, "keys") else sorted(arr.dtype.names)
-        for col in cols:
-            _h_update(h, (s, col))
-            _h_update(h, np.asarray(arr[col]))
-
-    _h_update(h, [pool.instance_key(inst["indicator"], inst["params"]) for inst in pool.instances])
-    for nm in pool.names:
-        _h_update(h, (nm, list(pool.registry[nm]["thresholds"])))
-
-    files = {os.path.abspath(f) for f in source_files}
-    files |= {os.path.abspath(__file__), os.path.abspath(kernels.__file__)}
-    files |= set(pool.code_files())
-    for f in sorted(files):
-        _h_update(h, os.path.basename(f))
-        with open(f, "rb") as fh:
-            h.update(fh.read())
+    _h_update(h, (list(symbols), cfg.configs, int(cfg.n_null_paths), int(cfg.n_pilots)))
+    for f in _code_files():
+        _h_update(h, os.path.relpath(f, CODE_DIR).replace(os.sep, "/"))
+        h.update(_code_digest(f))
     return h.hexdigest()
 
+
+def _code_files():
+    """Every .py of CODE_DIR and its subfolders, except CODE_EXCLUDE."""
+    files = []
+    for d, subdirs, names in os.walk(CODE_DIR):
+        subdirs[:] = sorted(x for x in subdirs if x != "__pycache__" and not x.startswith("."))
+        for nm in names:
+            f = os.path.join(d, nm)
+            if nm.endswith(".py") and os.path.relpath(f, CODE_DIR).replace(os.sep, "/") not in CODE_EXCLUDE:
+                files.append(f)
+    return sorted(files)
+
+
+def _code_digest(path):
+    """Code of a file as its AST without docstrings: comments, blank lines and formatting do not count."""
+    with open(path, "rb") as fh:
+        src = fh.read()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return src
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                node.body = node.body[1:] or [ast.Pass()]
+    return ast.dump(tree).encode()
 
 def cache_path(cache_dir, name, key):
     return os.path.join(cache_dir, f"{name}_{key[:16]}.pkl")

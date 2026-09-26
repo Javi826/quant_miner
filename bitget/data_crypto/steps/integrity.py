@@ -52,7 +52,7 @@ VOLUME_COLS = ["volume"]
 # =============================================================================
 
 def _parse_timeframe_to_ms(tf: str) -> int:
-    s = str(tf).strip().lower().replace("utc", "")
+    s = str(tf).strip().lower()
     m = re.match(r"^(\d+)([mhdwM])$", s)
     if not m:
         return 86400 * 1000
@@ -327,11 +327,7 @@ def run_highlow(config: dict, collector: IssueCollector | None = None) -> bool:
 
 
 def run_coverage(config: dict, collector: IssueCollector | None = None, tolerance_days: int = 5) -> bool:
-    """
-    Validates that all timeframes for each symbol start at roughly the same date.
-    Uses 1Dutc as reference. Alerts if any timeframe starts more than tolerance_days later.
-    Diagnostic only — never aborts pipeline.
-    """
+
     input_dir: str   = config["raw_dir"]
     selected_symbols = config.get("selected_symbols") or []
     files            = _list_parquet_files(input_dir, selected_symbols=selected_symbols)
@@ -352,22 +348,22 @@ def run_coverage(config: dict, collector: IssueCollector | None = None, toleranc
 
     issues = 0
     for symbol, tf_files in sorted(symbol_files.items()):
-        ref_path = tf_files.get("1Dutc")
+        ref_path = tf_files.get("1D")
         if not ref_path:
-            logger.debug(f"  ⚠ [{symbol}] No 1Dutc reference — skipping coverage check")
+            logger.debug(f"  ⚠ [{symbol}] No 1D reference — skipping coverage check")
             continue
 
         try:
             df_ref  = pd.read_parquet(ref_path)
             ref_min = pd.to_datetime(df_ref["timestamp"]).min()
         except Exception as e:
-            logger.warning(f"  ⚠ [{symbol}] Could not read 1Dutc reference: {e}")
+            logger.warning(f"  ⚠ [{symbol}] Could not read 1D reference: {e}")
             continue
 
         ref_max = pd.to_datetime(df_ref["timestamp"]).max()
 
         for tf, filepath in sorted(tf_files.items()):
-            if tf == "1Dutc":
+            if tf == "1D":
                 continue
             try:
                 df        = pd.read_parquet(filepath)
@@ -379,11 +375,11 @@ def run_coverage(config: dict, collector: IssueCollector | None = None, toleranc
                 if diff_start > tolerance_days:
                     issues += 1
                     logger.info(
-                        f"  ⚠ [{symbol}] {tf} starts {diff_start}d after 1Dutc "
+                        f"  ⚠ [{symbol}] {tf} starts {diff_start}d after 1D "
                         f"({tf_min.date()} vs {ref_min.date()})"
                     )
                     if collector:
-                        collector.add(symbol, tf, "coverage", f"starts {diff_start}d after 1Dutc ({tf_min.date()} vs {ref_min.date()})")
+                        collector.add(symbol, tf, "coverage", f"starts {diff_start}d after 1D ({tf_min.date()} vs {ref_min.date()})")
                 else:
                     logger.debug(f"  ✅ [{symbol}] {tf} start coverage OK (diff: {diff_start}d)")
 
@@ -392,11 +388,11 @@ def run_coverage(config: dict, collector: IssueCollector | None = None, toleranc
                 if diff_end > tolerance_days:
                     issues += 1
                     logger.info(
-                        f"  ⚠ [{symbol}] {tf} ends {diff_end}d away from 1Dutc "
+                        f"  ⚠ [{symbol}] {tf} ends {diff_end}d away from 1D "
                         f"({tf_max.date()} vs {ref_max.date()})"
                     )
                     if collector:
-                        collector.add(symbol, tf, "coverage", f"ends {diff_end}d away from 1Dutc ({tf_max.date()} vs {ref_max.date()})")
+                        collector.add(symbol, tf, "coverage", f"ends {diff_end}d away from 1D ({tf_max.date()} vs {ref_max.date()})")
                 else:
                     logger.debug(f"  ✅ [{symbol}] {tf} end coverage OK (diff: {diff_end}d)")
 
@@ -459,7 +455,7 @@ if __name__ == "__main__":
         "raw_dir":            os.path.join(_base, "data", "01_raw"),
         "clean_dir":          os.path.join(_base, "data", "02_clean"),
         "highlow_dir":        os.path.join(_base, "data", "03_highlow"),
-        "timeframe":          "1Dutc",
+        "timeframe":          "1D",
         "timeframes_highlow": ["4H", "1H"],
     }
     _collector = IssueCollector()

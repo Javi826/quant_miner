@@ -1,46 +1,44 @@
+#BOT_crypto/bot_utils/timeframes.py
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import List, Dict
 
+import re
+from datetime import  timezone
+
+from config.settings import CANDLE_GRID_OFFSET_HOURS, CANDLE_CLOSE_BUFFER
+
 # ==========================================================================
 # TIMEFRAME CALCULATIONS
 # ==========================================================================
-def calculate_next_candle_time(timeframe: str = '4H', hour_zone=None) -> datetime:
+GRID_OFFSET  = timedelta(hours=CANDLE_GRID_OFFSET_HOURS)
+CLOSE_BUFFER = timedelta(seconds=CANDLE_CLOSE_BUFFER)
 
-    now = datetime.now(hour_zone)
-    
-    # Parse timeframe
-    if timeframe.endswith('Hutc'):
-        hours = int(timeframe[:-4])
-        minutes = hours * 60
-    elif timeframe.endswith('H'):
-        hours = int(timeframe[:-1])
-        minutes = hours * 60
-    elif timeframe.endswith('m'):
-        minutes = int(timeframe[:-1])
-    elif timeframe.endswith('Dutc'):
-        days = int(timeframe[:-4])
-        minutes = days * 24 * 60
-    else:
+_EPOCH             = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_TIMEFRAME_PATTERN = re.compile(r"^(\d+)([mHD])$")
+_UNIT_TO_DELTA     = {
+    "m": timedelta(minutes=1),
+    "H": timedelta(hours=1),
+    "D": timedelta(days=1),
+}
+
+
+def timeframe_to_timedelta(timeframe: str) -> timedelta:
+    match = _TIMEFRAME_PATTERN.match(timeframe)
+    if not match:
         raise ValueError(
-            "Invalid timeframe. Use 'm', 'H', 'Hutc', or 'Dutc'. "
-            "Examples: '15m', '4H', '6Hutc', '1Dutc'"
+            f"Invalid timeframe '{timeframe}'. Expected <n><m|H|D>, e.g. '15m', '4H', '1D'"
         )
-    
-    # Calculate next candle time
-    total_minutes      = now.hour * 60 + now.minute
-    next_total_minutes = ((total_minutes // minutes) + 1) * minutes
-    delta_minutes      = next_total_minutes - total_minutes
-    
-    next_candle = now + timedelta(
-        minutes=delta_minutes,
-        seconds=-now.second,
-        microseconds=-now.microsecond
-    )
-    
-    next_candle = next_candle + timedelta(seconds=20)
-    
-    return next_candle
+    value, unit = int(match.group(1)), match.group(2)
+    return value * _UNIT_TO_DELTA[unit]
+
+
+def calculate_next_candle_time(timeframe: str = '4H', hour_zone=timezone.utc) -> datetime:
+    duration   = timeframe_to_timedelta(timeframe)
+    now        = datetime.now(timezone.utc)
+    elapsed    = (now - _EPOCH + GRID_OFFSET) % duration
+    next_close = now - elapsed + duration + CLOSE_BUFFER
+    return next_close.astimezone(hour_zone)
 
 
 # ==========================================================================

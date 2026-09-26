@@ -7,8 +7,8 @@ import shutil
 import logging
 
 _BITGET_DIR    = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_BITGET_SHARED = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "shared"))
-for _p in [_BITGET_DIR, _BITGET_SHARED]:
+
+for _p in [_BITGET_DIR]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
         
@@ -29,7 +29,7 @@ logger = logging.getLogger("pipeline")
 # FOLDERS
 # =============================================================================
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR    = os.path.join(BASE_DIR, "data")
+DATA_DIR    = os.path.join(BASE_DIR, "data_cr")
 RAW_DIR     = os.path.join(DATA_DIR, "01_raw")
 CLEAN_DIR   = os.path.join(DATA_DIR, "02_clean")
 HIGHLOW_DIR = os.path.join(DATA_DIR, "03_highlow")
@@ -68,14 +68,14 @@ REFERENCE_SYMBOL   = "BTCUSDT"
 # =============================================================================
 # EXTRACTION
 # =============================================================================
-TIMEFRAMES = ["1Dutc","12Hutc","6Hutc","4H","1H","5m"]
+TIMEFRAMES = ["1D","12H","6H","4H","1H","5m"]
 START_DATE = "2019-01-01"
 END_DATE   = None 
 
 # =============================================================================
 # HIGH/LOW TIMESTAMPS
 # =============================================================================
-TIMEFRAMES_HIGHLOW = [["1Dutc","1H"],["12Hutc","5m"],["6Hutc","5m"],["4H","5m"],["1H","5m"]]
+TIMEFRAMES_HIGHLOW = [["1D","1H"],["12H","5m"],["6H","5m"],["4H","5m"],["1H","5m"]]
 
 # =============================================================================
 # SPLIT DATA
@@ -186,7 +186,7 @@ def _run_pipeline() -> None:
         removed = config.get("removed_symbols", [])
         if removed:
             logger.info(f"\n{'='*60}")
-            logger.info(f"  SYMBOLS REMOVED (< {step5_highlow.MIN_CANDLES_1DUTC} daily candles)")
+            logger.info(f"  SYMBOLS REMOVED (< {step5_highlow.MIN_CANDLES_1D} daily candles)")
             logger.info(f"{'='*60}")
             for sym in sorted(removed):
                 logger.info(f"  - {sym}")
@@ -202,7 +202,7 @@ def _run_pipeline() -> None:
     removed = config.get("removed_symbols", [])
     if removed:
         logger.info(f"\n{'='*60}")
-        logger.info(f"  SYMBOLS REMOVED (< {step5_highlow.MIN_CANDLES_1DUTC} daily candles)")
+        logger.info(f"  SYMBOLS REMOVED (< {step5_highlow.MIN_CANDLES_1D} daily candles)")
         logger.info(f"{'='*60}")
         for sym in sorted(removed):
             logger.info(f"  - {sym}")

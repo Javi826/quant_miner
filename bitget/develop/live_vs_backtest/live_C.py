@@ -13,24 +13,23 @@ logger = logging.getLogger("live_lab.compare")
 # CONFIGURATION
 # =============================================================================
 PRODUCTION_XLSX = os.path.expanduser(
-    "~/projects/quant/quant_b/bitget/BOT_trading/persistence/bot_files_00/bot_trades_00.xlsx"
+    "~/projects/quant/quant_miner/bitget/BOT_crypto/persistence/bot_files_00/bot_trades_00.xlsx"
 )
-BATCH_TRADES_DIR = os.path.expanduser(
-    "~/projects/quant/quant_b/develop/live_vs_backtest/brief_trades"
-)
+BATCH_TRADES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "brief_trades")
 
-# Time window filter (None = no filter)
+
+
 DATE_FROM = "2026-08-21"
-DATE_TO   = "2026-09-10"
+DATE_TO   = "2026-09-25"
 
 SELECTED_STRATEGIES = [
     "001280_4H_long_RSI14gt60_AND_HISTVOL20gtSMA_HISTVOL40",
-    "022301_12Hutc_long_RSI7gt60_AND_HISTVOL20gtSMA_HISTVOL20_AND_HISTVOL30ltSMA_HISTVOL20",
-    "024772_12Hutc_long_RSI7lt60_AND_HISTVOL10ltSMA_HISTVOL20_AND_HISTVOL10gtSMA_HISTVOL50",
+    "022301_12H_long_RSI7gt60_AND_HISTVOL20gtSMA_HISTVOL20_AND_HISTVOL30ltSMA_HISTVOL20",
+    "024772_12H_long_RSI7lt60_AND_HISTVOL10ltSMA_HISTVOL20_AND_HISTVOL10gtSMA_HISTVOL50",
     "048243_1H_long_RSI14gt70_AND_HISTVOL10gtSMA_HISTVOL30_AND_HISTVOL30ltSMA_HISTVOL50",
     "102727_1H_short_RSI7lt40_AND_HISTVOL30gtSMA_HISTVOL20_AND_HISTVOL30ltSMA_HISTVOL30",
-    "107277_6Hutc_short_RSI7lt50_AND_ATR14gtSMA_ATR20_AND_ATR21ltSMA_ATR30",
-    "142800_12Hutc_short_RSI21gt40_AND_ATR14ltSMA_ATR50_AND_HISTVOL10gtSMA_HISTVOL30",
+    "107277_6H_short_RSI7lt50_AND_ATR14gtSMA_ATR20_AND_ATR21ltSMA_ATR30",
+    "142800_12H_short_RSI21gt40_AND_ATR14ltSMA_ATR50_AND_HISTVOL10gtSMA_HISTVOL30",
     "167892_4H_short_ATR14gtSMA_ATR30_AND_ATR21ltSMA_ATR20_AND_HISTVOL30gtSMA_HISTVOL20",
 ]
 
@@ -47,6 +46,7 @@ ROUND_GAP_SECONDS = 5
 
 # Strategy for the detailed per-trade / per-round inspection (None to skip)
 DETAIL_STRATEGY = "001280_4H_long_RSI14gt60_AND_HISTVOL20gtSMA_HISTVOL40"
+DETAIL_STRATEGY = "107277_6H_short_RSI7lt50_AND_ATR14gtSMA_ATR20_AND_ATR21ltSMA_ATR30"
 
 # Batch exit reasons that are artificial (the data range ended before TP/SL/
 # SELL_AFTER was reached) and therefore not comparable against a real
@@ -158,7 +158,7 @@ def _short_id(strategy_id: str) -> str:
 
 def _timeframe_to_offset(strategy_id: str) -> pd.Timedelta:
     """Extracts candle size from the strategy_id timeframe token (e.g. '4H')."""
-    token = strategy_id.split("_")[1].replace("utc", "")
+    token = strategy_id.split("_")[1]
     unit  = token[-1]
     value = int(token[:-1])
 
@@ -180,10 +180,7 @@ def _is_match(prow: pd.Series, brow: pd.Series, window: pd.Timedelta) -> bool:
 
 
 def _pair_trades(p: pd.DataFrame, b: pd.DataFrame, window: pd.Timedelta) -> tuple:
-    """Greedy one-to-one pairing. Returns (pairs, prod_only_idx, batch_only_idx)."""
-    p = p.sort_values("buy_time").reset_index(drop=True)
-    b = b.sort_values("buy_time").reset_index(drop=True)
-
+    """Greedy one-to-one pairing over pre-sorted frames. Returns (pairs, prod_only_idx, batch_only_idx)."""
     pairs     = []
     prod_only = []
     used_b    = set()
@@ -211,8 +208,8 @@ def _pair_trades(p: pd.DataFrame, b: pd.DataFrame, window: pd.Timedelta) -> tupl
 # ENTRY MATCHING — per strategy, anchored on the first coincident trade
 # =============================================================================
 def _match_entries(p: pd.DataFrame, b: pd.DataFrame, window: pd.Timedelta) -> dict:
-    p = p.sort_values("buy_time").reset_index(drop=True)
-    b = b.sort_values("buy_time").reset_index(drop=True)
+    p = p.sort_values(["buy_time", "symbol"], kind="stable").reset_index(drop=True)
+    b = b.sort_values(["buy_time", "symbol"], kind="stable").reset_index(drop=True)
 
     anchor_p = anchor_b = None
     for bi in range(len(b)):
@@ -300,11 +297,11 @@ def print_trade_pairs(
     """Trade-by-trade view from the anchor onwards, outcomes only."""
     p = (
         df_prod[(df_prod["strategy"] == strategy_id) & (df_prod["buy_time"] >= anchor_ts)]
-        .sort_values("buy_time").reset_index(drop=True)
+        .sort_values(["buy_time", "symbol"], kind="stable").reset_index(drop=True)
     )
     b = (
         df_batch[(df_batch["strategy"] == strategy_id) & (df_batch["buy_time"] >= anchor_ts - window)]
-        .sort_values("buy_time").reset_index(drop=True)
+        .sort_values(["buy_time", "symbol"], kind="stable").reset_index(drop=True)
     )
 
     pairs, prod_only, batch_only = _pair_trades(p, b, window)
@@ -555,8 +552,6 @@ def _daily_win_rate(df: pd.DataFrame) -> pd.Series:
           .apply(lambda x: round((x["profit"] > 0).sum() / len(x) * 100, 0), include_groups=False)
           .rename("wr")
     )
-
-
 def _settled_dates(df_prod: pd.DataFrame) -> set:
     """Dates where every production trade has a close. Others are not scored."""
     if df_prod.empty:

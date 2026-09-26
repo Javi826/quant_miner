@@ -10,12 +10,9 @@ SELECTED_INDICATORS_BY_TIMEFRAME = {
     "bb_pctb",
     "acceleration",
     "open_close_momentum",
-    "ma_dist",
-    "choppiness",
-    "parkinson_ratio",
+    "ret_skew",
     "roc_spread",
     "close_pos_in_bar",
-    "close_pct_rank",
     ],
     "4H": [
     "ret_skew",

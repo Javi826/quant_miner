@@ -6,7 +6,7 @@ import os
 
 # =============================================================================
 # BITGET_ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bitget"))
-# SPLIT_BASE          = os.path.join(BITGET_ROOT, "data_crypto", "data", "04_split", "expanding")
+# SPLIT_BASE          = os.path.join(BITGET_ROOT, "data_crypto", "data_cr", "04_split")
 # 
 # DATA_FOLDER_IS      = os.path.join(SPLIT_BASE, "IS",  "crypto_2022-01_2024-01_IS")
 # DATA_FOLDER_OOS     = os.path.join(SPLIT_BASE, "OOS", "crypto_2024-01_2026-08_OOS")

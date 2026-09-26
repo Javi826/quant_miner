@@ -8,6 +8,9 @@ PRODUCT_TYPE    = "USDT-FUTURES"
 API_TIMEOUT     = 10
 API_MAX_RETRIES = 3
 
+# Bitget native candles are anchored to 00:00 UTC+8
+CANDLE_GRID_OFFSET_HOURS = 8
+
 # =============================================================================
 # WEBSOCKET SETTINGS
 # =============================================================================

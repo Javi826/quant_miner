@@ -1,3 +1,4 @@
+# BOT_crypto/validation/validation_module.py
 """
 Validation functions for bot configuration
 """
@@ -9,6 +10,7 @@ logger = logging.getLogger('BOT_crypto.validation.validation_module')
 from config.settings import MIN_ORDER_AMOUNT, MAX_ORDER_AMOUNT, MIN_TP_PCT, MAX_TP_PCT
 from config.settings import MIN_SL_PCT, MAX_SL_PCT, MIN_CANDLES, MAX_CANDLES
 from config.settings import VALID_TIMEFRAMES
+from bot_utils.timeframes import timeframe_to_timedelta
 from config.settings import COMMON_REQUIRED_PARAMS
 from config.settings import ACCOUNTS, BASE_URL
 from config.settings import POSTGRES_CONFIG
@@ -70,6 +72,12 @@ def validate_settings():
     if not VALID_TIMEFRAMES:
         errors.append("VALID_TIMEFRAMES cannot be empty")
         validation_s2_errors += 1
+    for timeframe in VALID_TIMEFRAMES:
+        try:
+            timeframe_to_timedelta(timeframe)
+        except ValueError as e:
+            errors.append(f"VALID_TIMEFRAMES contains an unparseable timeframe: {e}")
+            validation_s2_errors += 1
     
     if validation_s2_errors == 0:
         logger.debug("Val S2: VALID_TIMEFRAMES configured")

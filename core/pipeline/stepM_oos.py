@@ -2,13 +2,8 @@
 import logging
 import numpy as np
 import pandas as pd
-from pipeline.stepM_is import (
-    compute_bootstrap_null,
-    compute_global_pvalue,
-    WHITE_N_BOOTSTRAP,
-    WHITE_BLOCK_SIZE,
-    RANDOM_SEED,
-)
+from pipeline.stepM_is import compute_bootstrap_null,compute_global_pvalue
+from pipeline.stepM_is import WHITE_N_BOOTSTRAP,WHITE_BLOCK_SIZE,RANDOM_SEED
 from utils.batch_metrics import daily_values_from_sell_days, _trading_days_between
 logger = logging.getLogger("BOT_batch.pipeline.stepM_oos")
 
@@ -24,16 +19,12 @@ _TICK = {True: "✅", False: "❌"}
 def _fmt(n: int) -> str:
     return f"{n:,}".replace(",", ".")
 
-
 def _prefix(timeframe: str) -> str:
     return f"{'STEPM OOS':<15}{timeframe}"
 
 # =============================================================================
 # WFO TEST RETURNS MATRIX: same convention as the IS matrix (backtest_runner)
 # =============================================================================
-# One column per rule: its WFO test series, already out-of-sample for everything chosen
-# (rule and SELL_AFTER in IS, TP/SL in previous WFO windows). Built with the same helpers
-# as run_full_period_search; columns with <= 1 non-zero day skipped, all-zero days dropped.
 def _sell_times_ns(trades: pd.DataFrame) -> np.ndarray:
     ts = pd.to_datetime(trades["sell_time"])
     if ts.dt.tz is not None:
@@ -81,13 +72,7 @@ def build_wfo_test_matrix(rules: list, min_trades: int = STEPM_OOS_MIN_TRADES) -
 # =============================================================================
 # STATISTIC: raw annualized Sharpe, NOT the studentized z
 # =============================================================================
-# On sparse trade series the bootstrap sigma_hat is noisy and anti-correlated with
-# |Sharpe|, so the studentized z of lucky rules is inflated and the max over the family
-# over-rejects. The Sharpe is already scale free with the same null variance for every
-# column on a common calendar, so the deviations are multiplied back by sigma_hat
-# (this keeps the SPA_c recentering: (dev + z) * sigma_hat = S* - 0).
-# The family is small (one column per rule), so the top-M is requested for every kept
-# column: that is the full deviation matrix, rebuilt densely here.
+
 def _raw_deviations(null) -> np.ndarray:
     n_boot, n_kept = null.n_bootstrap, null.n_kept
     if null.m != n_kept:
@@ -100,12 +85,7 @@ def _raw_deviations(null) -> np.ndarray:
 # =============================================================================
 # ONE TIMEFRAME: two verdicts over every rule that entered WFO
 # =============================================================================
-# Concentrated signal: does the best rule beat the best of N rules without edge?
-#   White's global p-value on the max of the null.
-# Diffuse signal: are there more individually significant rules than chance gives?
-#   A rule is significant when its Sharpe beats the (1 - alpha) quantile of its own null
-#   column. The same count is taken in every bootstrap replica (no edge there), so the
-#   correlation between rules is already inside the null distribution of the count.
+
 def _evaluate_timeframe(
     rules: list, timeframe: str, alpha: float,
     n_bootstrap: int, block_size: int, seed: int, min_trades: int,

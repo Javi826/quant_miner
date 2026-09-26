@@ -140,11 +140,7 @@ class BotOrchestrator:
         self.operative.bot_state = self.bot_state
         
     def shutdown(self) -> None:
-        """
-        Gracefully shutdown the bot.
-        
-        Saves state and closes all connections.
-        """
+
         self._running = False
         try:
            self.operative.save_state()
@@ -429,17 +425,12 @@ class BotOrchestrator:
         # TIMEOUT CHECK: Increment candles and close expired positions
         # ========================================================================
         self._process_candle_timeouts(strategies_to_process)
-    
+
         # ========================================================================
-        # SIGNAL SEARCH: + SYMBOL WINDOW
+        # SIGNAL SEARCH
         # ========================================================================
-        #night_consolidation = datetime.now(HOUR_ZONE).hour < 3
-        night_consolidation = False
-        if not night_consolidation:
-            self._search_signals(strategies_to_process)
-        else:
-            self.logger.info("[GAP] 1D consolidation window (00-03 UTC)-skipping signal search")
-              
+        self._search_signals(strategies_to_process)
+
         self.logger.info("Signal cycle completed")
         self.logger.info(f"{'=' * 48}\n")
         
@@ -606,12 +597,7 @@ class BotOrchestrator:
             self.last_tpsl_check = current_time
     
     def _update_next_candle_times(self, closed_timeframes: List[str]) -> None:
-        """
-        Update next candle close times after processing.
-        
-        Args:
-            closed_timeframes: Timeframes that just closed
-        """
+
         for tf in closed_timeframes:
             self.next_candle_times[tf] = calculate_next_candle_time(tf, hour_zone=HOUR_ZONE)
             self.logger.info(

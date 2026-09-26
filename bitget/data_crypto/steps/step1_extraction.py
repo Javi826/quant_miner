@@ -25,7 +25,7 @@ def sanitize_filename(name: str) -> str:
 
 
 def parse_timeframe_to_ms(tf: str) -> int:
-    s = str(tf).strip().lower().replace('utc', '')
+    s = str(tf).strip().lower()
     m = re.match(r'^(\d+)([mhdwM])$', s)
     if not m:
         raise ValueError(f"Unrecognized timeframe: '{tf}'")
@@ -330,7 +330,7 @@ if __name__ == "__main__":
     _config = {
         "start_date":       "2025-01-01",
         "end_date":         None,
-        "timeframe":        "1Dutc",
+        "timeframe":        "1D",
         "selected_symbols": ["BTCUSDT", "ETHUSDT"],
         "raw_dir":          os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "01_raw"),
     }

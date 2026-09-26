@@ -5,6 +5,8 @@ import pandas as pd
 from pandas.tseries.offsets import CustomBusinessDay
 from setup.config_core import settings
 logger = logging.getLogger("BOT_batch.utils.batch_metrics")
+
+
 # =============================================================================
 # METRICS CONFIG
 # =============================================================================

@@ -8,10 +8,12 @@ from signals.indicators_bank import ConditionBank
 from signals.signal_builder import build_signal_fn
 
 logger = logging.getLogger("BOT_batch.pipeline.signal_cleaning")
-# =============================================================================
+#==============================================================================
 # CONFIG
-# =============================================================================
+#==============================================================================
 JACCARD_SIMILARITY_TH  = 0.80
+#------------------------------------------------------------------------------
+
 
 SIGNAL_MASK_N_JOBS     = -1
 SIGNAL_MASK_CHUNK_SIZE = None   # None -> auto-sized from n_jobs and rule count

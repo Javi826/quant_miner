@@ -1,12 +1,12 @@
+#BOT_crypto/bot_utils/logger.py
 """
 Professional logging system for trading bot.
 """
-
 import logging
 import os
+import time
 from logging.handlers import RotatingFileHandler
 from config.settings import CONSOLE_LOG_LEVEL, FILE_LOG_LEVEL, LOG_MAX_BYTES, LOG_BACKUP_COUNT  # ⭐ Añadir
-
 
 def setup_logger(
     log_dir: str,
@@ -16,11 +16,7 @@ def setup_logger(
     max_bytes: int = None,
     backup_count: int = None
 ) -> logging.Logger:
-    """
-    Setup professional logging system with console and file handlers.
-    
-    If levels not provided, uses values from config.settings.
-    """
+
     #  Usar valores de settings.py si no se proporcionan
     if console_level is None:
         console_level = CONSOLE_LOG_LEVEL
@@ -67,11 +63,12 @@ def setup_logger(
     )
     file_handler.setLevel(file_level_int)  # ⭐ Usar nivel convertido
     
-    # Detailed format for file
+    # Detailed format for file — timestamps in UTC, matching the bot's own
     file_format = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(module)s:%(lineno)d - %(message)s',
+        '%(asctime)s UTC - %(name)s - %(levelname)s - %(module)s:%(lineno)d - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    file_format.converter = time.gmtime
     file_handler.setFormatter(file_format)
     
     # ========================================================================

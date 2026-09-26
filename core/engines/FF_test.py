@@ -21,14 +21,10 @@ def _format_thousands(value: int) -> str:
 
 
 def _prefix(timeframe: str) -> str:
-    return f"{'FF BOOTSTRAP':<15}{timeframe}"
+    return f"{'FF BOOTSTRAP':<16}{timeframe}"
 
 # =============================================================================
 # PERCENTILES FROM THE TOP-M: stepM v3 keeps, per replica, only the M largest
-# studentized deviations (descending). A percentile p of the full cross-section
-# only needs the order statistics above it, so it is read exactly from the top-M
-# as long as M covers (100 - p)% of the columns. Same linear interpolation as
-# np.percentile on the full row.
 # =============================================================================
 def _percentile_ranks(pct: float, n_cols: int) -> tuple:
     """Descending top-M ranks of the two order statistics np.percentile interpolates, and the weight."""
@@ -102,7 +98,6 @@ def _log_ff_report(
 
 # =============================================================================
 # PIPE FF BOOTSTRAP — orchestration. The null comes from stepM; this layer
-# only turns it into a cross-sectional percentile table.
 # =============================================================================
 def pipe_FF_test(
     matrix_arr: np.ndarray,
@@ -114,15 +109,7 @@ def pipe_FF_test(
     enabled: bool = True,
     timeframe: str = "",
 ) -> dict:
-    """Cross-sectional percentile diagnostic on StepM's own null (same seed, block and replicas).
 
-    WARNING: `compute_bootstrap_null` compacts non-finite Sharpe columns in place,
-    so `matrix_arr` may be reordered and truncated by this call. Pass a copy if
-    the caller needs the original layout afterwards.
-
-    Cost: the top-M kept per replica covers (100 - min(percentiles))% of the columns,
-    so lowering the grid below FF_MIN_PERCENTILE grows RAM and VRAM accordingly.
-    """
     if not enabled:
         logger.info(f"FF BOOTSTRAP ── {timeframe} ── disabled, skipping")
         return None

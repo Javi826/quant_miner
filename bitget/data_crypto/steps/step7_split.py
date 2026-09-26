@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 logger = logging.getLogger("pipeline.step7")
-REFERENCE_SYMBOL_TF = "1Dutc"   # Used to read available data range for preview
+REFERENCE_SYMBOL_TF = "1D"   # Used to read available data range for preview
 
 # =============================================================================
 # WINDOW CALCULATION
@@ -56,7 +56,7 @@ def _make_folder_name(is_start: str, is_end: str, oos_start: str, oos_end: str, 
 # =============================================================================
 
 def _get_data_range(raw_dir: str, reference_symbol: str = 'BTCUSDT') -> tuple[str, str] | None:
-    """Reads min/max date from BTCUSDT 1Dutc parquet for preview calculation."""
+    """Reads min/max date from BTCUSDT 1D parquet for preview calculation."""
     filename = f"{reference_symbol}_{REFERENCE_SYMBOL_TF}.parquet"
     # Try clean dir first, then raw
     for folder in [raw_dir.replace("01_raw", "02_clean"), raw_dir]:
@@ -123,8 +123,8 @@ def print_split_preview(config: dict) -> bool:
     print(f"  OOS : {oos_start} → {oos_end}  ({oos_months} months available)")
     print(f"")
     print(f"  📁 Output folders:")
-    print(f"  IS  → {os.path.join('expanding', 'IS',  is_folder)}/")
-    print(f"  OOS → {os.path.join('expanding', 'OOS', oos_folder)}/")
+    print(f"  IS  → {os.path.join('IS',  is_folder)}/")
+    print(f"  OOS → {os.path.join('OOS', oos_folder)}/")
     print(f"{'='*60}")
 
     answer = input("\n  Continue? [y/n]: ").strip().lower()
@@ -136,15 +136,8 @@ def print_split_preview(config: dict) -> bool:
 # =============================================================================
 
 def get_latest_split_folders(split_dir: str) -> dict | None:
-    """
-    Returns paths to the most recent IS and OOS folders.
-    Useful for downstream scripts (e.g. wfo_mc_parity.py) to auto-resolve data paths.
 
-    Returns:
-        {"IS": "/path/to/IS/crypto_..._IS", "OOS": "/path/to/OOS/crypto_..._OOS"}
-        or None if no folders found.
-    """
-    mode_dir = os.path.join(split_dir, "expanding")
+    mode_dir = split_dir
     result   = {}
 
     for subset in ["IS", "OOS"]:
@@ -196,7 +189,7 @@ def run(config: dict) -> bool:
     split_dir: str   = config["split_dir"]
     export_csv: bool = config.get("export_csv", False)
 
-    mode_dir = os.path.join(split_dir, "expanding")
+    mode_dir = split_dir
     os.makedirs(mode_dir, exist_ok=True)
 
     is_start, is_end, oos_start, oos_end = _compute_windows(config)

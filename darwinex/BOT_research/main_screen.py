@@ -15,7 +15,6 @@ from setup.config_backtest import COMISION
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from indicators.indicators_pool import CANDIDATE_REGISTRY, GROUP_NAMES, build_flat_instances, instance_key
 
-from indicators import screen_report
 from indicators.screen_engine import ScreenConfig, IndicatorPool, run_screen, MIN_PILOT_N
 from indicators.screen_report import report_selection, validate_selection
 
@@ -28,12 +27,12 @@ N_JOBS = -1
 # =============================================================================
 # CONFIG
 # =============================================================================
-NULL_PCT       = 80
+NULL_PCT       = 85
 
-TIMEFRAME      = "1H"
+TIMEFRAME      = "4H"
 MODE           = "NPY" # edge_bp: "YPY" every signal is a trade, "NPY" only signals while flat on its symbol (same cache)
 GROUP_N        = 3     # symbols where an indicator (alone) or a pair must pass to be selected
-MIN_SCORE      = 2.0   # selection: an alone or pair counts only with score >= this (~sigmas over the null); None: off
+MIN_SCORE      = 1.8   # selection: an alone or pair counts only with score >= this (~sigmas over the null); None: off
 PHI_TH         = 0.80  # redundancy: absorbed if its phi with a better candidate (same kind and side) is higher
 MIN_COVER      = 0.05  # redundancy: dropped on a side if its rule fires on less of its symbols' candles
 MAX_COVER      = 0.60  # redundancy: dropped on a side if its rule fires on more of its symbols' candles
@@ -62,7 +61,6 @@ validate_selection(GROUP_N, len(SYMBOLS), PHI_TH, MIN_COVER, MAX_COVER, MIN_SCOR
 
 # Cache (do not edit)
 CACHE_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screen_cache")
-INDICATORS_DIR = os.path.dirname(os.path.abspath(screen_report.__file__))
 
 # =============================================================================
 # DATA
@@ -71,21 +69,6 @@ def load_data():
     """OHLC arrays of every symbol, from the dataset's data folder."""
     ohlcv = build_universe(DATA_FOLDER_BY_DATASET[DATASET], {TIMEFRAME: SYMBOLS}, dataset=DATASET)[TIMEFRAME]
     return prepare_ohlcv_arrays(ohlcv)
-
-
-def _source_files():
-    """Indicators modules the raw results may depend on: every one loaded from that folder, except the report."""
-    skip = os.path.abspath(screen_report.__file__)
-    files = set()
-    for mod in list(sys.modules.values()):
-        f = getattr(mod, "__file__", None)
-        if not f:
-            continue
-        f = os.path.abspath(f)
-        if f != skip and f.startswith(INDICATORS_DIR + os.sep) and os.path.isfile(f):
-            files.add(f)
-    return sorted(files)
-
 
 # =============================================================================
 # MAIN
@@ -96,8 +79,7 @@ def main():
     raw = run_screen(load_data(), SYMBOLS, pool, CFG,
                      cache_dir=CACHE_DIR if USE_CACHE else None,
                      cache_name=f"screen_{DATASET}_{TIMEFRAME}",
-                     cache_tag=(DATASET, TIMEFRAME),
-                     source_files=_source_files())
+                     cache_tag=(DATASET,))
     report_selection(raw, pool, NULL_PCT, GROUP_N, PHI_TH, MIN_COVER, MAX_COVER, MIN_SCORE, MODE)
 
 def log_run_config() -> None:

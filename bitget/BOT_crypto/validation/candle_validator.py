@@ -1,30 +1,4 @@
 # BOT_crypto/validation/candle_validator.py
-"""
-Autonomous candle-close validation (parallel check for the MT5 migration).
-
-Hybrid design:
-    Method A (clock)  - the live bot's arithmetic trigger
-                        (calculate_next_candle_time + fixed buffer).
-    Method B (broker) - real broker push over the public WebSocket candle
-                        channel, used ONLY to detect the exact instant a
-                        candle closes (open_time rollover). The WebSocket
-                        never supplies OHLC values: the in-flight candle it
-                        streams can still receive late trade updates after
-                        the rollover, which makes its own close value
-                        unreliable.
-    Data source        - REST history-candles is the single source of truth
-                        for OHLC, exactly like the live strategies use. It
-                        is queried once method B confirms a close.
-
-This module is strictly observational:
-  - It never raises into the caller (every public entry point is guarded).
-  - It owns its own WebSocket connection, separate from the trading one.
-  - Removing the two injection lines from the orchestrator disables it
-    completely.
-
-All output is emitted through the bot logger with the [VERIFY] prefix.
-"""
-
 import os
 import sys
 import json
@@ -57,6 +31,8 @@ for _path in (
 
 from market_data.websocket_manager import BitgetWSManager
 from api_client import _call_history_candles
+from bot_utils.timeframes import timeframe_to_timedelta
+from config.settings import CANDLE_CLOSE_BUFFER, PRODUCT_TYPE
 
 # ==========================================================================
 # CONSTANTS
@@ -64,7 +40,8 @@ from api_client import _call_history_candles
 
 # Buffer added by bot_utils.calculate_next_candle_time after the theoretical
 # candle close. Method A is expected to fire at close + this value.
-CANDLE_TRIGGER_BUFFER_SECONDS = 20
+# Method A is expected to fire at candle close + this buffer
+CANDLE_TRIGGER_BUFFER_SECONDS = CANDLE_CLOSE_BUFFER
 
 # Accepted deviation between the expected and the observed trigger instant.
 CANDLE_TRIGGER_TOLERANCE_SECONDS = 10
@@ -73,7 +50,7 @@ CANDLE_TRIGGER_TOLERANCE_SECONDS = 10
 # that reveals it (network + broker publication latency).
 WS_DETECTION_TOLERANCE_SECONDS = 5
 
-INSTRUMENT_TYPE = "USDT-FUTURES"
+INSTRUMENT_TYPE = PRODUCT_TYPE
 
 MARK_OK   = "✅"
 MARK_FAIL = "❌"
@@ -81,19 +58,8 @@ MARK_FAIL = "❌"
 # ==========================================================================
 # HELPERS
 # ==========================================================================
-
-
 def timeframe_to_seconds(timeframe: str) -> int:
-    """Converts a Bitget granularity label into its duration in seconds."""
-    if timeframe.endswith('Hutc'):
-        return int(timeframe[:-4]) * 3600
-    if timeframe.endswith('Dutc'):
-        return int(timeframe[:-4]) * 86400
-    if timeframe.endswith('H'):
-        return int(timeframe[:-1]) * 3600
-    if timeframe.endswith('m'):
-        return int(timeframe[:-1]) * 60
-    raise ValueError(f"Invalid timeframe: {timeframe!r}")
+    return int(timeframe_to_timedelta(timeframe).total_seconds())
 
 
 def _epoch_to_utc_str(epoch: float) -> str:
@@ -110,21 +76,7 @@ def _mark(condition: bool) -> str:
 # CANDLE VALIDATOR
 # ==========================================================================
 class CandleValidator(BitgetWSManager):
-    """
-    Independent candle-close detector built on the public WebSocket candle
-    channel. Inherits connection, reconnection and keepalive handling from
-    BitgetWSManager; only public-message parsing and public-channel
-    subscription are specialised.
 
-    The WebSocket is used exclusively to detect the instant a candle closes
-    (open_time rollover). It never supplies OHLC values — those are always
-    read from REST once a close is detected, avoiding the race condition
-    where a late trade update for the closing candle arrives after the
-    rollover message.
-
-    Runs on its own socket and its own thread: the trading WebSocket
-    instance is never touched.
-    """
 
     def __init__(self, symbol: str, timeframes: List[str]):
         super().__init__()
@@ -158,7 +110,7 @@ class CandleValidator(BitgetWSManager):
         self._resubscribe_public()
 
         state = "connected" if self._is_public_connected() else "not connected"
-        logger.debug(
+        logger.info(
             f"[VERIFY] validator started | symbol={self.symbol} "
             f"| timeframes={', '.join(self.timeframes)} | WS {state}"
         )
@@ -169,13 +121,7 @@ class CandleValidator(BitgetWSManager):
         return bool(sock and getattr(sock, 'connected', False))
 
     def _on_public_open(self, ws) -> None:
-        """
-        Overrides the inherited hook. The base implementation only
-        resubscribes when self.subscribed_public is non-empty, a set this
-        class never populates (candle channels use their own tracking via
-        self._channels). Without this override, every reconnect leaves the
-        socket open but silently unsubscribed, freezing detection forever.
-        """
+
         logger.debug("[VERIFY] public WS (re)connected")
         self._resubscribe_public()
 
@@ -195,7 +141,7 @@ class CandleValidator(BitgetWSManager):
 
         try:
             self.public_ws.send(json.dumps({"op": "subscribe", "args": args}))
-            logger.debug(f"[VERIFY] subscribed to {len(args)} candle channels")
+            logger.info(f"[VERIFY] subscribed to {len(args)} candle channels")
         except Exception as e:
             logger.error(f"[VERIFY] subscription failed: {e}")
 
@@ -231,12 +177,7 @@ class CandleValidator(BitgetWSManager):
             logger.error(f"[VERIFY] error processing candle message: {e}")
 
     def _ingest_open_time(self, timeframe: str, open_time_ms: int) -> None:
-        """
-        Tracks the open_time of the bar currently being built. When it rolls
-        over to a newer value, the previous bar is final and this is the
-        detection instant for its close — OHLC is deliberately not read
-        here; it is always fetched from REST afterwards.
-        """
+
         with self._lock:
             previous_open_time_ms = self._open_bar_time_ms.get(timeframe)
             self._open_bar_time_ms[timeframe] = open_time_ms
@@ -257,7 +198,7 @@ class CandleValidator(BitgetWSManager):
         real_close_epoch = closed['open_time_ms'] / 1000 + timeframe_to_seconds(timeframe)
         push_lag         = closed['detected_epoch'] - real_close_epoch
 
-        logger.debug(
+        logger.info(
             f"[VERIFY] {timeframe} close detected via WS "
             f"| bar_open={_epoch_to_utc_str(closed['open_time_ms'] / 1000)} "
             f"| push_lag={push_lag:+.1f}s {_mark(abs(push_lag) <= WS_DETECTION_TOLERANCE_SECONDS)}"
@@ -267,12 +208,7 @@ class CandleValidator(BitgetWSManager):
     # PUBLIC API — CLOCK TRIGGER COMPARISON
     # ----------------------------------------------------------------------
     def register_clock_trigger(self, timeframe: str, trigger_epoch: Optional[float] = None) -> None:
-        """
-        Entry point for the orchestrator. Called the moment method A decides
-        a candle has closed; emits the full A-vs-B comparison.
 
-        Never raises: any failure is logged and swallowed.
-        """
         try:
             trigger_epoch = time.time() if trigger_epoch is None else trigger_epoch
 
@@ -281,7 +217,7 @@ class CandleValidator(BitgetWSManager):
                 closed = dict(closed) if closed else None
 
             if closed is None:
-                logger.debug(
+                logger.info(
                     f"[VERIFY] {timeframe} | clock triggered at "
                     f"{_epoch_to_utc_str(trigger_epoch)} | no WS close recorded yet | skipped"
                 )
@@ -294,12 +230,7 @@ class CandleValidator(BitgetWSManager):
             logger.error(f"[VERIFY] {timeframe} | clock trigger validation failed: {e}")
 
     def _compare_detection(self, timeframe: str, trigger_epoch: float, closed: dict) -> None:
-        """
-        Check 1 — detection timing.
 
-        Measures how late method A fires relative to the real close observed
-        by method B, and whether that delay matches the configured buffer.
-        """
         real_close_epoch = closed['open_time_ms'] / 1000 + timeframe_to_seconds(timeframe)
         expected_epoch   = real_close_epoch + CANDLE_TRIGGER_BUFFER_SECONDS
 
@@ -307,7 +238,7 @@ class CandleValidator(BitgetWSManager):
         buffer_drift  = trigger_epoch - expected_epoch
         detection_gap = trigger_epoch - closed['detected_epoch']
 
-        logger.debug(
+        logger.info(
             f"[VERIFY] {timeframe} | detection:"
             f"{_mark(abs(buffer_drift) <= CANDLE_TRIGGER_TOLERANCE_SECONDS)} "
             f"| real_close={_epoch_to_utc_str(real_close_epoch)} "
@@ -316,14 +247,7 @@ class CandleValidator(BitgetWSManager):
         )
 
     def _check_identity_and_log_data(self, timeframe: str, closed: dict) -> None:
-        """
-        Check 2 — identity, plus a reference dump of the REST OHLC.
 
-        Confirms the bar REST reports as the latest candle is the same one
-        method B detected as closed. REST is the sole source of OHLC data —
-        there is nothing from the WebSocket to compare it against, since
-        that would reintroduce the in-flight-candle race condition.
-        """
         raw = _call_history_candles(symbol=self.symbol, granularity=timeframe, limit=1)
         if not raw:
             logger.warning(f"[VERIFY] {timeframe} | REST returned no candle | identity skipped")
@@ -332,9 +256,13 @@ class CandleValidator(BitgetWSManager):
         row = max(raw, key=lambda r: int(r[0]))
         rest_open_time_ms = int(row[0])
         identity_match     = closed['open_time_ms'] == rest_open_time_ms
+        ohlc               = [float(v) for v in row[1:5]]
+        is_flat            = max(ohlc) == min(ohlc)
+        log                = logger.warning if (is_flat or not identity_match) else logger.debug
 
-        logger.debug(
+        log(
             f"[VERIFY] {timeframe} | identity:{_mark(identity_match)} "
+            f"| shape:{_mark(not is_flat)} "
             f"| WS_bar_open={_epoch_to_utc_str(closed['open_time_ms'] / 1000)} "
             f"REST_bar_open={_epoch_to_utc_str(rest_open_time_ms / 1000)} "
             f"| REST_OHLC=(o={row[1]} h={row[2]} l={row[3]} c={row[4]})"
@@ -358,10 +286,7 @@ _validator: Optional[CandleValidator] = None
 
 
 def init_candle_validator(symbol: str, timeframes: List[str]) -> Optional[CandleValidator]:
-    """
-    Builds and starts the validator. Returns None on failure so the caller
-    can keep running unaffected.
-    """
+
     global _validator
 
     if _validator is not None:
@@ -391,7 +316,7 @@ def stop_candle_validator() -> None:
 
     try:
         _validator.stop()
-        logger.debug("[VERIFY] validator stopped")
+        logger.info("[VERIFY] validator stopped")
     except Exception as e:
         logger.error(f"[VERIFY] validator shutdown failed: {e}")
     finally:
