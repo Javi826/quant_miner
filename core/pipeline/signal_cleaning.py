@@ -11,23 +11,18 @@ logger = logging.getLogger("BOT_batch.pipeline.signal_cleaning")
 #==============================================================================
 # CONFIG
 #==============================================================================
-JACCARD_SIMILARITY_TH  = 0.80
+JACCARD_SIMILARITY_TH  = 0.85
 #------------------------------------------------------------------------------
 
 
 SIGNAL_MASK_N_JOBS     = -1
-SIGNAL_MASK_CHUNK_SIZE = None   # None -> auto-sized from n_jobs and rule count
 JACCARD_TILE           = 32     # output tile side; must stay in sync with the CUDA kernel
 JACCARD_TILE_WORDS     = 8      # uint64 words staged in shared memory per tile pass
 JACCARD_POPCOUNT_ROWS  = 4096   # host-side popcount chunk, caps peak memory
 JACCARD_PRUNE_MARGIN   = 1e-4   # safety margin on the |A| window for pruning (only widens it)
 JACCARD_PRUNE_MAX_ERR  = 1e-3   # max float32 rel. error of |A| allowed to enable pruning
-DECORRELATE_THRESHOLD  = 0.5
-DECORRELATE_BATCH_SIZE = 1000
-GPU_INITIAL_CAPACITY   = 20_000 
-GPU_SURVIVOR_CHUNK     = 25_000 # initial survivors buffer capacity, doubled on overflow
-RANDOM_SEED            = 42
-METRIC_LABEL_WIDTH     = 28     # fixed label width so all metric-block prints align
+JACCARD_BATCH_SIZE     = 1000
+GPU_INITIAL_CAPACITY   = 20_000 # initial survivors buffer capacity, doubled on overflow
 
 
 def _spec_identity(spec: dict) -> tuple:
@@ -86,7 +81,6 @@ def build_signal_mask_keys(
     all_rules: list,
     ohlcv_arr: dict,
     n_jobs: int = SIGNAL_MASK_N_JOBS,
-    chunk_size: int = SIGNAL_MASK_CHUNK_SIZE,  # kept for API compatibility
     timeframe: str = "",
 ) -> list:
 
@@ -128,18 +122,8 @@ def _packed_signal_matrix(rules: list, ohlcv_arr: dict, n_jobs: int, timeframe: 
 
     return packed.view(np.uint64), sides
 
-def _popcount_packed(words: np.ndarray) -> np.ndarray:
 
-    bytes_view = words.view(np.uint8)
-    n_rows     = bytes_view.shape[0]
-    cardinality = np.empty(n_rows, dtype=np.float32)
-
-    for start in range(0, n_rows, JACCARD_POPCOUNT_ROWS):
-        end = min(start + JACCARD_POPCOUNT_ROWS, n_rows)
-        cardinality[start:end] = _POPCOUNT_TABLE_NP[bytes_view[start:end]].sum(axis=1, dtype=np.float32)
-
-    return cardinality
-
+_MANAGED_POOL = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
 
 def _alloc_managed_packed_survivors(n_rows: int, n_words: int) -> cp.ndarray:
 
@@ -252,7 +236,7 @@ def _popcount_packed_with_exact(words: np.ndarray) -> tuple:
     for start in range(0, n_rows, JACCARD_POPCOUNT_ROWS):
         end = min(start + JACCARD_POPCOUNT_ROWS, n_rows)
         counts = _POPCOUNT_TABLE_NP[bytes_view[start:end]]
-        cardinality[start:end] = counts.sum(axis=1, dtype=np.float32)  # same float32 values as _popcount_packed
+        cardinality[start:end] = counts.sum(axis=1, dtype=np.float32)
         exact[start:end]       = counts.sum(axis=1, dtype=np.int64)
 
     return cardinality, exact
@@ -419,7 +403,6 @@ def _jaccard_filter_side_gpu(
     packed_matrix: np.ndarray,
     threshold: float,
     batch_size: int,
-    survivor_chunk_size: int,  # kept for API compatibility: no intersection matrix is materialized now
     timeframe: str = "",
 ) -> np.ndarray:
 
@@ -526,8 +509,7 @@ def pipe_signal_cleaning_jaccard(
     ohlcv_arr: dict,
     timeframe: str = "",
     threshold: float = JACCARD_SIMILARITY_TH,
-    batch_size: int = DECORRELATE_BATCH_SIZE,
-    survivor_chunk_size: int = GPU_SURVIVOR_CHUNK,
+    batch_size: int = JACCARD_BATCH_SIZE,
     n_jobs: int = SIGNAL_MASK_N_JOBS,
 ) -> list:
 
@@ -539,7 +521,7 @@ def pipe_signal_cleaning_jaccard(
     for side in np.unique(sides):
         side_positions = np.where(sides == side)[0]
         side_matrix    = packed_matrix[side_positions]
-        kept_local = _jaccard_filter_side_gpu(side_matrix, threshold, batch_size, survivor_chunk_size, timeframe)
+        kept_local = _jaccard_filter_side_gpu(side_matrix, threshold, batch_size, timeframe)
         kept_positions.append(side_positions[kept_local])
 
     kept_positions = np.sort(np.concatenate(kept_positions)) if kept_positions else np.array([], dtype=np.int64)
@@ -550,75 +532,3 @@ def pipe_signal_cleaning_jaccard(
     logger.info(f"\n{'JACCARD FILTER':<16}{timeframe}: {n_kept / n_rules_total:.0%} │ {format(n_kept, ',').replace(',', '.')} / {format(n_rules_total, ',').replace(',', '.')} (th={threshold})")
 
     return [rules[i] for i in kept_positions]
-
-# =============================================================================
-# COLUMN DECORRELATION (GPU) — post-backtest, pre-StepM redundancy filter
-# =============================================================================
-def _normalize_columns_for_correlation(matrix_arr: np.ndarray) -> np.ndarray:
-
-    matrix_norm = matrix_arr.astype(np.float32, copy=True)
-    matrix_norm -= matrix_norm.mean(axis=0, keepdims=True)
-    col_norms = np.linalg.norm(matrix_norm, axis=0)
-    col_norms[col_norms == 0] = 1.0  # guard degenerate constant columns
-    matrix_norm /= col_norms[None, :]
-    return matrix_norm
-
-
-def _sequential_decorrelate_within_batch(candidate_norm: np.ndarray, threshold: float) -> np.ndarray:
-
-    n_candidates = candidate_norm.shape[1]
-    keep_mask = np.zeros(n_candidates, dtype=bool)
-    if n_candidates == 0:
-        return keep_mask
-
-    intra_corr = candidate_norm.T @ candidate_norm  # (n_candidates, n_candidates)
-
-    accepted_idx = []
-    for i in range(n_candidates):
-        if accepted_idx and intra_corr[i, accepted_idx].max() > threshold:
-            continue
-        keep_mask[i] = True
-        accepted_idx.append(i)
-
-    return keep_mask
-
-_MANAGED_POOL = cp.cuda.MemoryPool(cp.cuda.malloc_managed)
-
-def _alloc_managed_survivors(n_days: int, n_cols: int) -> cp.ndarray:
-
-    n_bytes = n_days * n_cols * cp.dtype(cp.float32).itemsize
-    mem = _MANAGED_POOL.malloc(n_bytes)
-    return cp.ndarray((n_days, n_cols), dtype=cp.float32, memptr=mem)
-
-
-def _ensure_survivor_capacity(survivors_gpu: cp.ndarray, n_survivors: int, n_new: int, n_days: int) -> cp.ndarray:
-
-    capacity = survivors_gpu.shape[1]
-    if n_survivors + n_new <= capacity:
-        return survivors_gpu
-
-    new_capacity = capacity
-    while n_survivors + n_new > new_capacity:
-        new_capacity *= 2
-
-    grown = _alloc_managed_survivors(n_days, new_capacity)
-    grown[:, :n_survivors] = survivors_gpu[:, :n_survivors]
-    return grown
-
-
-def _max_corr_against_survivors_gpu(
-    batch_gpu: cp.ndarray,
-    survivors_gpu: cp.ndarray,
-    n_survivors: int,
-    chunk_size: int,
-) -> cp.ndarray:
-
-    n_batch_cols = batch_gpu.shape[1]
-    max_corr = cp.zeros(n_batch_cols, dtype=cp.float32)
-
-    for start in range(0, n_survivors, chunk_size):
-        end = min(start + chunk_size, n_survivors)
-        corr_block = batch_gpu.T @ survivors_gpu[:, start:end]
-        cp.maximum(max_corr, corr_block.max(axis=1), out=max_corr)
-
-    return max_corr

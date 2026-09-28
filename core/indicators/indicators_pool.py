@@ -984,11 +984,13 @@ CANDIDATE_REGISTRY = {
                                  "params_grid": {}, "thresholds": KALMAN_SLOPE_THS},
 
     # --- H ---
-    "day_slot":                 {"group": "H", "fn": h_day_slot, "role": "filter",
-                                 "params_grid": {"slot": DAY_SLOT_SLOTS},
-                                 "thresholds": DAY_SLOT_THS},
-    "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "role": "filter",
-                                 "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THS},
+# =============================================================================
+#     "day_slot":                 {"group": "H", "fn": h_day_slot, "role": "filter",
+#                                  "params_grid": {"slot": DAY_SLOT_SLOTS},
+#                                  "thresholds": DAY_SLOT_THS},
+#     "vol_deseason":             {"group": "H", "fn": h_vol_deseason, "role": "filter",
+#                                  "params_grid": {"days": VOL_DESEASON_DAYS}, "thresholds": VOL_DESEASON_THS},
+# =============================================================================
 
     # --- I ---
     "tpo_density":              {"group": "I", "fn": i_tpo_density, "role": "filter",

@@ -7,8 +7,7 @@ from setup.config_backtest import INITIAL_BALANCE
 from setup.config_core import settings
 logger = logging.getLogger("BOT_batch.pipeline.correlation")
 
-
-CORRELATION_IS_TH = 0.80   # pre-WFO (IS) greedy threshold: removes near-duplicates only
+CORRELATION_IS_TH = 0.90   # pre-WFO (IS) greedy threshold: removes near-duplicates only
 CORRELATION_DD_TH = 0.70   # post-WFO (OOS) greedy threshold
 
 _SHARPE_CHECK_RTOL = 1e-4  # tolerance of the IS column-mapping check against the StepM Sharpe
@@ -134,8 +133,7 @@ def _greedy_select(
 # OOS DECORRELATION (post-WFO): daily profit of the WFO test trades
 # =============================================================================
 def _column_keys(sids: list) -> dict:
-    # _short_id = per-combo index + combo_key (timeframe included): unique across combos.
-    # The old key _num(sid) was the per-combo index alone and collided across combos.
+
     keys = {sid: _short_id(sid) for sid in sids}
     if len(set(keys.values())) != len(keys):
         keys = {sid: sid for sid in sids}
@@ -279,9 +277,10 @@ def pipe_correlation_is(
         selected = set(_greedy_select(ranked, pos_by_id, _StreamCorr(z), threshold, score, "NetGain%"))
         del z
 
+    pct = 100.0 * len(selected) / len(cand_ids) if cand_ids else 0.0
     logger.info(
-        f"DECORR IS      {label}: {_fmt(len(selected))}/{_fmt(len(cand_ids))} rules pass "
-        f"(corr <= {threshold})"
+        f"DECORR IS      {label}: {pct:.0f}% │ {_fmt(len(selected))} / {_fmt(len(cand_ids))} "
+        f"(th={threshold})"
     )
 
     results = []

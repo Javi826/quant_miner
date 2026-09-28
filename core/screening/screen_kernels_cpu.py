@@ -1,4 +1,4 @@
-# core/indicators/screen_kernels.py
+# core/screening/screen_kernels_cpu.py
 import numpy as np
 from numba import njit, prange
 
@@ -240,8 +240,9 @@ def fill_edges(bins, ncv, Y, out, osum):
                     q_hi = q_all - q_lo - sq[2 * c + 1, g]
                     out[i, s, g, c, 0] = _seg_edge(n_lo, s_lo, q_lo, mean, sd, n_all)
                     out[i, s, g, c, 1] = _seg_edge(n_hi, s_hi, q_hi, mean, sd, n_all)
-                    osum[i, s, g, c, 0] = s_lo if out[i, s, g, c, 0] == out[i, s, g, c, 0] else 0.0
-                    osum[i, s, g, c, 1] = s_hi if out[i, s, g, c, 1] == out[i, s, g, c, 1] else 0.0
+                    # osum: excess of the segment over the unconditional mean (sum of y - mean over its candles)
+                    osum[i, s, g, c, 0] = s_lo - n_lo * mean if out[i, s, g, c, 0] == out[i, s, g, c, 0] else 0.0
+                    osum[i, s, g, c, 1] = s_hi - n_hi * mean if out[i, s, g, c, 1] == out[i, s, g, c, 1] else 0.0
 
 
 @njit(cache=True)
@@ -414,12 +415,13 @@ def pair_T(bA, bB, ncvA, ncvB, Y, k, z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut):
                                 for sB in range(2):
                                     b0, b1 = _seg_bounds(cB, sB, nbin)
                                     flat = off + _combo(g, cA, sA, cB, sB, ncut)
+                                    nn = _rect(P_n, a0, a1, b0, b1, g)
                                     ss = _rect(P_s, a0, a1, b0, b1, g)
+                                    ex = ss - nn * mean[g]             # excess over the unconditional mean
                                     d1 = z1_sd[flat, s]
                                     d2 = z2_sd[flat, s]
-                                    if not (ss > 0.0 and d1 > 0.0 and d2 > 0.0):
+                                    if not (ex > 0.0 and d1 > 0.0 and d2 > 0.0):
                                         continue
-                                    nn = _rect(P_n, a0, a1, b0, b1, g)
                                     qq = _rect(P_q, a0, a1, b0, b1, g)
                                     v = _seg_edge(nn, ss, qq, mean[g], sd[g], n_all[g])
                                     if v == v:
@@ -428,6 +430,54 @@ def pair_T(bA, bB, ncvA, ncvB, Y, k, z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut):
                                             t_sym[s] = z
                                             arg_sym[s] = flat
     return t_sym, arg_sym
+
+
+@njit(parallel=True, cache=True)
+def pair_z_edges(bA, bB, ncvA, ncvB, Y, z1_mu, z1_sd, z2_mu, z2_sd, ncut):
+    """z (as pair_T) and edge (excess of its returns over the unconditional mean) of every combination on the real
+    data (k = 0): -inf and 0 where it does not compete. Layout as pair_edge_moments: (nA * nB * n_blk, n_sym)."""
+    nA, n_sym, _n = bA.shape
+    nB = bB.shape[0]
+    n_tg = Y.shape[2]
+    nbin = 2 * ncut + 1
+    n_blk = n_tg * ncut * 2 * ncut * 2                     # combinations of one (A, B) instance pair
+    z = np.full((nA * nB * n_blk, n_sym), -np.inf)
+    e = np.zeros((nA * nB * n_blk, n_sym))
+    for u in prange(n_sym * nA * nB):
+        s = u // (nA * nB)
+        iA = (u // nB) % nA
+        iB = u % nB
+        off = (iA * nB + iB) * n_blk
+        P_n = np.empty((nbin + 1, nbin + 1, n_tg))
+        P_s = np.empty((nbin + 1, nbin + 1, n_tg))
+        P_q = np.empty((nbin + 1, nbin + 1, n_tg))
+        mean = np.empty(n_tg)
+        sd = np.empty(n_tg)
+        n_all = np.empty(n_tg)
+        _pair_hist(bA, bB, iA, iB, s, Y, 0, P_n, P_s, P_q, mean, sd, n_all)
+        for g in range(n_tg):
+            if sd[g] <= 0.0:
+                continue
+            for cA in range(ncvA[iA]):
+                for sA in range(2):
+                    a0, a1 = _seg_bounds(cA, sA, nbin)
+                    for cB in range(ncvB[iB]):
+                        for sB in range(2):
+                            b0, b1 = _seg_bounds(cB, sB, nbin)
+                            flat = off + _combo(g, cA, sA, cB, sB, ncut)
+                            nn = _rect(P_n, a0, a1, b0, b1, g)
+                            ss = _rect(P_s, a0, a1, b0, b1, g)
+                            ex = ss - nn * mean[g]                     # excess over the unconditional mean
+                            d1 = z1_sd[flat, s]
+                            d2 = z2_sd[flat, s]
+                            if not (ex > 0.0 and d1 > 0.0 and d2 > 0.0):
+                                continue
+                            qq = _rect(P_q, a0, a1, b0, b1, g)
+                            v = _seg_edge(nn, ss, qq, mean[g], sd[g], n_all[g])
+                            if v == v:
+                                z[flat, s] = min((v - z1_mu[flat, s]) / d1, (v - z2_mu[flat, s]) / d2)
+                                e[flat, s] = ex
+    return z, e
 
 
 @njit(parallel=True, cache=True)

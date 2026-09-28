@@ -1,4 +1,4 @@
-# core/pipeline/multiverse.py OLD
+# core/pipeline/multiverse.py
 import os
 import sys
 import logging
@@ -9,26 +9,13 @@ from tqdm import tqdm
 from pipeline.wfo import run_wfo_rule,block_sell_after_grid
 from utils.plotting import plot_multiverse_synthetic_vs_historical
 from utils.reporting import report_multiverse_debug
+from setup.config_pipeline import BLOCK_SIZE_BY_TIMEFRAME
 logger = logging.getLogger("BOT_batch.pipeline.multiverse")
 
 # =============================================================================
 # MCPT EXECUTION CONFIG
 # =============================================================================
 MULTIVERSE_PVALUE_TH    = 0.1
-
-# =============================================================================
-# BLOCK_SIZE_BY_TIMEFRAME = {
-#     "1H":  150,
-#     "4H":  120,
-#     "6H":  70,
-#     "12H": 30,
-# }
-# =============================================================================
-
-BLOCK_SIZE_BY_TIMEFRAME = {
-    "1H":     400,
-    "4H":     100,
-}
 
 #------------------------------------------------------------------------------
 

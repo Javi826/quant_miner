@@ -12,12 +12,13 @@ from utils.paralelization import compact_columns_inplace
 from utils.reporting import print_stepm_matrix_debug, print_stepm_real_variance_filter_debug, print_stepm_block_starts_debug
 from utils.reporting import print_stepm_bootstrap_replicas_debug, print_stepm_se_filter_debug, print_stepm_studentization_debug
 from utils.reporting import print_stepm_pvalue_quantile_equivalence_debug, print_stepm_monotonicity_debug, print_stepm_brc_equivalence_debug
+from setup.config_pipeline import WHITE_BLOCK_SIZE
 logger = logging.getLogger("BOT_batch.pipeline.stepM_is")
 
 # =============================================================================
 # STATISTICAL TEST CONFIG + STEPDOWN / K-FWE CONFIG -ROmano Wolf
 # =============================================================================
-STEPM_ALPHA         = 0.10      # significance level used inside the Romano-Wolf stepdown search
+STEPM_ALPHA         = 0.10          # significance level used inside the Romano-Wolf stepdown search
 FDP_GAMMA           = 0.10
 # =============================================================================
 # STATISTICAL TEST
@@ -25,16 +26,15 @@ FDP_GAMMA           = 0.10
 FDP_K_MAX            = 8192           # upper bound of the geometric k sweep: 1, 2, 4, ... FDP_K_MAX
 WHITE_PVALUE_TH      = STEPM_ALPHA
 WHITE_N_BOOTSTRAP    = 1000
-WHITE_BLOCK_SIZE     = 10            # fixed block length — mirrors montecarlo.py BLOCK_SIZE
 STEPM_USE_SPA        = True
 STEPM_MAX_ITERATIONS = 500           # safety cap on stepdown iterations
 CROSS_SECTIONAL_PERCENTILES = np.array([50, 90, 95, 96, 97, 98, 99, 99.9, 99.99, 100])
 # =============================================================================
 # MEMORY-CHUNKING CONFIG — bounds peak RAM without changing any result
 # =============================================================================
-COLUMN_CHUNK_SIZE    = 5000     # columns processed per chunk for chunked reductions/compaction over dense matrices
-PARTITION_ROW_CHUNK  = 50       # bootstrap replicas processed per np.partition call in the stepdown
-BOOTSTRAP_CHUNK_SIZE = 8192     # columns processed per GEMM call in the bootstrap moment computation
+COLUMN_CHUNK_SIZE    = 5000        # columns processed per chunk for chunked reductions/compaction over dense matrices
+PARTITION_ROW_CHUNK  = 50          # bootstrap replicas processed per np.partition call in the stepdown
+BOOTSTRAP_CHUNK_SIZE = 8192        # columns processed per GEMM call in the bootstrap moment computation
 RANDOM_SEED          = 42
 FDP_TOPM_WORKERS     = max(1, min(os.cpu_count() or 1, 16))  # threads for the suffix k-th queries on the top-M index
 # =============================================================================
@@ -56,41 +56,6 @@ _MAG32   = np.uint32(0x7FFFFFFF)
 _SHIFT32 = np.uint64(32)
 _LOW32   = np.uint64(0xFFFFFFFF)
 _ZERO64  = np.uint64(0)
-
-# =============================================================================
-# CHUNKED REDUCTIONS — column-wise mean/std without materializing a full-size
-# =============================================================================
-def _mean_std_by_column_chunks(arr: np.ndarray, ddof: int = 0, chunk_size: int = COLUMN_CHUNK_SIZE):
-    n_cols = arr.shape[1]
-    means = np.empty(n_cols, dtype=np.float64)
-    stds  = np.empty(n_cols, dtype=np.float64)
-    for start in range(0, n_cols, chunk_size):
-        end = min(start + chunk_size, n_cols)
-        chunk = arr[:, start:end]
-        means[start:end] = chunk.mean(axis=0, dtype=np.float64)
-        stds[start:end]  = chunk.std(axis=0, ddof=ddof, dtype=np.float64)
-    return means, stds
-
-
-def _std_by_column_chunks(arr: np.ndarray, ddof: int = 0, chunk_size: int = COLUMN_CHUNK_SIZE) -> np.ndarray:
-    n_cols = arr.shape[1]
-    stds = np.empty(n_cols, dtype=np.float64)
-    for start in range(0, n_cols, chunk_size):
-        end = min(start + chunk_size, n_cols)
-        stds[start:end] = arr[:, start:end].std(axis=0, ddof=ddof, dtype=np.float64)
-    return stds
-
-# =============================================================================
-# STATISTIC — annualized Sharpe per trial column, vectorized over bootstrap replicas
-# =============================================================================
-def _sharpe_per_column(matrix_arr: np.ndarray) -> np.ndarray:
-
-    means, stds = _mean_std_by_column_chunks(matrix_arr, ddof=1)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        sharpe = (means / stds) * np.sqrt(settings.DAYS_PER_YEAR)
-
-    return np.where(stds > 0, sharpe, -np.inf)
 
 # =============================================================================
 # MOVING BLOCK BOOTSTRAP — WEIGHT-MATRIX (GEMM) FORMULATION
@@ -134,39 +99,6 @@ def _build_bootstrap_weight_matrix(
 
     weights = np.cumsum(diff[:, :n_obs], axis=1)
     return weights.astype(np.float32)
-
-def _bootstrap_moments_chunk(
-    weight_matrix: np.ndarray,
-    batch_values: np.ndarray,
-    real_sharpe_batch: np.ndarray,
-    n_obs: int,
-) -> tuple:
-
-    total_sum   = weight_matrix @ batch_values
-    total_sumsq = weight_matrix @ (batch_values * batch_values)
-
-    means = total_sum / n_obs
-    var   = (total_sumsq - n_obs * means * means) / (n_obs - 1)
-    np.maximum(var, 0.0, out=var)  # guard tiny negative fp error before sqrt
-    stds = np.sqrt(var)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        boot_sharpe = (means / stds) * np.sqrt(settings.DAYS_PER_YEAR)
-    boot_sharpe = np.where(stds > 0, boot_sharpe, -np.inf)
-
-    deviations_chunk = boot_sharpe - real_sharpe_batch[None, :]
-    sigma_chunk       = deviations_chunk.std(axis=0, ddof=1)
-
-    return deviations_chunk, sigma_chunk
-
-# Hansen (2005) SPA_c: recenter clearly-losing columns (z_stat below a slowly-growing
-# threshold) to 0 instead of their own negative mean, before computing the bootstrap null
-def apply_spa_recentering(studentized_deviations: np.ndarray, z_stat: np.ndarray, n_obs: int) -> tuple:
-    threshold = -np.sqrt(2.0 * np.log(np.log(max(n_obs, 3))))
-    bad_mask  = z_stat < threshold
-    if bad_mask.any():
-        studentized_deviations[:, bad_mask] += z_stat[bad_mask][None, :]
-    return studentized_deviations, bad_mask, threshold
 
 # =============================================================================
 # PARALLEL REAL SHARPE (CPU, bit-exact): identical numpy calls on the same
@@ -247,8 +179,7 @@ def _gpu_spa_recenter(dev32, real_blk, sigma, threshold: float):
 
 
 def _pack_keys(values, valid, col_offset: int):
-    # order-preserving float32 -> uint32 key in the high word, finite-space column index in the low word;
-    # invalid columns get key 0, strictly below any real key
+
     u   = cp.ascontiguousarray(values).view(cp.uint32)
     key = cp.where(u >= _SIGN32, ~u, u | _SIGN32).astype(cp.uint64)
     key <<= _SHIFT32
@@ -285,9 +216,7 @@ def _check_streaming_vram(n_bootstrap: int, n_obs: int, n_cols: int, m: int, g: 
 # STREAMING TOP-M — exact per-row top-M of packed keys, fed chunk by chunk
 # =============================================================================
 class _TopMAccumulator:
-    # Row layout: [staging (g) | running top-m (m)]. An ascending in-place sort leaves the running
-    # top-m in the tail; only keys above the current m-th largest (thr) are staged. Keys are unique
-    # and > 0, so stale staging entries (all <= thr) can never re-enter the top-m.
+
 
     def __init__(self, n_rows: int, m: int, g: int):
         self.n_rows, self.m, self.g = n_rows, m, g
@@ -326,7 +255,6 @@ class _TopMAccumulator:
 
 # =============================================================================
 # STREAMING BOOTSTRAP — one GPU pass over the column chunks; nothing of size
-# n_bootstrap x n_cols is ever materialized (except the host copies in DEBUG)
 # =============================================================================
 class _StreamingBootstrap:
 
@@ -418,7 +346,6 @@ class _StreamingBootstrap:
 
 # =============================================================================
 # SUFFIX K-TH LARGEST INDEX — exact k-th largest of any suffix dev_sorted[:, s:]
-# from the per-row top-M, as long as k + s <= M
 # =============================================================================
 class _TopMTooSmall(Exception):
 
@@ -444,8 +371,6 @@ class _SuffixKthIndex:
 
     def _build_sparse(self) -> None:
         m, n_cols, n_rows = self.m, self.n_cols, self.vals.shape[0]
-        # Sparse view of the entries that can ever be excluded (pos < m), per row,
-        # in ascending rank order: rank j and z-position. Padding never matches.
         excl = self.pos < m
         counts = excl.sum(axis=1)
         c = int(counts.max()) if n_rows else 0
@@ -477,8 +402,7 @@ class _SuffixKthIndex:
 
     def _rank_rows(self, r0: int, r1: int, s: int, k_eff: int, L: int) -> np.ndarray:
         if self.c < L:
-            # rank of the k-th kept entry = (k_eff-1) + #excluded entries before it;
-            # excluded e_i precedes it iff e_i - i <= k_eff - 1 (monotone in i)
+
             mask = self.xpos[r0:r1] < s
             rank = np.cumsum(mask, axis=1, dtype=np.int32)
             rank -= 1
@@ -489,7 +413,6 @@ class _SuffixKthIndex:
 
 # =============================================================================
 # BOOTSTRAP NULL — studentized deviations reduced to what StepM consumes: the
-# per-row top-M (values desc + kept-column index); grows on demand by re-streaming
 # =============================================================================
 def _fdp_topm_size(k_max: int, gamma: float) -> int:
     if not 0.0 < gamma < 1.0:
@@ -624,8 +547,7 @@ def _log_bootstrap_debug(progress_label: str, run: dict, null: BootstrapNull, sp
 # GLOBAL P-VALUE — single number per timeframe, the original White (2000) test.
 # =============================================================================
 def compute_global_pvalue(max_deviation: np.ndarray, statistic: np.ndarray) -> dict:
-    # max_deviation: per-replica max of the studentized deviations, shape (n_bootstrap,);
-    # a full (n_bootstrap, n_cols) matrix is also accepted and reduced here
+
     if max_deviation.ndim == 2:
         max_deviation = np.max(max_deviation, axis=1)
     best_col_idx   = int(np.argmax(statistic))
@@ -654,8 +576,7 @@ def _kth_largest_by_row_chunks(values: np.ndarray, k_eff: int, chunk_size: int =
 # =============================================================================
 # CUT DIAGNOSTIC — where the stepdown cut k lands on the cross-sectional grid
 # =============================================================================
-# Same operands, expression and compilation path as the linear-interpolation kernel
-# of cupy.percentile, applied to the two order statistics read from the top-M
+
 _PERCENTILE_LERP = cp.ElementwiseKernel(
     "T a_bottom, T a_top, float64 weight_above",
     "float64 ret",

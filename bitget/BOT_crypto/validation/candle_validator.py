@@ -258,7 +258,7 @@ class CandleValidator(BitgetWSManager):
         identity_match     = closed['open_time_ms'] == rest_open_time_ms
         ohlc               = [float(v) for v in row[1:5]]
         is_flat            = max(ohlc) == min(ohlc)
-        log                = logger.warning if (is_flat or not identity_match) else logger.debug
+        log                = logger.warning if (is_flat or not identity_match) else logger.info
 
         log(
             f"[VERIFY] {timeframe} | identity:{_mark(identity_match)} "

@@ -139,7 +139,7 @@ def pipe_FF_test(
     null = compute_bootstrap_null(
         matrix_arr, list(col_names), n_bootstrap=n_bootstrap, block_size=block_size, seed=seed,
         topm_size=_topm_size_for(percentiles, n_cols_built),
-        progress_label=f"FF {timeframe}", desc=f"{'FF BST':<15} {timeframe}",
+        progress_label=f"FF {timeframe}", desc=f"{'FF BOOTSTRAP':<15} {timeframe}",
     )
 
     n_kept     = null.n_kept

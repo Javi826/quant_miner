@@ -68,8 +68,7 @@ def _cap_strategies_round_robin(
     initial_balance: float,
     max_total_strategies: int,
 ) -> list:
-    """Cap the strategy pool to max_total_strategies using round-robin
-    selection across (timeframe, side) groups, best net_gain first."""
+
     trades_by_id = {sid: df for sid, df in validated_wfo_trades}
 
     if len(trades_by_id) <= max_total_strategies:
@@ -359,7 +358,6 @@ def _valid_subsets_for_timeframe(longs: list, shorts: list, size: int):
     else:
         for combo in combinations(pool, size):
             yield combo
-
 
 def _generate_combos(
     all_ids: list,

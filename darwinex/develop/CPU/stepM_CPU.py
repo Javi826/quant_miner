@@ -152,12 +152,6 @@ def apply_spa_recentering(studentized_deviations: np.ndarray, z_stat: np.ndarray
 
 # =============================================================================
 # PARALLEL BOOTSTRAP (CPU, bit-exact)
-# The GEMMs are issued exactly as before (same operands, same shapes, BLAS threads).
-# Everything that was single-threaded numpy (Sharpe reductions, the per-chunk
-# moment/Sharpe/std post-processing, studentization and SPA) runs the SAME numpy
-# operations on disjoint column blocks in a thread pool (numpy releases the GIL).
-# All those operations are per column (elementwise, or reductions along axis 0 in
-# the same row order), so every value is identical bit for bit.
 # =============================================================================
 STEPM_WORKERS        = max(1, min(os.cpu_count() or 1, 32))  # threads for the column-parallel numpy work
 BOOTSTRAP_POST_BLOCK = 512      # columns per thread task in the bootstrap post-processing
@@ -213,8 +207,7 @@ def _bootstrap_chunk_parallel(
         out[...] = deviations_blk                    # same float64 -> float32 store as deviations[:, s:e] = dev_chunk
         sigma_out[a:b] = sigma_blk
         if fuse_student:
-            # same ops as `deviations /= sigma_hat` and apply_spa_recentering, per column.
-            # Columns with sigma <= 0 are garbage here but are dropped by the valid_se compaction.
+
             with np.errstate(divide="ignore", invalid="ignore"):
                 out /= sigma_blk[None, :]
                 z_blk = real_sharpe_batch[a:b] / sigma_blk
@@ -374,18 +367,6 @@ def _kth_largest_by_row_chunks(values: np.ndarray, k_eff: int, chunk_size: int =
 
 # =============================================================================
 # SUFFIX K-TH LARGEST INDEX: exact replacement of _kth_largest_by_row_chunks
-# for the FDP ladder, built with ONE pass over the deviation matrix.
-#
-# In the stepdown, iteration t needs, per bootstrap row, the k_eff-th largest
-# value of dev_sorted[:, s:] (s = extended_start). At most s values of the row
-# are excluded, so that value is always among the top (k_eff + s) values of the
-# FULL row. Every iteration that runs under the FDP ladder has
-#     k_eff + s <= min(abort_at(k), n_cols) <= min(abort_at(k_max), n_cols) = M
-# (s = active_start - k + 1 once active_start >= k - 1, and active_start < abort_at).
-# So keeping, per row, the top M values (sorted desc) and their position in the
-# z-sorted order answers every iteration of every k exactly. Only selection,
-# no arithmetic on the values -> identical float32 values -> identical p-values.
-# It also removes the full dev_sorted = deviations[:, order] copy.
 # =============================================================================
 class _SuffixKthIndex:
 
@@ -445,8 +426,6 @@ class _SuffixKthIndex:
         if has_nan[0]:
             raise ValueError("NaN in deviations: _SuffixKthIndex not applicable")
 
-        # Sparse view of the entries that can ever be excluded (pos < m), per row,
-        # in ascending rank order: rank j and z-position. Padding never matches.
         excl = self.pos < m
         counts = excl.sum(axis=1)
         c = int(counts.max()) if n_rows else 0
@@ -479,8 +458,7 @@ class _SuffixKthIndex:
 
     def _rank_rows(self, r0: int, r1: int, s: int, k_eff: int, L: int) -> np.ndarray:
         if self.c < L:
-            # rank of the k-th kept entry = (k_eff-1) + #excluded entries before it;
-            # excluded e_i precedes it iff e_i - i <= k_eff - 1 (monotone in i)
+
             mask = self.xpos[r0:r1] < s
             rank = np.cumsum(mask, axis=1, dtype=np.int32)
             rank -= 1

@@ -138,13 +138,13 @@ def run_rule_mining_pipeline(
     passed_mbias_ids  = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"]}
     passed_decorr_ids = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"] and r["passed_decorr_is"]}
 
-    print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-MBIAS", survivor_ids=list(passed_mbias_ids))
+    print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-MBIAS", scope="IS", survivor_ids=list(passed_mbias_ids))
     print_rule_mining_min_by_group_is(
         [r for r in all_mbias_results if r["passed_mbias"]], "POST-MBIAS (pre-WFO)",
         all_mbias_results,
     )
 
-    print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-CORRELATION", survivor_ids=list(passed_decorr_ids))
+    print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-CORRELATION", scope="IS", survivor_ids=list(passed_decorr_ids))
     print_rule_mining_min_by_group_is(
         [r for r in all_mbias_results if r["rule_id"] in passed_decorr_ids], "POST-CORRELATION (pre-WFO)",
         [r for r in all_mbias_results if r["passed_mbias"]],

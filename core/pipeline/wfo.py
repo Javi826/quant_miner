@@ -18,22 +18,12 @@ run_backtest_from_prepared_light = _bt.run_backtest_from_prepared_light
 from engines.wfo_WF import walk_forward_optimization
 from utils.ohlcv_utils import get_bars_per_year
 from utils.batch_metrics import compute_metrics
+from setup.config_pipeline import WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH, WFO_TRAIN_MONTHS, WFO_TEST_MONTHS
 DTYPE  = np.float32
 logger = logging.getLogger("BOT_batch.pipeline.wfo")
-
-# =============================================================================
-# WFO APPROVAL THRESHOLDS
-# =============================================================================
-WFO_NET_GAIN_TH = 3
-WFO_DD_TH       = 3
-WFO_R2_TH       = 0.5
-WFO_WFR_TH      = 0.5
-
 # =============================================================================
 # WFO EXECUTION CONFIG
 # =============================================================================
-WFO_TRAIN_MONTHS     = 12
-WFO_TEST_MONTHS      = 3
 METRIC_MODE          = "NET_GAIN_PCT"   # "NET_GAIN_PCT" or "CALMAR"
 EMA_ALPHA            = 0.3
 WFO_BLOCK_SELL_AFTER = True

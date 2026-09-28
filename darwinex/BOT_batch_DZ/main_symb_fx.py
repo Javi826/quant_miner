@@ -54,32 +54,48 @@ DATASET           = "IS"   # "IS" or "MERGED"
 # EXPERIMENT CONFIGURATION
 # =============================================================================
 SYMBOL_POOL = [
-    "EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD",
-    "USDCHF", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP",
-    "EURCHF", "AUDJPY", "CADJPY", "CHFJPY", "EURAUD",
-    "EURCAD", "AUDCAD", "GBPCAD", "NZDJPY", "GBPCHF",
+    "GBPUSD",
+    "NZDJPY",
+    "GBPJPY",
+    "CADJPY",
+    "EURUSD",
+    "EURJPY",
+    "EURAUD",
+    "EURCAD",
+    "EURGBP",
+    "EURCHF",
+    "AUDCAD",
+    "GBPCHF",
+    "USDJPY",
+    "AUDUSD",
+    "NZDUSD",
+    "AUDJPY",
+    "CHFJPY",
+    "USDCAD",
+    "USDCHF",
+    "GBPCAD",
 ]
 
 TIMEFRAMES   = ["1H","4H"]
-#TIMEFRAMES   = ["4H"]
-COMBO_SIZES  = [1,2]
+TIMEFRAMES   = ["4H"]
+COMBO_SIZES  = [2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {
      1:  None,
-     2:  190,
+     99: 99 ,
 }
 
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
-        "SELL_AFTER": [10,100],
+        "SELL_AFTER": [100],
         "TP_PCT":     [0.5,1.0,1.5],
         "SL_PCT":     [0.5,1.0,1.5],
     },
     "4H": {
-        "SELL_AFTER":[10,100],
-        "TP_PCT":    [0.5,1.0,1.5],
-        "SL_PCT":    [0.5,1.0,1.5],
+        "SELL_AFTER":[100],
+        "TP_PCT":    [1.3,1.5,1.7],
+        "SL_PCT":    [0.8,1.0,1.2],
     },
 }
 

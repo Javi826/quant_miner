@@ -59,42 +59,31 @@ SPLIT_MODE    = True
 DATASET_IS, DATASET_OOS = ("IS", "OOS") if SPLIT_MODE else ("MERGED", "MERGED")
 
 # =============================================================================
-TIMEFRAMES = ["1H","4H"]
+TIMEFRAMES = ["4H"]
 
 SYMBOL_COMBOS_BY_TIMEFRAME = {
     "1H": [
-    ["USDCAD", "CHFJPY"],
-    ["USDJPY", "CHFJPY"],
-    ["CHFJPY"],
-    ["USDJPY"],
-    ["CHFJPY", "AUDCAD"],
-    ["USDJPY", "EURCAD"],
-    ["EURJPY", "CHFJPY"],
-    ["USDJPY", "GBPJPY"],
-    ["USDJPY", "EURJPY"],
-    ["CADJPY", "CHFJPY"],
-    ["USDJPY", "USDCAD"],
-    ["USDCAD", "AUDJPY"],
-    ["CHFJPY", "EURCAD"],
-    ["AUDJPY", "CHFJPY"],
-    ["NZDUSD", "EURGBP"],
+    ["AUDCAD", "GBPCHF"],
+    ["EURCHF", "AUDCAD"],
+    ["AUDCAD"],
     ],
     "4H": [
-    ["USDCAD", "CHFJPY"],
-    ["USDJPY", "CHFJPY"],
+    ["EURGBP", "AUDCAD"],
     ["CHFJPY"],
-    ["USDJPY"],
-    ["CHFJPY", "AUDCAD"],
-    ["USDJPY", "EURCAD"],
-    ["EURJPY", "CHFJPY"],
-    ["USDJPY", "GBPJPY"],
-    ["USDJPY", "EURJPY"],
-    ["CADJPY", "CHFJPY"],
-    ["USDJPY", "USDCAD"],
-    ["USDCAD", "AUDJPY"],
-    ["CHFJPY", "EURCAD"],
+    ["AUDCAD", "CHFJPY"],
+    ["CHFJPY", "GBPCAD"],
+    ["EURGBP", "GBPCAD"],
+    ["AUDCAD"],
+    ["CHFJPY", "USDJPY"],
+    ["AUDCAD", "GBPCAD"],
+    ["EURGBP", "CHFJPY"],
+    ["EURGBP"],
     ["AUDJPY", "CHFJPY"],
-    ["NZDUSD", "EURGBP"],
+    ["USDCHF", "CHFJPY"],
+    ["EURGBP", "EURCAD"],
+    ["AUDJPY"],
+    ["CHFJPY", "GBPCHF"],
+    ["EURGBP", "GBPCHF"],
     ]
 }
 
@@ -105,7 +94,7 @@ PARAM_GRID_BY_TIMEFRAME = {
         "SL_PCT":     [0.5,1.0,1.5],
     },
     "4H": {
-        "SELL_AFTER":[10,100],
+        "SELL_AFTER":[10],
         "TP_PCT":    [0.5,1.0,1.5],
         "SL_PCT":    [0.5,1.0,1.5],
     },

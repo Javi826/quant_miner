@@ -15,21 +15,12 @@ import sys
 import logging
 import pandas as pd
 from setup.config_backtest import MIN_PRICE
+from setup.config_symbols import MIN_START_DATE_IS, MIN_START_DATE_OOS, MIN_START_DATE_MERGED
 logger = logging.getLogger("BOT_batch.pipeline.universe")
 
 # =============================================================================
 # UNIVERSE DATA REQUIREMENTS
 # =============================================================================
-# =============================================================================
-# MIN_START_DATE_IS     = "2022-01-01"
-# MIN_START_DATE_OOS    = "2024-01-10"
-# MIN_START_DATE_MERGED = "2022-01-01"
-# =============================================================================
-
-MIN_START_DATE_IS     = "2017-01-02"
-MIN_START_DATE_OOS    = "2024-01-24"
-MIN_START_DATE_MERGED = "2018-01-02"
-
 MIN_START_DATE_BY_DATASET = {
     "IS":     MIN_START_DATE_IS,
     "OOS":    MIN_START_DATE_OOS,

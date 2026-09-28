@@ -271,8 +271,31 @@ def print_best_wfo_portfolio(
 def _short_id(rule_id: str) -> str:
     parts = rule_id.split("_")
     return "_".join(parts[:3])
+_IS_COLUMNS = [
+    ("NET_GAIN%", "net_gain_is", "{:.1f}", 12),
+    ("MAX_DD%",   "max_dd_is",   "{:.1f}", 10),
+    ("SHARPE",    "sharpe_is",   "{:.3f}", 8),
+    ("STEPM_P",   "stepm_p",     "{:.3f}", 8),
+    ("DUR_D",     "duration_is", "{:.2f}", 8),
+]
 
-def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_label: str, survivor_ids: list = None) -> None:
+_OOS_COLUMNS = [
+    ("NET_GAIN%", "net_gain",             "{:.1f}", 12),
+    ("MAX_DD%",   "max_dd",               "{:.1f}", 10),
+    ("PF",        "profit_factor",        "{:.2f}", 8),
+    ("SHARPE",    "sharpe",               "{:.3f}", 8),
+    ("R2",        "r_squared",            "{:.3f}", 8),
+    ("STEPM_P",   "stepm_p",              "{:.3f}", 8),
+    ("WFR",       "wfr",                  "{:.2f}", 8),
+    ("MC_RUIN",   "montecarlo_prob_ruin", "{:.1f}", 9),
+    ("MV_PVAL",   "multiverse_p_value",   "{:.3f}", 9),
+    ("TRADES",    "n_trades",             "{:.0f}", 8),
+    ("WIN_RATE%", "win_rate",             "{:.1f}", 11),
+    ("DUR_D",     "duration_d",           "{:.2f}", 8),
+]
+
+RANKING_COLUMNS = {"IS": _IS_COLUMNS, "OOS": _OOS_COLUMNS}
+def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_label: str, scope: str = "OOS", survivor_ids: list = None) -> None:
     if not logger.isEnabledFor(logging.DEBUG):
         return
     candidate_set = set(candidate_ids)
@@ -282,35 +305,34 @@ def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_
     show_status  = survivor_ids is not None
     survivor_set = set(survivor_ids) if show_status else None
     log_fn       = logger.debug
+    columns      = RANKING_COLUMNS[scope]
 
-    id_width    = max((len(_short_id(r["rule_id"])) for r in rows), default=8) + 2
-    label_width = max((len(r["label"]) for r in rows), default=8) + 2
+    id_width     = max((len(_short_id(r["rule_id"])) for r in rows), default=8) + 2
+    label_width  = max((len(r["label"]) for r in rows), default=8) + 2
+    status_width = 10 if show_status else 0
+    table_width  = id_width + sum(width for _, _, _, width in columns) + label_width + status_width
 
     count_str = f"{len(survivor_ids)} / {len(candidate_ids)} passed" if show_status else f"{len(rows)} / {len(candidate_ids)} tested"
 
-    log_fn(f"\n{'─' * 180}")
-    log_fn(f"  RULE MINING RESULTS (OOS) — {stage_label} ── {count_str}")
-    log_fn(f"{'─' * 180}")
+    log_fn(f"\n{'─' * table_width}")
+    log_fn(f"  RULE MINING RESULTS ({scope}) — {stage_label} ── {count_str}")
+    log_fn(f"{'─' * table_width}")
 
     status_header = f"  {'STATUS':<8}" if show_status else ""
-    log_fn(
-        f"{'ID':<{id_width}}{'NET_GAIN%':<12}{'MAX_DD%':<10}{'PF':<8}{'SHARPE':<8}{'R2':<8}"
-        f"{'STEPM_P':<8}{'WFR':<8}{'MC_RUIN':<9}{'MV_PVAL':<9}{'TRADES':<8}"
-        f"{'WIN_RATE%':<11}{'DUR_D':<8}{'RULE':<{label_width}}{status_header}"
+    header = (
+        f"{'ID':<{id_width}}"
+        + "".join(f"{name:<{width}}" for name, _, _, width in columns)
+        + f"{'RULE':<{label_width}}{status_header}"
     )
-    log_fn(f"{'─' * 180}")
+    log_fn(header)
+    log_fn(f"{'─' * table_width}")
+
     for r in rows:
         status_cell = f"  {('✅' if r['rule_id'] in survivor_set else '❌'):<8}" if show_status else ""
-        log_fn(
-            f"{_short_id(r['rule_id']):<{id_width}}{r['net_gain']:<12.1f}{r['max_dd']:<10.1f}"
-            f"{r['profit_factor']:<8.2f}{(r.get('sharpe') or 0.0):<8.3f}{r['r_squared']:<8.3f}"
-            f"{r.get('stepm_p', 0.0):<8.3f}{r['wfr']:<8.2f}{r.get('montecarlo_prob_ruin', 0.0):<9.1f}"
-            f"{r.get('multiverse_p_value', 0.0):<9.3f}"
-            f"{r['n_trades']:<8}{r.get('win_rate', 0.0):<11.1f}{r.get('duration_d', 0.0):<8.2f}"
-            f"{r['label']:<{label_width}}{status_cell}"
-        )
+        cells = "".join(f"{fmt.format(r.get(key) or 0.0):<{width}}" for _, key, fmt, width in columns)
+        log_fn(f"{_short_id(r['rule_id']):<{id_width}}{cells}{r['label']:<{label_width}}{status_cell}")
 
-    log_fn(f"{'─' * 180}\n")
+    log_fn(f"{'─' * table_width}\n")
 
 
 def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, stage_label: str, candidate_ids: list) -> None:
