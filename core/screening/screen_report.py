@@ -63,8 +63,7 @@ def evaluate1(r, null_pct):
     floor1, med1, p841 = _null_stats(r["null1"], null_pct)
     pass1 = r["T1"] > floor1
     score1 = _scores(r["T1"], med1, p841)
-    return {"n_pass": int(pass1.sum()), "score": _score(score1, pass1), "mean": _median_ok(r["mean1"], pass1),
-            "pass": pass1, "z": r["z1"], "med": med1}
+    return {"n_pass": int(pass1.sum()), "score": _score(score1, pass1), "pass": pass1, "z": r["z1"], "med": med1}
 
 
 def evaluate2(r, null_pct):
@@ -73,8 +72,8 @@ def evaluate2(r, null_pct):
     floor2_B, med2_B, p842_B = _null_stats(r["null2_B"], null_pct)
     pass2 = (r["T2"] > floor2_A) & (r["T2"] > floor2_B)
     score2 = np.minimum(_scores(r["T2"], med2_A, p842_A), _scores(r["T2"], med2_B, p842_B))
-    return {"n_pass": int(pass2.sum()), "score": _score(score2, pass2), "mean": _median_ok(r["mean2"], pass2),
-            "pass": pass2, "z": r["z2"], "med": np.maximum(med2_A, med2_B)}
+    return {"n_pass": int(pass2.sum()), "score": _score(score2, pass2), "pass": pass2, "z": r["z2"],
+            "med": np.maximum(med2_A, med2_B)}
 
 
 def _nan_low(v):
@@ -107,7 +106,7 @@ def select(names, res1, res2, group_n, min_cover, max_cover, measure):
         cv, rl = measure(cand)
         if not (min_cover <= cv <= max_cover):
             return None
-        return {"score": q["score"], "n_pass": q["n_pass"], "mean": q["mean"], "via": via, "cover": cv, "real": rl}
+        return {"score": q["score"], "n_pass": q["n_pass"], "via": via, "cover": cv, "real": rl}
 
     pairs_of = {}
     for p in res2:
@@ -421,13 +420,13 @@ def _group(pool, name):
     return pool.group_names.get(g, g)
 
 
-def _py_list(var_name, items):
-
-    lines = [f"{var_name} = ["]
-    for it in items:
-        lines.append(f'    "{it}",')
-    lines.append("]")
-    return "\n".join(lines)
+def _log_names(title, items):
+    """A list of indicators in DEBUG: its title, then one per line."""
+    logger.debug(title)
+    for nm in items:
+        logger.debug(f"  {nm}")
+    if not items:
+        logger.debug("  (none)")
 
 
 def _cols_header(name, col2, tail):
@@ -468,8 +467,9 @@ def _report_selected(pool, names, best, mode):
         o = best[nm]
         logger.info(_cols(nm, _group(pool, nm), o) + f"  {_via_text(o['via'])}")
     if not items:
-        logger.info("(empty)")
-    logger.info("\n" + _py_list("SYMBOL_INDICATORS", items))
+        logger.debug("(empty)")
+    logger.debug("")
+    _log_names(f"Selected ({len(items)}):", items)
     return items
 
 
@@ -526,7 +526,7 @@ def _report_pruned(items, best, st_alone, st_pairs, kept):
     out = [nm for nm in items if nm in kept]
     pct = len(out) / len(items) if items else 0.0
     logger.info(f"\n{SEP}\nAFTER REDUNDANCY ({len(out)} of {len(items)}, {pct:.0%})\n{SEP}")
-    logger.info(_py_list("SYMBOL_INDICATORS_PRUNED", out) + "\n")
+    _log_names(f"Kept ({len(out)}):", out)
     removed = [nm for nm in items if nm not in kept]
     logger.info(f"Removed ({len(removed)}):")
     for nm in removed:
@@ -572,15 +572,18 @@ def _top_candidates(order, st_alone, st_pairs, top_i):
 
 
 def _report_top(pool, pruned, top, top_i):
+    """TOP_I (DEBUG): the indicators in the TOP and out of it, and the rules of the final list. Returns the rules,
+    {MAX_DEPTH: rules}."""
     if top_i is not None:
-        logger.info(f"\n{SEP}\nTOP_I={top_i} ({len(top)} of {len(pruned)}, in ranking order; a pair is never split)"
-                    f"\n{SEP}")
-        logger.info(_py_list("SYMBOL_INDICATORS_TOP", top) + "\n")
+        logger.debug(f"\n{SEP}\nTOP_I={top_i} ({len(top)} of {len(pruned)}, in ranking order; a pair is never split)"
+                     f"\n{SEP}")
         cut = [nm for nm in pruned if nm not in top]
-        logger.info(f"Out by TOP_I ({len(cut)}): " + (", ".join(cut) if cut else "(none)"))
+        _log_names(f"In the TOP ({len(top)}):", top)
+        _log_names(f"Out by TOP_I ({len(cut)}):", cut)
     rules = rule_counts(pool, top)
-    logger.info(f"\nRules of SYMBOL_INDICATORS_{'TOP' if top_i is not None else 'PRUNED'} (rule_generator, both sides): "
-                + " | ".join(f"MAX_DEPTH={d}: {_fmt_int(v)}" for d, v in rules.items()))
+    logger.debug(f"\nRules of the {'TOP' if top_i is not None else 'PRUNED'} (rule_generator, both sides): "
+                 + " | ".join(f"MAX_DEPTH={d}: {_fmt_int(v)}" for d, v in rules.items()))
+    return rules
 
 
 def _check_bins(bins, pool, raw):
@@ -646,7 +649,7 @@ def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, 
                              j_th, x_th, mode)
     pruned = _report_pruned(selected, best, st_alone, st_pairs, survivors(st_alone, st_pairs))
     top = top_list(order, st_alone, st_pairs, top_i)
-    _report_top(pool, pruned, top, top_i)
+    rules = _report_top(pool, pruned, top, top_i)
 
     # the TOP's candidates (a pair once) and, for every indicator of the TOP, the one it entered through
     top_cands = _top_candidates(order, st_alone, st_pairs, top_i)
@@ -657,8 +660,7 @@ def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, 
     if list(entry) != top:
         raise RuntimeError("_top_candidates is out of sync with top_list")
     top_symbols = _report_symbols(raw["symbols"], [sym_of(entry[nm])[1] for nm in top])
-    grid = _report_grid(raw, top_cands, res_of, n, mode)
-    return {"selected": selected, "pruned": pruned, "top": top, "symbols": top_symbols, "grid": grid}
+    return {"selected": selected, "pruned": pruned, "top": top, "symbols": top_symbols, "rules": rules}
 
 
 def exclude_indicators(raw, exclude):
@@ -680,75 +682,13 @@ def exclude_indicators(raw, exclude):
 
 def _report_symbols(symbols, masks):
     """Symbols where the indicators of the top pass, each through the candidate it entered the TOP with, ranked by
-    how many of them pass on each one."""
+    how many of them pass on each one (the table in DEBUG)."""
     count = np.zeros(len(symbols), dtype=int)
     for m in masks:
         count += m
     ranked = sorted(np.flatnonzero(count), key=lambda k: count[k], reverse=True)
     out = [str(symbols[k]) for k in ranked]
-    logger.info(f"\n{SEP}\nSYMBOLS OF THE TOP ({len(out)} of {len(symbols)})\n{SEP}")
+    logger.debug(f"\n{SEP}\nSYMBOLS OF THE TOP ({len(out)} of {len(symbols)})\n{SEP}")
     for k in ranked:
-        logger.info(f"{str(symbols[k]):<10}{count[k]:>{N_W}}")
-    logger.info("\n" + _py_list("SYMBOL_POOL", out) + "\n")
+        logger.debug(f"{str(symbols[k]):<10}{count[k]:>{N_W}}")
     return out
-
-
-# =============================================================================
-# 4. GRID OF THE TOP
-# =============================================================================
-def _grid_rows(raw, cands, res_of, n):
-    """Per terna (TP, SL, SELL_AFTER), one row per (candidate, passing symbol): (real_bp, exc_bp) of the entry the
-    screening picks within that terna, long or short, the largest edge above the floor (0 if it has none). exc_bp:
-    in excess over the unconditional mean; real_bp: exc_bp without its luck share, as the ranking."""
-    n_tn = len(raw["targets"]) // 2
-    tn = np.arange(n_tn)
-    real, exc = [], []
-    for c in cands:
-        r, k = (raw["p1"][c[1]], "1") if c[0] == "alone" else (raw["p2"][c[1]], "2")
-        if "gridz" + k not in r:
-            raise RuntimeError("The cache has no gridz1 / gridz2: recompute it")
-        q = res_of(c)
-        for s in np.flatnonzero(q["pass"]):
-            e = np.asarray(r["grid" + k][s], dtype=float).reshape(-1, 2) / n * 100.0     # (ternas, long / short)
-            z = np.asarray(r["gridz" + k][s], dtype=float).reshape(-1, 2)
-            side = (np.isnan(e[:, 0]) | (e[:, 1] > e[:, 0])).astype(np.int64)             # the largest edge
-            e_t, z_t = e[tn, side], z[tn, side]
-            exc.append(np.nan_to_num(e_t, nan=0.0))
-            real.append(np.nan_to_num(e_t * (1.0 - luck_share(z_t, q["med"][s])), nan=0.0))
-    return np.array(real).reshape(-1, n_tn), np.array(exc).reshape(-1, n_tn)
-
-
-def _report_grid(raw, cands, res_of, n, mode):
-    """Best terna of every SELL_AFTER: the highest mean real_bp over the (candidate, symbol) rows of the TOP."""
-    ternas = [(tp, sl, sa) for _d, tp, sl, sa in raw["targets"][0::2]]
-    real, exc = _grid_rows(raw, cands, res_of, n)
-    n_rows = len(real)
-    n_syms = int(np.any([res_of(c)["pass"] for c in cands], axis=0).sum()) if cands else 0
-    logger.info(f"\n{SEP}\nGRID OF THE TOP ({len(cands)} candidates in {n_syms} symbols: {n_rows} rows "
-                f"candidate x symbol) [{mode}]\n{SEP}")
-    if not n_rows:
-        logger.info("(empty)")
-        return {}
-    mean = real.mean(axis=0)
-    n_sig = (exc > 0).sum(axis=0)
-    own = exc.argmax(axis=1)                                             # the terna picked in every row
-    picked = np.bincount(own, minlength=len(ternas))
-    lines = []
-    for sa in sorted({t[2] for t in ternas}):
-        idx = [k for k, t in enumerate(ternas) if t[2] == sa]
-        k = max(idx, key=lambda j: mean[j])
-        lines.append((sa, ternas[k][0], ternas[k][1], mean[k], n_sig[k], picked[k],
-                      float(np.isin(own, idx).mean())))
-    best_sa = max(lines, key=lambda x: x[3])[0]
-    logger.info(f"{'SELL_AFTER':>10}{'TP':>7}{'SL':>7}{'real_bp':>{EDGE_W}}{'n_sig':>9}{'picked':>9}{'prefer':>8}")
-    for sa, tp, sl, rl, ns, pk, pf in lines:
-        logger.info(f"{sa:>10}{float(tp)!r:>7}{float(sl)!r:>7}{_fmt_signed(rl, EDGE_W, 3)}"
-                    f"{f'{ns}/{n_rows}':>9}{f'{pk}/{n_rows}':>9}{pf:>8.0%}"
-                    + ("  <- best" if sa == best_sa else ""))
-    logger.info("real_bp: mean over the rows of the real_bp of the entry the screening picks within that terna (long "
-                "or short, the largest edge above the floor; 0 if none). n_sig: rows with one. picked: rows where the "
-                "screening picked that terna. prefer: rows whose pick has that SELL_AFTER")
-    by_sell_after = {sa: (tp, sl) for sa, tp, sl, _r, _n, _k, _p in lines}
-    items = ", ".join(f"{sa}: ({float(tp)!r}, {float(sl)!r})" for sa, (tp, sl) in by_sell_after.items())
-    logger.info(f"\nGRID_BY_SELL_AFTER = {{{items}}}\n")
-    return {"by_sell_after": by_sell_after, "best_sell_after": best_sa}

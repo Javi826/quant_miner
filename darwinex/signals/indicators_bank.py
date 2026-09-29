@@ -17,13 +17,13 @@ SELECTED_INDICATORS_BY_TIMEFRAME = {
     ],
     "4H": [
     "bb_pctb",
+    "ichimoku_price_vs_cloud",
     "pivot_dist",
     "acceleration",
     "close_pos_in_bar",
     "rsi",
     "donchian_pos",
     "open_close_momentum",
-    "macd_hist",
     ],
 }
 

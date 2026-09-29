@@ -7,8 +7,8 @@ from setup.config_backtest import INITIAL_BALANCE
 from setup.config_core import settings
 logger = logging.getLogger("BOT_batch.pipeline.correlation")
 
-CORRELATION_IS_TH = 0.90   # pre-WFO (IS) greedy threshold: removes near-duplicates only
-CORRELATION_DD_TH = 0.70   # post-WFO (OOS) greedy threshold
+CORRELATION_IS_TH  = 0.90   # pre-WFO (IS) greedy threshold: removes near-duplicates only
+CORRELATION_OOS_TH = 0.70   # post-WFO (OOS) greedy threshold
 
 _SHARPE_CHECK_RTOL = 1e-4  # tolerance of the IS column-mapping check against the StepM Sharpe
 # =============================================================================
@@ -202,7 +202,7 @@ def pipe_correlation_oos(
     threshold: float = None,
 ) -> list:
 
-    threshold = threshold if threshold is not None else CORRELATION_DD_TH
+    threshold = threshold if threshold is not None else CORRELATION_OOS_TH
 
     by_id = {r["rule_id"]: r for r in rules}
     strategy_trades_wfo_test = [(r["rule_id"], r["wfo_test_trades"]) for r in rules]

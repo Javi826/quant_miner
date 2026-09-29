@@ -389,7 +389,7 @@ def build_pilot_moments_npy(data, pool, cfg):
     seeds = [cfg.seed_pilot + r for r in range(cfg.n_pilots)]
     label = f"Phase 1 pilot [NPY], {cfg.n_pilots} synthetic paths"
     for bins_p, ncv_p, Y_p, E_p in _run_paths("npy", seeds, label, data, pool, cfg):
-        v, _osum, _k = npy_edges(bins_p, ncv_p, npy_prepare(Y_p, E_p), pool.ncut)
+        v, _osum = npy_edges(bins_p, ncv_p, npy_prepare(Y_p, E_p), pool.ncut)
         ok = ~cp.isnan(v)
         m_n += ok                                              # in path order: same sums as a serial run
         m_s += cp.where(ok, v, 0.0)
@@ -416,7 +416,7 @@ def build_null_paths_npy(data, pool, cfg, z_mu, z_sd):
     seeds = [cfg.seed_null + r for r in range(cfg.n_null_paths)]
     label = f"Phase 1 null [NPY], {cfg.n_null_paths} synthetic paths"
     for r, (bins_p, ncv_p, Y_p, E_p) in enumerate(_run_paths("npy", seeds, label, data, pool, cfg)):
-        v, osum, _k = npy_edges(bins_p, ncv_p, npy_prepare(Y_p, E_p), pool.ncut)
+        v, osum = npy_edges(bins_p, ncv_p, npy_prepare(Y_p, E_p), pool.ncut)
         z = _npy_z(v, osum, mu_d, sd_d, cp)
         z_inst = cp.asnumpy(z.reshape(z.shape[0], z.shape[1], -1).max(axis=2))   # (n_inst, n_sym)
         null_sym[r] = np.maximum.reduceat(z_inst, starts, axis=0)                 # (n_ind, n_sym)
@@ -430,35 +430,18 @@ def null_floor(null_sym, null_pct):
         return np.percentile(null_sym, null_pct, axis=0)
 
 
-def _best(zs, em, above):
-    """Per row: T, the highest z; the combination picked, the largest edge (em: -inf where the z is not above the
-    floor) among those above the floor (first on ties; -1 if none, that is, if T is not above the floor); its z (-inf
-    if none)."""
-    t_sym = zs.max(axis=1)
-    arg = em.argmax(axis=1)
-    has = above.any(axis=1)
-    z_sym = np.where(has, zs[np.arange(zs.shape[0]), arg], -np.inf)
-    return t_sym, np.where(has, arg, -1).astype(np.int64), z_sym
-
-
-def _pick(zs, es, floor, n_pre, n_tg):
-    """Per symbol (rows; combinations in flat order: n_pre instance blocks, then the n_tg targets, then cuts and
-    sides): (T, pick, its z) of all the targets (_best); and per target, (n_sym, n_tg), the grid, the largest edge
-    among its combinations above the floor, and gridz, the z of that combination (first on ties; NaN if none)."""
-    n_sym = zs.shape[0]
+def _pick(zs, es, floor):
+    """Per symbol (rows; combinations in flat order): T, the highest z; the combination picked, the largest edge
+    among those whose z is above the floor (first on ties; -1 if none, that is, if T is not above the floor); its z
+    (-inf if none)."""
     zs = np.ascontiguousarray(zs)
     with np.errstate(invalid="ignore"):
         above = zs > np.asarray(floor)[:, None]
-    em = np.where(above, es, -np.inf)
-    t_sym, arg, z_sym = _best(zs, em, above)
-    shape4 = (n_sym, n_pre, n_tg, -1)
-    em_t = np.moveaxis(em.reshape(shape4), 2, 1).reshape(n_sym, n_tg, -1)    # per target, in flat order
-    k = em_t.argmax(axis=2)[:, :, None]
-    grid = np.take_along_axis(em_t, k, axis=2)[:, :, 0]
-    del em_t
-    gridz = np.take_along_axis(np.moveaxis(zs.reshape(shape4), 2, 1).reshape(n_sym, n_tg, -1), k, axis=2)[:, :, 0]
-    has = np.isfinite(grid)
-    return t_sym, arg, z_sym, np.where(has, grid, np.nan), np.where(has, gridz, np.nan)
+    t_sym = zs.max(axis=1)
+    arg = np.where(above, es, -np.inf).argmax(axis=1)
+    has = above.any(axis=1)
+    z_sym = np.where(has, zs[np.arange(zs.shape[0]), arg], -np.inf)
+    return t_sym, np.where(has, arg, -1).astype(np.int64), z_sym
 
 
 def _seg_mask(brow, cut, side):
@@ -509,23 +492,15 @@ def _indicator_stats(bins, Y, E, t_sym, arg_sym, z_sym, target_side, ncut):
             "base1": base_sym, **_pack_rules(rules, n_sym, n)}
 
 
-def _indicator_result(bins, Y, E, picked, target_side, ncut):
-    """Phase 1 raw results of an indicator from _pick: the pick of all the targets, and its grid and gridz (any
-    mode)."""
-    t_sym, arg_sym, z_sym, grid, gridz = picked
-    return {**_indicator_stats(bins, Y, E, t_sym, arg_sym, z_sym, target_side, ncut), "grid1": grid,
-            "gridz1": gridz}
-
-
 def screen_indicator(bins, Y, E, v, osum, z_mu, z_sd, floor, target_side):
     """Phase 1 raw results of an indicator from the statistic (v, osum) of its instances, any mode (host arrays)."""
-    n_inst, n_sym, _n = bins.shape
+    n_sym = bins.shape[1]
     ncut = z_mu.shape[3]
     with np.errstate(invalid="ignore", divide="ignore"):
         z = _npy_z(v, osum, z_mu, z_sd, np)
     zs = np.moveaxis(z, 1, 0).reshape(n_sym, -1)           # per symbol, combinations in reduce_edges order
     es = np.moveaxis(osum, 1, 0).reshape(n_sym, -1)
-    return _indicator_result(bins, Y, E, _pick(zs, es, floor, n_inst, Y.shape[2]), target_side, ncut)
+    return _indicator_stats(bins, Y, E, *_pick(zs, es, floor), target_side, ncut)
 
 # =============================================================================
 # 7. PHASE 2: EVERY PAIR A + B
@@ -604,11 +579,8 @@ def _pair_stats(bA, bB, Y, E, t_sym, arg_sym, z_sym, target_side, ncut):
 
 
 def _pair_result(bA, bB, Y, E, picked, null_A, null_B, target_side, ncut):
-    """Phase 2 raw results of a pair from _pick: the pick of all the targets, its grid and gridz, and its nulls (any
-    mode)."""
-    t_sym, arg_sym, z_sym, grid, gridz = picked
-    return {**_pair_stats(bA, bB, Y, E, t_sym, arg_sym, z_sym, target_side, ncut), "grid2": grid,
-            "gridz2": gridz, "null2_A": null_A, "null2_B": null_B}
+    """Phase 2 raw results of a pair from _pick: the pick of all the targets and its nulls (any mode)."""
+    return {**_pair_stats(bA, bB, Y, E, *picked, target_side, ncut), "null2_A": null_A, "null2_B": null_B}
 
 
 def screen_pair(bA, bB, ncvA, ncvB, Y, E, shifts, pilot, m_stop, null_pct, target_side, ncut):
@@ -642,7 +614,7 @@ def screen_pair(bA, bB, ncvA, ncvB, Y, E, shifts, pilot, m_stop, null_pct, targe
 
     # --- pick: the largest edge among the combinations above both floors
     floor = np.maximum(null_floor(null_A, null_pct), null_floor(null_B, null_pct))
-    return _pair_result(bA, bB, Y, E, _pick(z.T, e.T, floor, nA * nB, n_tg), null_A, null_B, target_side, ncut)
+    return _pair_result(bA, bB, Y, E, _pick(z.T, e.T, floor), null_A, null_B, target_side, ncut)
 
 
 def _pair_z_npy(v, osum, mu1, sd1, mu2, sd2, xp):
@@ -698,10 +670,10 @@ def screen_pair_npy(bA, bB, ncvA, ncvB, Y, E, prep, shifts, pilot, m_stop, null_
     del muB, sdB, muA_ba, sdA_ba
 
     # --- real data: z and edge of every combination, T per symbol (as pair_T)
-    v, osum, _k = npy_edges(ctx_ab["bins_a"], ncvA, prep, ncut, ctx_ab["bins_b"], ncvB, 0)
+    v, osum = npy_edges(ctx_ab["bins_a"], ncvA, prep, ncut, ctx_ab["bins_b"], ncvB)
     z = cp.asnumpy(_pair_z_npy(v, osum, *ab, cp))
     e = cp.asnumpy(osum)
-    del v, osum, _k
+    del v, osum
     t_sym = z.max(axis=0)
 
     null_B, alive = pair_null_early_npy(ctx_ab, shifts, *ab, t_sym, np.isfinite(t_sym), m_stop)
@@ -711,7 +683,7 @@ def screen_pair_npy(bA, bB, ncvA, ncvB, Y, E, prep, shifts, pilot, m_stop, null_
 
     # --- pick: the largest edge among the combinations above both floors
     floor = np.maximum(null_floor(null_A, null_pct), null_floor(null_B, null_pct))
-    return _pair_result(bA, bB, Y, E, _pick(z.T, e.T, floor, nA * nB, n_tg), null_A, null_B, target_side, ncut)
+    return _pair_result(bA, bB, Y, E, _pick(z.T, e.T, floor), null_A, null_B, target_side, ncut)
 
 
 # =============================================================================
@@ -746,7 +718,7 @@ def _phase1_npy(data, pool, cfg, bins, ncv, Y, E):
     names, by_ind, target_side = pool.names, pool.by_ind, cfg.target_side
     z_mu, z_sd = build_pilot_moments_npy(data, pool, cfg)
     null1 = build_null_paths_npy(data, pool, cfg, z_mu, z_sd)
-    v, osum, _k = (cp.asnumpy(x) for x in npy_edges(bins, ncv, npy_prepare(Y, E), pool.ncut))
+    v, osum = (cp.asnumpy(x) for x in npy_edges(bins, ncv, npy_prepare(Y, E), pool.ncut))
     p1 = {}
     t1 = time.time()
     for k, nm in enumerate(names):
@@ -822,7 +794,7 @@ def compute_raw(data, pool, cfg):
         pairs, p2 = _phase2_ypy(data, pool, cfg, bins, ncv, Y, E)
 
     return {"names": pool.names, "symbols": list(data.symbols), "n": data.n, "empty": empty, "p1": p1,
-            "pairs": pairs, "p2": p2, "null_pct": cfg.null_pct, "mode": cfg.mode, "targets": cfg.targets,
+            "pairs": pairs, "p2": p2, "null_pct": cfg.null_pct, "mode": cfg.mode,
             "created": datetime.now().isoformat(timespec="seconds")}
 
 

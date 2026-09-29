@@ -250,13 +250,11 @@ def reduce_edges(edges, osum, z_mu, z_sd):
 
     n_inst, n_sym, n_tg, n_cut, _ = edges.shape
     t_sym = np.full(n_sym, -np.inf)
-    arg_sym = np.full(n_sym, -1, dtype=np.int64)
 
     for i in range(n_inst):
         for g in range(n_tg):
             for c in range(n_cut):
                 for side in range(2):
-                    flat = ((i * n_tg + g) * n_cut + c) * 2 + side
                     for s in range(n_sym):
                         v = edges[i, s, g, c, side]
                         d = z_sd[i, s, g, c, side]
@@ -264,8 +262,7 @@ def reduce_edges(edges, osum, z_mu, z_sd):
                             z = (v - z_mu[i, s, g, c, side]) / d
                             if z > t_sym[s]:
                                 t_sym[s] = z
-                                arg_sym[s] = flat
-    return t_sym, arg_sym
+    return t_sym
 
 
 @njit(parallel=True, cache=True)
@@ -301,7 +298,7 @@ def path_T_all(bins, ncv, Y, starts, ends, z_mu, z_sd):
         edges = np.empty((n_inst, n_sym, n_tg, ncut, 2))
         osum = np.empty((n_inst, n_sym, n_tg, ncut, 2))
         fill_edges(b, c, Y, edges, osum)
-        ts, _a = reduce_edges(edges, osum, z_mu[starts[i]:ends[i]], z_sd[starts[i]:ends[i]])
+        ts = reduce_edges(edges, osum, z_mu[starts[i]:ends[i]], z_sd[starts[i]:ends[i]])
         for s in range(n_sym):
             t_sym[i, s] = ts[s]
     return t_sym
@@ -397,7 +394,6 @@ def pair_T(bA, bB, ncvA, ncvB, Y, k, z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut):
     n_all = np.empty(n_tg)
 
     t_sym = np.full(n_sym, -np.inf)
-    arg_sym = np.full(n_sym, -1, dtype=np.int64)
 
     for iA in range(nA):
         for iB in range(nB):
@@ -428,8 +424,7 @@ def pair_T(bA, bB, ncvA, ncvB, Y, k, z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut):
                                         z = min((v - z1_mu[flat, s]) / d1, (v - z2_mu[flat, s]) / d2)
                                         if z > t_sym[s]:
                                             t_sym[s] = z
-                                            arg_sym[s] = flat
-    return t_sym, arg_sym
+    return t_sym
 
 
 @njit(parallel=True, cache=True)
@@ -487,7 +482,7 @@ def pair_null_distribution(bA, bB, ncvA, ncvB, Y, shifts, z1_mu, z1_sd, z2_mu, z
     n_k = shifts.shape[0]
     t_sym = np.empty((n_k, n_sym))
     for q in prange(n_k):
-        ts, _a = pair_T(bA, bB, ncvA, ncvB, Y, shifts[q], z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut)
+        ts = pair_T(bA, bB, ncvA, ncvB, Y, shifts[q], z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut)
         for s in range(n_sym):
             t_sym[q, s] = ts[s]
     return t_sym

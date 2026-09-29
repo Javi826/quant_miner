@@ -17,58 +17,46 @@ FX_Y2_BITS       = 32     # and y^2 * 2^32
 # =============================================================================
 
 _NPY_SOURCE = r"""
+// ---------------------------------------------------------------------------------------------------------------
+// Alone. Group = (instance, symbol, target), gid = (i * n_sym + s) * n_tg + g. npy_group_stats: count, sum and sum
+// of squares of the group's valid candles and their bin histogram. npy_seg_walk: one thread per segment of a group,
+// tid = gid * 2 ncut + (c * 2 + side), which is also its index in the output layout (n_inst, n_sym, n_tg, ncut, 2).
+// ---------------------------------------------------------------------------------------------------------------
 extern "C" __global__
 void npy_group_stats(
-    const signed char*   __restrict__ bins_a,
-    const signed char*   __restrict__ bins_b,
+    const signed char*   __restrict__ bins,
     const double*        __restrict__ YT,
     const unsigned char* __restrict__ VT,
-    const long long*     __restrict__ sym_idx,
     long long*           __restrict__ grp_n,
     double*              __restrict__ grp_s,
     double*              __restrict__ grp_q,
     int*                 __restrict__ grp_hist,
-    const int n_a, const int n_b, const int n_sym, const int n, const int n_tg,
-    const int nbin, const int n_si, const int has_b, const int shift)
+    const int n_inst, const int n_sym, const int n, const int n_tg, const int nbin)
 {
-    // gid = ((ia * nb_eff + ib) * n_si + si) * n_tg + g
-    const long long nb_eff = has_b ? (long long)n_b : 1LL;
-    const int nbb = has_b ? nbin : 1;
-    const long long total = (long long)n_a * nb_eff * n_si * n_tg;
+    const long long total = (long long)n_inst * n_sym * n_tg;
     const long long gid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (gid >= total) return;
 
-    long long rest = gid;
-    const int g  = (int)(rest % n_tg);  rest /= n_tg;
-    const int si = (int)(rest % n_si);  rest /= n_si;
-    const int ib = (int)(rest % nb_eff);
-    const int ia = (int)(rest / nb_eff);
-    const int s  = (int)sym_idx[si];
+    const int g = (int)(gid % n_tg);
+    const int s = (int)((gid / n_tg) % n_sym);
+    const int i = (int)(gid / ((long long)n_tg * n_sym));
 
-    const signed char*   ra = bins_a + ((size_t)ia * n_sym + s) * n;
-    const signed char*   rb = has_b ? bins_b + ((size_t)ib * n_sym + s) * n : ra;
+    const signed char*   rb = bins + ((size_t)i * n_sym + s) * n;
     const double*        ry = YT + ((size_t)s * n_tg + g) * n;
     const unsigned char* rv = VT + ((size_t)s * n_tg + g) * n;
-    int* h = grp_hist + (size_t)gid * nbin * nbb;
-    for (int x = 0; x < nbin * nbb; ++x) h[x] = 0;
+    int* h = grp_hist + (size_t)gid * nbin;
+    for (int x = 0; x < nbin; ++x) h[x] = 0;
 
     long long cnt = 0;
     double sm = 0.0, sq = 0.0;
-    int j = shift;                                    // (t + shift) mod n: B shifted like _pair_hist
-    for (int t = 0; t < n; ++t, ++j) {
-        if (j >= n) j -= n;
-        const int a = ra[t];
-        if (a < 0 || !rv[t]) continue;
-        int b = 0;
-        if (has_b) {
-            b = rb[j];
-            if (b < 0) continue;
-        }
+    for (int t = 0; t < n; ++t) {
+        const int b = rb[t];
+        if (b < 0 || !rv[t]) continue;
         const double y = ry[t];
         cnt += 1;
         sm += y;
         sq += y * y;
-        h[a * nbb + b] += 1;
+        h[b] += 1;
     }
     grp_n[gid] = cnt;
     grp_s[gid] = sm;
@@ -78,125 +66,80 @@ void npy_group_stats(
 
 extern "C" __global__
 void npy_seg_walk(
-    const signed char*   __restrict__ bins_a,
-    const signed char*   __restrict__ bins_b,
-    const long long*     __restrict__ ncv_a,
-    const long long*     __restrict__ ncv_b,
+    const signed char*   __restrict__ bins,
+    const long long*     __restrict__ ncv,
     const double*        __restrict__ YT,
     const int*           __restrict__ ET,
     const unsigned char* __restrict__ VT,
-    const long long*     __restrict__ sym_idx,
     const long long*     __restrict__ grp_n,
     const double*        __restrict__ grp_s,
     const double*        __restrict__ grp_q,
     const int*           __restrict__ grp_hist,
     double*              __restrict__ out_v,
     double*              __restrict__ out_osum,
-    int*                 __restrict__ out_k,
-    const int n_a, const int n_b, const int n_sym, const int n, const int n_tg,
-    const int ncut, const int n_si, const int has_b, const int shift, const int min_seg)
+    const int n_inst, const int n_sym, const int n, const int n_tg, const int ncut, const int min_seg)
 {
-    const long long seg_a   = 2LL * ncut;
-    const long long seg_b   = has_b ? 2LL * ncut : 1LL;
-    const long long nb_eff  = has_b ? (long long)n_b : 1LL;
-    const long long n_local = (long long)n_tg * seg_a * seg_b;
-    const long long total   = (long long)n_a * nb_eff * n_si * n_local;
-    const long long tid     = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long total = (long long)n_inst * n_sym * n_tg * 2 * ncut;
+    const long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= total) return;
 
-    // tid = (((ia * nb_eff + ib) * n_si + si) * n_tg + g) * seg_a * seg_b + (ca*2+sa) * seg_b + (cb*2+sb)
-    long long rest = tid;
-    const int sb_i = (int)(rest % seg_b);  rest /= seg_b;
-    const int sa_i = (int)(rest % seg_a);  rest /= seg_a;
-    const long long gid = rest;                       // its group, as in npy_group_stats
-    const int g    = (int)(rest % n_tg);   rest /= n_tg;
-    const int si   = (int)(rest % n_si);   rest /= n_si;
-    const int ib   = (int)(rest % nb_eff);
-    const int ia   = (int)(rest / nb_eff);
-    const int ca = sa_i >> 1, sa = sa_i & 1;
-    const int cb = sb_i >> 1, sb = sb_i & 1;
-    const int s  = (int)sym_idx[si];
+    const long long gid = tid / (2 * ncut);           // its group, as in npy_group_stats
+    const int seg  = (int)(tid % (2 * ncut));
+    const int c    = seg >> 1, side = seg & 1;
+    const int g = (int)(gid % n_tg);
+    const int s = (int)((gid / n_tg) % n_sym);
+    const int i = (int)(gid / ((long long)n_tg * n_sym));
 
-    // Output layout: alone (n_a, n_sym, n_tg, ncut, 2); pair (n_a * n_b * n_tg * ncut * 2 * ncut * 2, n_sym)
-    size_t out;
-    if (has_b) {
-        out = ((((((size_t)ia * n_b + ib) * n_tg + g) * ncut + ca) * 2 + sa) * ncut + cb) * 2 + sb;
-        out = out * n_sym + s;
-    } else {
-        out = ((((size_t)ia * n_sym + s) * n_tg + g) * ncut + ca) * 2 + sa;
-    }
-
-    const double nan_d = __longlong_as_double(0x7ff8000000000000ULL);
-    double v = nan_d, osum = 0.0;
-    int k_out = 0;
-    if (ca >= ncv_a[ia] || (has_b && cb >= ncv_b[ib])) {
-        out_v[out] = v;
-        out_osum[out] = osum;
-        out_k[out] = k_out;
-        return;
-    }
-
-    // Segment bins (inclusive): side 0: [0, 2c]; side 1: [2c + 2, nbin - 1]. Alone: B is the single column 0.
-    const int nbin = 2 * ncut + 1;
-    const int nbb  = has_b ? nbin : 1;
-    const int a0 = sa ? 2 * ca + 2 : 0, a1 = sa ? nbin - 1 : 2 * ca;
-    const int b0 = has_b ? (sb ? 2 * cb + 2 : 0) : 0;
-    const int b1 = has_b ? (sb ? nbin - 1 : 2 * cb) : 0;
-    const int* h = grp_hist + (size_t)gid * nbin * nbb;
-    long long n_seg = 0;
-    for (int a = a0; a <= a1; ++a)
+    double v = __longlong_as_double(0x7ff8000000000000ULL), osum = 0.0;
+    if (c < ncv[i]) {
+        // Segment bins (inclusive): side 0: [0, 2c]; side 1: [2c + 2, nbin - 1]
+        const int nbin = 2 * ncut + 1;
+        const int b0 = side ? 2 * c + 2 : 0, b1 = side ? nbin - 1 : 2 * c;
+        const int* h = grp_hist + (size_t)gid * nbin;
+        long long n_seg = 0;
         for (int b = b0; b <= b1; ++b)
-            n_seg += h[a * nbb + b];
+            n_seg += h[b];
 
-    const long long n_all = grp_n[gid];
-    if (n_all > 1) {
-        const double na      = (double)n_all;
-        const double mean    = grp_s[gid] / na;
-        const double var_all = grp_q[gid] / na - mean * mean;
-        const double sd_all  = var_all > 0.0 ? sqrt(var_all) : 0.0;
-        if (sd_all > 0.0 && n_seg >= min_seg && n_seg <= n_all - min_seg) {
-            const signed char*   ra = bins_a + ((size_t)ia * n_sym + s) * n;
-            const signed char*   rb = has_b ? bins_b + ((size_t)ib * n_sym + s) * n : ra;
-            const double*        ry = YT + ((size_t)s * n_tg + g) * n;
-            const int*           re = ET + ((size_t)s * n_tg + g) * n;
-            const unsigned char* rv = VT + ((size_t)s * n_tg + g) * n;
-            long long k = 0;
-            double ts = 0.0, tq = 0.0;
-            int t = 0;
-            while (t < n) {
-                const int a = ra[t];
-                bool in = a >= 0 && rv[t] && (sa ? a >= 2 * ca + 2 : a <= 2 * ca);
-                if (in && has_b) {
-                    int j = t + shift;
-                    if (j >= n) j -= n;
-                    const int b = rb[j];
-                    in = b >= 0 && (sb ? b >= 2 * cb + 2 : b <= 2 * cb);
+        const long long n_all = grp_n[gid];
+        if (n_all > 1) {
+            const double na      = (double)n_all;
+            const double mean    = grp_s[gid] / na;
+            const double var_all = grp_q[gid] / na - mean * mean;
+            const double sd_all  = var_all > 0.0 ? sqrt(var_all) : 0.0;
+            if (sd_all > 0.0 && n_seg >= min_seg && n_seg <= n_all - min_seg) {
+                const signed char*   rb = bins + ((size_t)i * n_sym + s) * n;
+                const double*        ry = YT + ((size_t)s * n_tg + g) * n;
+                const int*           re = ET + ((size_t)s * n_tg + g) * n;
+                const unsigned char* rv = VT + ((size_t)s * n_tg + g) * n;
+                long long k = 0;
+                double ts = 0.0, tq = 0.0;
+                int t = 0;
+                while (t < n) {
+                    const int b = rb[t];
+                    if (b >= 0 && rv[t] && (side ? b >= 2 * c + 2 : b <= 2 * c)) {
+                        const double y = ry[t];
+                        k += 1;
+                        ts += y;
+                        tq += y * y;
+                        const int e = re[t];              // first candle after the exit
+                        t = e > t ? e : t + 1;
+                    } else {
+                        ++t;
+                    }
                 }
-                if (in) {
-                    const double y = ry[t];
-                    k += 1;
-                    ts += y;
-                    tq += y * y;
-                    const int e = re[t];                  // first candle after the exit
-                    t = e > t ? e : t + 1;
-                } else {
-                    ++t;
+                if (k >= min_seg) {
+                    const double kk   = (double)k;
+                    const double m    = ts / kk;
+                    const double var  = tq / kk - m * m;
+                    const double sd_k = var > 0.0 ? sqrt(var) : 0.0;
+                    v = (m - mean) / (fmax(sd_k, sd_all) / sqrt(kk));
+                    osum = ts - kk * mean;                // excess over the unconditional mean
                 }
-            }
-            k_out = (int)k;
-            if (k >= min_seg) {
-                const double kk   = (double)k;
-                const double m    = ts / kk;
-                const double var  = tq / kk - m * m;
-                const double sd_k = var > 0.0 ? sqrt(var) : 0.0;
-                v = (m - mean) / (fmax(sd_k, sd_all) / sqrt(kk));
-                osum = ts - kk * mean;                    // excess over the unconditional mean
             }
         }
     }
-    out_v[out] = v;
-    out_osum[out] = osum;
-    out_k[out] = k_out;
+    out_v[tid] = v;
+    out_osum[tid] = osum;
 }
 
 
@@ -510,7 +453,7 @@ __device__ __forceinline__ void seg_stat(const int k, const long long ts_q, cons
     const unsigned char* __restrict__ st_walk,                                                                     \
     const int n_a, const int n_b, const int n_sym, const int n, const int n_tg, const int ncut,                    \
     const int nc_a, const int nc_b, const int n_si, const int mask_a, const int n_w, const int G,                  \
-    const int n_gc, const int bdim_v, const int min_seg, const int tile, const int n_k,                          \
+    const int n_gc, const int bdim_v, const int min_seg, const int tile,                                       \
     const double inv_y, const double inv_y2
 
 // Block of a bitset kernel: shift q, group chunk gb; the mask table, then the walk of this thread's slots.
@@ -526,12 +469,12 @@ __device__ __forceinline__ void seg_stat(const int k, const long long ts_q, cons
                    sr ? 2 * nc_R : 2 * cr, w, n_w, walk_bits, bm, code, kk, ts, tq);
 
 
-// (v, osum, k) of every segment pair at each of the n_k shifts of B: out_*[q * q_stride + o]. full = 0: only v
-// (the pilot's buffer; out_osum and out_k are not touched).
+// (v, osum) of every segment pair at each shift of B of the launch: out_*[q * q_stride + o]. full = 0: only v (the
+// pilot's buffer; out_osum is not touched).
 extern "C" __global__ __launch_bounds__(PAIR_MAX_THREADS)
 void npy_pair_walk_bits(
     PAIR_PARAMS, const long long q_stride, const int full,
-    double* __restrict__ out_v, double* __restrict__ out_osum, int* __restrict__ out_k)
+    double* __restrict__ out_v, double* __restrict__ out_osum)
 {
     PAIR_WALK
     const long long oq = (long long)q * q_stride + o0;
@@ -543,10 +486,7 @@ void npy_pair_walk_bits(
         const bool walked = (walk_bits >> j) & 1u;
         if (walked) seg_stat(kk[j], ts[j], tq[j], inv_y, inv_y2, mean, sd_all, min_seg, v, osum);
         out_v[o] = v;
-        if (full) {
-            out_osum[o] = osum;
-            out_k[o] = walked ? kk[j] : 0;
-        }
+        if (full) out_osum[o] = osum;
     }
 }
 
@@ -604,7 +544,7 @@ __device__ __forceinline__ unsigned long long ord_bits(const double x)
 }
 
 
-// Null: for each of the n_k shifts of B, the largest z of the segment pairs of every symbol of sym_idx, z as
+// Null: for each shift of B of the launch, the largest z of the segment pairs of every symbol of sym_idx, z as
 // _pair_z_npy (-inf where it does not compete). Block maximum, then one atomicMax on the order-preserving bits of
 // out_t[q0 + q, s] (initialized to the bits of -inf). The maximum does not depend on the order.
 extern "C" __global__ __launch_bounds__(PAIR_MAX_THREADS)
@@ -788,7 +728,7 @@ def _pair_walk(name, ctx, sym_d, n_si, shifts, min_seg, extra):
             (ctx["bins_a"], ctx["bins_b"], ctx["ncv_a"], ctx["ncv_b"], QY, QY2, ER, sym_d, shifts, *stats,
              *(np.int32(ctx[k]) for k in ("n_a", "n_b", "n_sym", "n", "n_tg", "ncut", "nc_a", "nc_b")),
              np.int32(n_si), *(np.int32(ctx[k]) for k in ("mask_a", "n_w", "g_blk", "n_gc", "bdim_v")),
-             np.int32(min_seg), np.int32(PAIR_TILE), np.int32(n_k), np.float64(2.0 ** -FX_Y_BITS),
+             np.int32(min_seg), np.int32(PAIR_TILE), np.float64(2.0 ** -FX_Y_BITS),
              np.float64(2.0 ** -FX_Y2_BITS), *extra))
 
 
@@ -816,13 +756,13 @@ def npy_pair_moments(ctx, shifts, min_n, min_seg=MIN_SEG):
     sd = cp.zeros(shape, dtype=cp.float64)             # the sum of v^2, then the std
     buf = cp.empty((n_batch, n_elem), dtype=cp.float64)
     sym_d = cp.arange(ctx["n_sym"], dtype=cp.int64)
-    unused_o, unused_k = cp.empty(1, dtype=cp.float64), cp.empty(1, dtype=cp.int32)
+    unused_o = cp.empty(1, dtype=cp.float64)
     n_thr = (n_elem + THREADS - 1) // THREADS
     for q0 in range(0, n_k, n_batch):
         nb = min(n_batch, n_k - q0)
         buf[:nb].fill(np.nan)                          # segments that do not exist stay NaN
         _pair_walk("npy_pair_walk_bits", ctx, sym_d, ctx["n_sym"], shifts[q0:q0 + nb], min_seg,
-                   (np.int64(n_elem), np.int32(0), buf, unused_o, unused_k))
+                   (np.int64(n_elem), np.int32(0), buf, unused_o))
         _launch("npy_pilot_acc", n_thr, THREADS, 0, (buf, np.int32(nb), np.int64(n_elem), acc_n, mu, sd))
     _launch("npy_pilot_moments", n_thr, THREADS, 0, (acc_n, mu, sd, np.int64(n_elem), np.float64(min_n)))
     return mu, sd
@@ -863,32 +803,23 @@ def npy_pair_null(ctx, shifts, mu1, sd1, mu2, sd2, sym_idx, min_seg=MIN_SEG):
     return res
 
 
-def npy_edges(bins_a, ncv_a, prep, ncut, bins_b=None, ncv_b=None, shift=0, sym_idx=None, min_seg=MIN_SEG):
-    """(v, osum, k) of the NPY walk of every segment of A (alone) or of A AND B (B shifted by `shift`).
+def npy_edges(bins_a, ncv_a, prep, ncut, bins_b=None, ncv_b=None, min_seg=MIN_SEG):
+    """(v, osum) of the NPY walk of every segment of A (alone) or of A AND B (pairs), every symbol.
 
     prep: npy_prepare(Y, E). Alone: shape (n_a, n_sym, n_tg, ncut, 2), as fill_edges. Pair: shape
-    (n_a * n_b * n_tg * ncut * 2 * ncut * 2, n_sym), as pair_edge_moments. Symbols outside sym_idx stay
-    NaN / 0 / 0. Inputs NumPy or CuPy, outputs CuPy.
+    (n_a * n_b * n_tg * ncut * 2 * ncut * 2, n_sym), as pair_edge_moments. Inputs NumPy or CuPy, outputs CuPy.
     """
     YT, ET, VT = prep
     n_sym, n_tg, n = YT.shape
-    shift = int(shift)
-    if not (0 <= shift < n):
-        raise ValueError(f"shift must be in [0, {n}): {shift}")
 
     if bins_b is not None:                             # pairs: bitset walk, tiles in shared memory
         ctx = npy_pair_setup(bins_a, ncv_a, bins_b, ncv_b, prep, ncut)
-        sym_h = np.arange(n_sym, dtype=np.int64) if sym_idx is None else _host_idx(sym_idx)
-        if sym_h.size and (int(sym_h.min()) < 0 or int(sym_h.max()) >= n_sym):
-            raise ValueError(f"sym_idx must be in [0, {n_sym})")
         v = cp.full(ctx["shape"], np.nan, dtype=cp.float64)
         osum = cp.zeros(ctx["shape"], dtype=cp.float64)
-        k = cp.zeros(ctx["shape"], dtype=cp.int32)
-        if sym_h.size:
-            _pair_walk("npy_pair_walk_bits", ctx, _dev(sym_h, cp.int64), int(sym_h.size),
-                       _dev(np.array([shift], dtype=np.int64), cp.int64), min_seg,
-                       (np.int64(ctx["shape"][0] * ctx["shape"][1]), np.int32(1), v, osum, k))
-        return v, osum, k
+        _pair_walk("npy_pair_walk_bits", ctx, cp.arange(n_sym, dtype=cp.int64), n_sym,
+                   cp.zeros(1, dtype=cp.int64), min_seg,
+                   (np.int64(ctx["shape"][0] * ctx["shape"][1]), np.int32(1), v, osum))
+        return v, osum
 
     bins_a = _dev(bins_a, cp.int8)
     ncv_a = _dev(ncv_a, cp.int64)
@@ -897,33 +828,23 @@ def npy_edges(bins_a, ncv_a, prep, ncut, bins_b=None, ncv_b=None, shift=0, sym_i
         raise ValueError(f"bins_a must be (n_a, {n_sym}, {n}): {bins_a.shape}")
     if ncv_a.shape != (n_a,) or int(ncv_a.max()) > ncut:
         raise ValueError(f"ncv_a must be ({n_a},) with values <= ncut={ncut}")
-    bins_b, ncv_b, n_b = bins_a, ncv_a, 1
     shape = (n_a, n_sym, n_tg, ncut, 2)
-    sym_idx = cp.arange(n_sym, dtype=cp.int64) if sym_idx is None else _dev(sym_idx, cp.int64)
-    n_si = int(sym_idx.shape[0])
-    if n_si and (int(sym_idx.min()) < 0 or int(sym_idx.max()) >= n_sym):
-        raise ValueError(f"sym_idx must be in [0, {n_sym})")
-
     v = cp.full(shape, np.nan, dtype=cp.float64)
     osum = cp.zeros(shape, dtype=cp.float64)
-    k = cp.zeros(shape, dtype=cp.int32)
-    groups = n_a * n_b * n_si * n_tg
+    groups = n_a * n_sym * n_tg
     if not groups:
-        return v, osum, k
-    ints = (np.int32(n_a), np.int32(n_b), np.int32(n_sym), np.int32(n), np.int32(n_tg))
+        return v, osum
 
     nbin = 2 * ncut + 1
     grp_n = cp.empty(groups, dtype=cp.int64)
     grp_s = cp.empty(groups, dtype=cp.float64)
     grp_q = cp.empty(groups, dtype=cp.float64)
     grp_hist = cp.empty(groups * nbin, dtype=cp.int32)
-    _NPY_MODULE.get_function("npy_group_stats")(
-        ((groups + THREADS - 1) // THREADS,), (THREADS,),
-        (bins_a, bins_b, YT, VT, sym_idx, grp_n, grp_s, grp_q, grp_hist,
-         *ints, np.int32(nbin), np.int32(n_si), np.int32(0), np.int32(shift)))
+    ints = (np.int32(n_a), np.int32(n_sym), np.int32(n), np.int32(n_tg))
+    _launch("npy_group_stats", (groups + THREADS - 1) // THREADS, THREADS, 0,
+            (bins_a, YT, VT, grp_n, grp_s, grp_q, grp_hist, *ints, np.int32(nbin)))
     walks = groups * 2 * ncut
-    _NPY_MODULE.get_function("npy_seg_walk")(
-        ((walks + THREADS - 1) // THREADS,), (THREADS,),
-        (bins_a, bins_b, ncv_a, ncv_b, YT, ET, VT, sym_idx, grp_n, grp_s, grp_q, grp_hist, v, osum, k,
-         *ints, np.int32(ncut), np.int32(n_si), np.int32(0), np.int32(shift), np.int32(min_seg)))
-    return v, osum, k
+    _launch("npy_seg_walk", (walks + THREADS - 1) // THREADS, THREADS, 0,
+            (bins_a, ncv_a, YT, ET, VT, grp_n, grp_s, grp_q, grp_hist, v, osum, *ints, np.int32(ncut),
+             np.int32(min_seg)))
+    return v, osum

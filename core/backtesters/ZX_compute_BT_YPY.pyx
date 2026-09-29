@@ -12,7 +12,7 @@ import pandas as pd
 cimport numpy as np
 from libc.math cimport HUGE_VAL
 logging.basicConfig(level=logging.INFO)
-from setup.config_backtest import INITIAL_BALANCE, COMISION
+from setup.config_backtest import INITIAL_BALANCE, COMISION, LEVERAGE
 warnings.filterwarnings("ignore")
 
 # ============================================================
@@ -351,7 +351,8 @@ def backtest_core(
     double order_amount,
     int sell_after,
     double tp_pct,
-    double sl_pct
+    double sl_pct,
+    double leverage = LEVERAGE
 ):
     cdef int n_ticks    = len(all_timestamps_int)
     cdef int n_events   = len(signal_events)
@@ -434,12 +435,12 @@ def backtest_core(
 
     # ── Loop vars ──
     cdef int    tick_i, ev_scan, ev_cursor
-    cdef long   t_int, exp_time
+    cdef long   t_int
     cdef int    sid, buy_idx, n_bars, exit_idx, slot
     cdef long   sell_time_int, exec_time_int
     cdef double price_t, qty, comm_buy
     cdef double tp_price, sl_price
-    cdef double free_cash, proceeds, margin_req, blocked_amount
+    cdef double free_cash, margin_req, blocked_amount
     cdef int    sig_val
     cdef bint   is_short, intra
     cdef int    chosen_idx, reason_code
@@ -462,6 +463,11 @@ def backtest_core(
     cdef long[:, ::1]   ev_mv        = signal_events
     cdef long[::1]      ts_all_mv    = all_timestamps_int
     cdef long[::1]      ev_col0_mv   = ev_col0
+
+    if leverage <= 0.0:
+        raise ValueError(f"leverage must be > 0, got {leverage}")
+
+    margin_req = order_amount / leverage
 
     with nogil:
         for slot in range(max_trades):
@@ -502,12 +508,12 @@ def backtest_core(
                 comm_sell_c       = qty_c * exec_price_intra * comi_factor
 
                 if is_short_c:
-                    cash_bank    -= qty_c * exec_price_intra + comm_sell_c
-                    blocked_cash -= blocked_amount_c
-                    profit_c      = (buy_price_c - exec_price_intra) * qty_c - comm_buy_c - comm_sell_c
+                    profit_c = (buy_price_c - exec_price_intra) * qty_c - comm_buy_c - comm_sell_c
                 else:
-                    cash_bank += qty_c * exec_price_intra - comm_sell_c
-                    profit_c   = (exec_price_intra - buy_price_c) * qty_c - comm_buy_c - comm_sell_c
+                    profit_c = (exec_price_intra - buy_price_c) * qty_c - comm_buy_c - comm_sell_c
+
+                cash_bank    += profit_c + comm_buy_c
+                blocked_cash -= blocked_amount_c
 
                 if blocked_cash < 0.0 and blocked_cash > -1e-9:
                     blocked_cash = 0.0
@@ -545,18 +551,11 @@ def backtest_core(
                 n_bars    = <int>sym_len_mv[sid]
                 free_cash = cash_bank - blocked_cash
 
-                if free_cash < order_amount:
+                if free_cash < margin_req + order_amount * comi_factor:
                     break
 
                 sig_val  = <int>signal_mv[sid, buy_idx]
                 is_short = sig_val < 0
-
-                if is_short and sl_pct == 0.0:
-                    continue
-
-                if is_short:
-                    if free_cash < order_amount * (sl_pct / 100.0) + order_amount * comi_factor:
-                        continue
 
                 price_t  = open_mv[sid, buy_idx]
                 qty      = order_amount / price_t
@@ -578,15 +577,9 @@ def backtest_core(
                     tp_price = price_t * (1.0 + tp_pct / 100.0) if tp_pct != 0.0 else  HUGE_VAL
                     sl_price = price_t * (1.0 - sl_pct / 100.0) if sl_pct != 0.0 else -HUGE_VAL
 
-                if is_short:
-                    proceeds       = order_amount - comm_buy
-                    margin_req     = order_amount * (sl_pct / 100.0) if sl_pct != 0.0 else HUGE_VAL
-                    blocked_amount = proceeds + margin_req
-                    cash_bank     += proceeds
-                    blocked_cash  += blocked_amount
-                else:
-                    blocked_amount = 0.0
-                    cash_bank     -= (order_amount + comm_buy)
+                blocked_amount = margin_req
+                cash_bank     -= comm_buy
+                blocked_cash  += blocked_amount
 
                 free_slot_count -= 1
                 slot = free_slot[free_slot_count]

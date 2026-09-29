@@ -1,4 +1,4 @@
-#core/pipeline/backtest_runner.py
+#core/pipeline/backtest_runner.py NEW
 import os
 import logging
 import math
@@ -14,6 +14,7 @@ from setup.config_core import settings
 from utils.batch_metrics import sharpe_from_daily_values, skew_kurtosis_from_daily_values, daily_values_from_sell_days, equity_from_daily_values, _to_trading_days, _trading_days_between
 from utils.paralelization import arrays_to_shared_memory, arrays_from_shared_memory
 from signals.indicators_bank import ConditionBank
+from signals.signal_builder import build_signal_fn
 _bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
 backtest_core         = _bt.backtest_core
 prepare_static_arrays = _bt.prepare_static_arrays
@@ -124,7 +125,7 @@ def _static_bundle_cache_key(shm_metadata: dict):
 
 
 def _get_worker_ctx(shm_metadata: dict) -> tuple:
-    """(ohlcv_arr, static_bundle, condition_banks, shm_handles, cached)"""
+    # (ohlcv_arr, static_bundle, condition_banks, shm_handles, cached)
     cache_key = _static_bundle_cache_key(shm_metadata)
     if cache_key is not None and _WORKER_CTX["ctx"] is not None and _WORKER_CTX["key"] == cache_key:
         return _WORKER_CTX["ctx"]
@@ -148,11 +149,10 @@ def _get_worker_ctx(shm_metadata: dict) -> tuple:
     _WORKER_CTX["key"], _WORKER_CTX["ctx"] = cache_key, ctx
     return ctx
 
-
 def _run_full_period_for_rule(
-    rule_id: str,
     rule_idx: int,
-    signal_fn: callable,
+    specs: list,
+    side: str,
     ctx: tuple,
     engine_params: list,
     combo_ids: list,
@@ -165,11 +165,11 @@ def _run_full_period_for_rule(
 
     ohlcv_arr, static_bundle, condition_banks = ctx[0], ctx[1], ctx[2]
 
+    signal_fn           = build_signal_fn(specs, side)
     ohlcv_arrays        = _build_full_period_ohlcv(ohlcv_arr, signal_fn, condition_banks)
     max_possible_trades = sum(int(np.count_nonzero(arr["signal"])) for arr in ohlcv_arrays.values())
-
     if max_possible_trades < BACKTEST_MIN_TRADES:
-        return rule_id, {**_empty_winner_metrics(), "best_combo_id": combo_ids[0]}
+        return rule_idx, {**_empty_winner_metrics(), "best_combo_id": combo_ids[0]}
 
     engine_arrays = tuple(prepare_signal_arrays(static_bundle, ohlcv_arrays)[7])
     engine_arrays = engine_arrays[:10] + (_compress_timeline(engine_arrays[10], engine_arrays[11]),) + engine_arrays[11:]
@@ -218,11 +218,11 @@ def _run_full_period_for_rule(
             best_daily_values, best_n_days, best_sharpe_metric, best_duration_is,
         )
 
-    return rule_id, {**winner_metrics, "best_combo_id": combo_ids[best_idx]}
+    return rule_idx, {**winner_metrics, "best_combo_id": combo_ids[best_idx]}
 
 
 def _run_rules_block_shm(
-    block: list,
+    block: tuple,
     shm_metadata: dict,
     engine_params: list,
     combo_ids: list,
@@ -232,19 +232,21 @@ def _run_rules_block_shm(
     global_start_day: np.datetime64,
     n_combos: int,
 ) -> tuple:
-    """Returns (rule results, valid column indices in segment order, non-zero day mask)."""
+    # Returns (rule results, valid column indices in segment order, non-zero day mask).
+    rule_start, payloads = block
+    n_block = len(payloads)
 
     ctx = _get_worker_ctx(shm_metadata)
     seg = SharedMemory(name=seg_name, create=False)
     try:
-        seg_rows = np.ndarray((len(block) * n_combos, n_days_range), dtype=np.float32, buffer=seg.buf)
+        seg_rows = np.ndarray((n_block * n_combos, n_days_range), dtype=np.float32, buffer=seg.buf)
         seg_cols = []
         results = [
             _run_full_period_for_rule(
-                rule_id, rule_idx, signal_fn, ctx, engine_params, combo_ids, order_amount,
-                seg_rows, seg_cols, global_start_day, n_combos,
+                rule_start + offset, specs, side, ctx,
+                engine_params, combo_ids, order_amount, seg_rows, seg_cols, global_start_day, n_combos,
             )
-            for rule_id, rule_idx, signal_fn in block
+            for offset, (specs, side) in enumerate(payloads)
         ]
         n_valid  = len(seg_cols)
         day_mask = np.zeros(n_days_range, dtype=bool)
@@ -321,16 +323,16 @@ def run_full_period_search(
 
     n_workers      = max(1, effective_n_jobs(BACKTEST_N_JOBS))
     rules_per_task = max(1, min(BACKTEST_MAX_RULES_PER_TASK, -(-n_rules // (n_workers * BACKTEST_TASKS_PER_WORKER))))
-    items          = [(r["rule_id"], rule_idx, r["signal_fn"]) for rule_idx, r in enumerate(rules)]
-    blocks         = [items[i:i + rules_per_task] for i in range(0, n_rules, rules_per_task)]
+    payloads = [(r["specs"], r["side"]) for r in rules]
+    blocks   = [(i, payloads[i:i + rules_per_task]) for i in range(0, n_rules, rules_per_task)]
 
     pending   = []
     results   = []
     seg_cols  = []
     day_mask  = np.zeros(n_days_range, dtype=bool)
     try:
-        for block in blocks:
-            pending.append(_create_segment(len(block) * n_combos * row_size))
+        for _, payload_block in blocks:
+            pending.append(_create_segment(len(payload_block) * n_combos * row_size))
 
         shm_list, ohlcv_metadata = arrays_to_shared_memory(ohlcv_arr)
         try:
@@ -372,7 +374,7 @@ def run_full_period_search(
         for name in pending:
             _unlink_segment(name)
 
-    full_period_by_rule = dict(results)
+    full_period_by_rule = {rules[rule_idx]["rule_id"]: metrics for rule_idx, metrics in results}
     return full_period_by_rule, matrix_arr, valid_cols, combo_ids
 
 # =============================================================================

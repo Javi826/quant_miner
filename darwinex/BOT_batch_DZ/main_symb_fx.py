@@ -1,4 +1,4 @@
-#BOT_batch_BZ/universe_fx.py (forex)
+#BOT_batch_BZ/main_symb_fx.py (forex)
 import os
 import sys
 import time
@@ -24,6 +24,7 @@ MODULE_LOG_LEVELS = {
     "BOT_batch.pipeline.FF_test":          logging.INFO,
     "BOT_batch.pipeline.signal_cleaning":  logging.INFO,
     "BOT_batch.pipeline.backtest_runner":  logging.INFO,
+    "BOT_batch.pipeline.stepM_is":         logging.INFO,
 }
 for module_name, level in MODULE_LOG_LEVELS.items():
     logging.getLogger(module_name).setLevel(level)
@@ -39,6 +40,7 @@ from utils.ohlcv_utils import prepare_ohlcv_arrays
 from setup.config_backtest import ORDER_AMOUNT
 from pipeline import backtest_runner as backtest_module
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
+from pipeline.stepM_is import pipe_stepm
 from engines.FF_test import pipe_FF_test
 from setup.config_core import settings
 
@@ -54,31 +56,15 @@ DATASET           = "IS"   # "IS" or "MERGED"
 # EXPERIMENT CONFIGURATION
 # =============================================================================
 SYMBOL_POOL = [
-    "GBPUSD",
-    "NZDJPY",
-    "GBPJPY",
-    "CADJPY",
-    "EURUSD",
-    "EURJPY",
-    "EURAUD",
-    "EURCAD",
-    "EURGBP",
     "EURCHF",
-    "AUDCAD",
-    "GBPCHF",
+    "GBPJPY",
     "USDJPY",
-    "AUDUSD",
-    "NZDUSD",
-    "AUDJPY",
     "CHFJPY",
-    "USDCAD",
-    "USDCHF",
-    "GBPCAD",
 ]
 
 TIMEFRAMES   = ["1H","4H"]
 TIMEFRAMES   = ["4H"]
-COMBO_SIZES  = [2]
+COMBO_SIZES  = [1,2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
 N_SAMPLES_PER_SIZE = {
@@ -93,17 +79,17 @@ PARAM_GRID_BY_TIMEFRAME = {
         "SL_PCT":     [0.5,1.0,1.5],
     },
     "4H": {
-        "SELL_AFTER":[100],
-        "TP_PCT":    [1.3,1.5,1.7],
-        "SL_PCT":    [0.8,1.0,1.2],
+        "SELL_AFTER": [100],
+        "TP_PCT":     [1.5],
+        "SL_PCT":     [0.5],
     },
 }
 
-RANK_PERCENTILES    = [95,98,99,99.9]
-PCT_BELOW_THRESHOLD = 90  
-
-RANK_WEIGHTS = {95: 4, 98: 3, 99: 2, 99.9: 1}
-RANK_TOP_N   = 30
+# Ranking: rules passing StepM IS (as main_back_fx keeps them), then %<Real of the FF at RANK_PERCENTILES, in this
+# order (P100 = 1 - global White p). Combos with no rule passing are left out
+RANK_PERCENTILES = [100, 99.9]
+INFO_PERCENTILES = [99, 98, 95]     # shown in the table, not ranked
+RANK_TOP_N       = 30
 
 # =============================================================================
 # COMBO GENERATION
@@ -117,7 +103,7 @@ def _generate_combos(pool: list, size: int, n_samples: int | None, seed: int) ->
 
 
 # =============================================================================
-# PER-PERCENTILE %<Real — one value per RANK_PERCENTILE, keyed for the report
+# PER-PERCENTILE %<Real — one value per percentile, keyed for the report
 # =============================================================================
 def _pct_below_by_rank(ff_result: dict, rank_percentiles: list) -> dict:
     percentiles      = ff_result["percentiles"]
@@ -163,6 +149,16 @@ def _run_backtest_universe(
 # =============================================================================
 # SINGLE COMBO RUN
 # =============================================================================
+def _count_stepm_rules(raw_results: list, matrix_arr: np.ndarray, col_names: list, timeframe: str) -> int:
+    """Rules passing StepM IS, as main_back_fx keeps them (POST-MBIAS). If StepM skips (fewer than 2 columns) it
+    lets every rule through untouched: that counts 0, not all of them."""
+    res = pipe_stepm(raw_results=raw_results, matrix_arr=matrix_arr, col_names=col_names, timeframe=timeframe)
+    if any(r["passed_mbias"] and r["stepm_p"] is None for r in res):
+        logger.warning(f"STEPM SKIPPED  {timeframe}: counted as 0 rules")
+        return 0
+    return sum(bool(r["passed_mbias"]) for r in res)
+
+
 def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timeframe: str, param_grid: dict) -> dict | None:
     ohlcv_is_combo  = {sym: ohlcv_is_pool[sym] for sym in combo}
     ohlcv_arr_combo = {sym: ohlcv_arr_pool[sym] for sym in combo}
@@ -171,7 +167,7 @@ def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timefram
     rules = _build_rule_dicts(ohlcv_is_combo, combo_key, timeframe, RULE_MAX_DEPTH)
 
     try:
-        _, _, matrix_arr, col_names = _run_backtest_universe(
+        raw_results, _, matrix_arr, col_names = _run_backtest_universe(
             rules                  = rules,
             ohlcv_arr              = ohlcv_arr_combo,
             param_grid             = param_grid,
@@ -180,59 +176,46 @@ def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timefram
             n_jobs                 = N_JOBS,
             apply_signal_cleaning  = SIGNAL_CLEANING,
         )
+        # The bootstrap null compacts in place the matrix it gets (degenerate columns out): the FF works on a copy,
+        # StepM on the backtest's own matrix
         ff_result = pipe_FF_test(
-            matrix_arr = matrix_arr,
+            matrix_arr = np.array(matrix_arr, copy=True),
             col_names  = col_names,
             timeframe  = timeframe,
         )
+        if ff_result is None:
+            return None
+        n_rules = _count_stepm_rules(raw_results, matrix_arr, col_names, timeframe)
     except ValueError as exc:
         logger.warning(f"SKIP ── {timeframe} ── {combo} ── {exc}")
-        return None
-
-    if ff_result is None:
         return None
 
     return {
         "timeframe": timeframe,
         "n_symbols": len(combo),
         "symbols":   "+".join(combo),
-        **_pct_below_by_rank(ff_result, RANK_PERCENTILES),
+        "rules":     n_rules,
+        **_pct_below_by_rank(ff_result, _report_percentiles()),
     }
 
 # =============================================================================
-# THRESHOLD REPORT — per RANK_PERCENTILE, which combos clear PCT_BELOW_THRESHOLD
+# REPORT HELPERS
 # =============================================================================
 SYMBOLS_COL_WIDTH  = 20
 REPORT_LINE_WIDTH  = 100
 HEADER_LABEL_WIDTH = 24
 HEADER_INDENT       = " " * (2 + HEADER_LABEL_WIDTH + 3)   # aligns continuation lines under the value
-REPORT_LEFT_WIDTH  = 58
-REPORT_RIGHT_WIDTH = REPORT_LINE_WIDTH - REPORT_LEFT_WIDTH
 
-def _log_threshold_report(subset: pd.DataFrame, rank_percentiles: list, threshold: float) -> None:
-    header_right = f"COMBOS ABOVE THRESHOLD ── %<Real > {threshold}"
 
-    for p in rank_percentiles:
-        col         = f"pct_below_{p}"
-        passing     = subset[subset[col] > threshold].sort_values(col, ascending=False)
-        header_left = f"  Pct {p:<6} ── {len(passing)}/{len(subset)} combo(s) pass"
+def _report_percentiles() -> list:
+    """RANK_PERCENTILES, then INFO_PERCENTILES, without repeats: the %<Real columns of the table, in order."""
+    return list(dict.fromkeys([*RANK_PERCENTILES, *INFO_PERCENTILES]))
 
-        logger.debug(f"\n{'-' * REPORT_LINE_WIDTH}")
-        logger.debug(f"{header_left:<{REPORT_LEFT_WIDTH}}{header_right:>{REPORT_RIGHT_WIDTH}}")
-        logger.debug(f"{'-' * REPORT_LINE_WIDTH}")
 
-        if passing.empty:
-            logger.debug("  No combo(s) passed this threshold.")
-            continue
+def _pct_col(p) -> str:
+    return f"pct_below_{p}"
 
-        table = passing[["symbols", "n_symbols", col]].copy()
-        table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
-        table[col] = table[col].round(2)
-        logger.debug(table.to_string(index=False))
 
-        # --- NUEVO: la misma lista de "symbols", pero como literal Python ---
-        _log_symbols_as_python_list(passing, level=logging.DEBUG)
-        
 def _header_line(label: str, value: str) -> str:
     """One header row, label padded to HEADER_LABEL_WIDTH; value's own newlines get HEADER_INDENT."""
     value = value.replace("\n", "\n" + HEADER_INDENT)
@@ -264,41 +247,30 @@ def _log_symbols_as_python_list(passing: pd.DataFrame, level: int = logging.INFO
     logger.log(level, "[\n" + "\n".join(lines) + "\n]")
 
 # =============================================================================
-# RANKING ── continuous score per combo
+# RANKING ── rules passing StepM IS, then %<Real at RANK_PERCENTILES
 # =============================================================================
-def _build_ranking(
-    subset: pd.DataFrame,
-    rank_percentiles: list,
-    threshold: float,
-    weights: dict,
-) -> pd.DataFrame:
-    """One timeframe: n_pass and weighted %<Real score per combo, sorted best first."""
-    cols = [f"pct_below_{p}" for p in rank_percentiles]
-    w    = np.array([weights.get(p, 1.0) for p in rank_percentiles], dtype=float)
-    w   /= w.sum()
-
-    df = subset.copy()
-    df["score"]  = df[cols].to_numpy() @ w
-    df["n_pass"] = (df[cols] > threshold).sum(axis=1)
-
-    return df.sort_values(["n_pass", "score"], ascending=False).reset_index(drop=True)
+def _build_ranking(subset: pd.DataFrame) -> pd.DataFrame:
+    """One timeframe: the combos with rules passing StepM IS, by rules, then %<Real at RANK_PERCENTILES in order."""
+    df = subset[subset["rules"] > 0]
+    keys = ["rules", *[_pct_col(p) for p in RANK_PERCENTILES]]
+    return df.sort_values(keys, ascending=False, kind="stable").reset_index(drop=True)
 
 
-def _log_ranking(ranking: pd.DataFrame, timeframe: str, rank_percentiles: list, top_n: int) -> None:
-    """Top-N combos by (n_pass, score); combos passing no percentile are left out."""
-    candidates = ranking[ranking["n_pass"] > 0]
-    shortlist  = candidates.head(top_n)
+def _log_ranking(ranking: pd.DataFrame, n_tested: int, timeframe: str, top_n: int) -> None:
+    """Top-N combos of the ranking (combos with no rule passing StepM IS are already out)."""
+    shortlist = ranking.head(top_n)
 
     logger.info(f"\n{'=' * REPORT_LINE_WIDTH}")
-    logger.info(f"  RANKING {timeframe.upper()} ── TOP {len(shortlist)} of {len(candidates)} candidate(s)")
+    logger.info(f"  RANKING {timeframe.upper()} ── TOP {len(shortlist)} of {len(ranking)} candidate(s) "
+                f"(combos with rules passing StepM IS, of {n_tested} tested)")
     logger.info(f"{'=' * REPORT_LINE_WIDTH}")
 
     if shortlist.empty:
         logger.info("  No combo(s) to rank.")
         return
 
-    rename = {f"pct_below_{p}": f"p{p}" for p in rank_percentiles}
-    table  = shortlist[["symbols", "n_symbols", "n_pass", "score", *rename]].rename(columns=rename)
+    rename = {_pct_col(p): f"p{p}" for p in _report_percentiles()}
+    table  = shortlist[["symbols", "n_symbols", "rules", *rename]].rename(columns=rename)
     table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
     logger.info(table.round(2).to_string(index=False))
 
@@ -307,28 +279,25 @@ def _log_ranking(ranking: pd.DataFrame, timeframe: str, rank_percentiles: list, 
 # CROSS RANKING ── combos ranked in every timeframe (TOP BOTH)
 # =============================================================================
 def _build_cross_ranking(rankings_by_tf: dict) -> pd.DataFrame:
+    """Combos with rules in every timeframe: by the fewest rules across timeframes, then the lowest %<Real at each
+    RANK_PERCENTILE across timeframes."""
     per_tf = []
     for timeframe, ranking in rankings_by_tf.items():
-        candidates = ranking.loc[ranking["n_pass"] > 0, ["symbols", "n_symbols", "n_pass", "score"]]
-        per_tf.append(candidates.rename(columns={
-            "n_pass": f"n_pass_{timeframe}",
-            "score":  f"score_{timeframe}",
+        cols = ["symbols", "n_symbols", "rules", *[_pct_col(p) for p in RANK_PERCENTILES]]
+        per_tf.append(ranking[cols].rename(columns={
+            "rules": f"rules_{timeframe}", **{_pct_col(p): f"p{p}_{timeframe}" for p in RANK_PERCENTILES},
         }))
 
     merged = per_tf[0]
     for other in per_tf[1:]:
         merged = merged.merge(other, on=["symbols", "n_symbols"], how="inner")
 
-    n_pass_cols = [f"n_pass_{tf}" for tf in rankings_by_tf]
-    score_cols  = [f"score_{tf}" for tf in rankings_by_tf]
+    merged["min_rules"] = merged[[f"rules_{tf}" for tf in rankings_by_tf]].min(axis=1)
+    for p in RANK_PERCENTILES:
+        merged[f"min_p{p}"] = merged[[f"p{p}_{tf}" for tf in rankings_by_tf]].min(axis=1)
 
-    merged["min_n_pass"] = merged[n_pass_cols].min(axis=1)
-    merged["min_score"]  = merged[score_cols].min(axis=1)
-    merged["mean_score"] = merged[score_cols].mean(axis=1)
-
-    return merged.sort_values(
-        ["min_n_pass", "min_score", "mean_score"], ascending=False
-    ).reset_index(drop=True)
+    keys = ["min_rules", *[f"min_p{p}" for p in RANK_PERCENTILES]]
+    return merged.sort_values(keys, ascending=False, kind="stable").reset_index(drop=True)
 
 
 def _log_cross_ranking(cross_ranking: pd.DataFrame, timeframes: list, top_n: int) -> None:
@@ -344,9 +313,9 @@ def _log_cross_ranking(cross_ranking: pd.DataFrame, timeframes: list, top_n: int
         return
 
     cols = [
-        "symbols", "n_symbols", "min_n_pass", "min_score", "mean_score",
-        *[f"n_pass_{tf}" for tf in timeframes],
-        *[f"score_{tf}" for tf in timeframes],
+        "symbols", "n_symbols", "min_rules", *[f"min_p{p}" for p in RANK_PERCENTILES],
+        *[f"rules_{tf}" for tf in timeframes],
+        *[f"p{p}_{tf}" for p in RANK_PERCENTILES for tf in timeframes],
     ]
     table = shortlist[cols].copy()
     table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
@@ -368,7 +337,8 @@ if __name__ == "__main__":
     logger.info(_header_line("COMBO_SIZES", str(COMBO_SIZES)))
     logger.info(_header_line("PARAM_GRID_BY_TIMEFRAME", _format_param_grid(PARAM_GRID_BY_TIMEFRAME)))
     logger.info(_header_line("N_SAMPLES_PER_SIZE", str(N_SAMPLES_PER_SIZE)))
-    logger.info(_header_line("RANK_PERCENTILES", str(RANK_PERCENTILES)))
+    logger.info(_header_line("RANKING", f"rules passing StepM IS, then %<Real at {RANK_PERCENTILES}"))
+    logger.info(_header_line("INFO_PERCENTILES", str(INFO_PERCENTILES)))
     logger.info(f"{'─' * 100}\n")
 
     ohlcv_data_by_timeframe = build_universe(
@@ -381,6 +351,7 @@ if __name__ == "__main__":
     }
 
     all_rows = []
+    n_tested = {}
 
     for timeframe in TIMEFRAMES:
         ohlcv_is_pool  = ohlcv_data_by_timeframe[timeframe]
@@ -390,6 +361,7 @@ if __name__ == "__main__":
         for size in COMBO_SIZES:
             combos   = _generate_combos(SYMBOL_POOL, size, N_SAMPLES_PER_SIZE.get(size), RANDOM_SEED)
             n_combos = len(combos)
+            n_tested[timeframe] = n_tested.get(timeframe, 0) + n_combos
             logger.info(f"\n{'=' * 100}")
             logger.info(f"  {timeframe.upper()} ── N={size} ── RUNNING {n_combos} COMBO(S)")
             logger.info(f"{'=' * 100}\n")
@@ -402,20 +374,14 @@ if __name__ == "__main__":
                 if row is not None:
                     all_rows.append(row)
 
-    results_df = pd.DataFrame(all_rows)
-
-    for timeframe in TIMEFRAMES:
-        subset = results_df[results_df["timeframe"] == timeframe]
-        logger.debug(f"\n{'=' * REPORT_LINE_WIDTH}")
-        logger.debug(f"  TIMEFRAME: {timeframe.upper()}")
-        logger.debug(f"{'=' * REPORT_LINE_WIDTH}")
-        _log_threshold_report(subset, RANK_PERCENTILES, PCT_BELOW_THRESHOLD)
+    columns    = ["timeframe", "n_symbols", "symbols", "rules", *[_pct_col(p) for p in _report_percentiles()]]
+    results_df = pd.DataFrame(all_rows, columns=columns)
 
     rankings_by_tf = {}
     for timeframe in TIMEFRAMES:
         subset  = results_df[results_df["timeframe"] == timeframe]
-        ranking = _build_ranking(subset, RANK_PERCENTILES, PCT_BELOW_THRESHOLD, RANK_WEIGHTS)
-        _log_ranking(ranking, timeframe, RANK_PERCENTILES, RANK_TOP_N)
+        ranking = _build_ranking(subset)
+        _log_ranking(ranking, n_tested.get(timeframe, 0), timeframe, RANK_TOP_N)
         rankings_by_tf[timeframe] = ranking
 
     if len(rankings_by_tf) > 1:

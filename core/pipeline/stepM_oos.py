@@ -140,9 +140,10 @@ def _evaluate_timeframe(
         f"── null {pct}={np.quantile(null_counts, 1.0 - alpha):.0f}"
     )
     logger.info(
-        f"{prefix}: {_fmt(len(kept))}/{_fmt(len(rules))} rules evaluable "
-        f"── concentrated {_TICK[global_p <= alpha]} p={global_p:.3f} "
-        f"── diffuse {_TICK[diffuse_p <= alpha]} p={diffuse_p:.3f}"
+        f"{prefix}: {_fmt(len(kept))}/{_fmt(len(rules))} rules evaluable (>= {min_trades} WFO test trades) "
+        f"── WHITE RC {_TICK[global_p <= alpha]} p={global_p:.3f} "
+        f"── EXCEEDANCE COUNT {_TICK[diffuse_p <= alpha]} p={diffuse_p:.3f} "
+        f"({_fmt(real_count)} vs null {pct} {np.quantile(null_counts, 1.0 - alpha):.0f})"
     )
 
 # =============================================================================

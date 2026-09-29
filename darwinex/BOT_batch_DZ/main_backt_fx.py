@@ -1,4 +1,4 @@
-#BOT_batch_BZ/main_fx.py (forex)
+#BOT_batch_BZ/main_backt_fx.py (forex)
 import os
 import sys
 import time
@@ -40,7 +40,7 @@ from symbols.universe import build_universe, MIN_START_DATE_BY_DATASET
 from setup.config_paths import DATA_FOLDER_BY_DATASET
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
 from pipeline.wfo import WFO_TRAIN_MONTHS, WFO_TEST_MONTHS, EMA_ALPHA, WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH
-from pipeline.correlation import CORRELATION_DD_TH
+from pipeline.correlation import CORRELATION_OOS_TH
 from pipeline.multiverse import MULTIVERSE_PVALUE_TH
 from pipeline.signal_cleaning import JACCARD_SIMILARITY_TH
 from utils.ohlcv_utils import prepare_ohlcv_arrays
@@ -68,35 +68,28 @@ SYMBOL_COMBOS_BY_TIMEFRAME = {
     ["AUDCAD"],
     ],
     "4H": [
-    ["EURGBP", "AUDCAD"],
+    ["USDJPY", "CHFJPY"],
     ["CHFJPY"],
-    ["AUDCAD", "CHFJPY"],
-    ["CHFJPY", "GBPCAD"],
-    ["EURGBP", "GBPCAD"],
-    ["AUDCAD"],
-    ["CHFJPY", "USDJPY"],
-    ["AUDCAD", "GBPCAD"],
-    ["EURGBP", "CHFJPY"],
-    ["EURGBP"],
-    ["AUDJPY", "CHFJPY"],
-    ["USDCHF", "CHFJPY"],
-    ["EURGBP", "EURCAD"],
-    ["AUDJPY"],
-    ["CHFJPY", "GBPCHF"],
-    ["EURGBP", "GBPCHF"],
+    ["GBPJPY", "CHFJPY"],
+    ["GBPJPY"],
+    ["GBPJPY", "USDJPY"],
+    ["EURCHF", "GBPJPY"],
+    ["EURCHF"],
+    ["USDJPY"],
+    ["EURCHF", "CHFJPY"],
     ]
 }
 
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
-        "SELL_AFTER": [10,100],
+        "SELL_AFTER": [100],
         "TP_PCT":     [0.5,1.0,1.5],
         "SL_PCT":     [0.5,1.0,1.5],
     },
     "4H": {
-        "SELL_AFTER":[10],
-        "TP_PCT":    [0.5,1.0,1.5],
-        "SL_PCT":    [0.5,1.0,1.5],
+        "SELL_AFTER": [100],
+        "TP_PCT":     [1.3,1.5,1.7],
+        "SL_PCT":     [0.3,0.5,0.7],
     },
 }
 
@@ -175,7 +168,7 @@ def log_run_config() -> None:
     logger.info(
         f"  PIPES       : JACCARD_TH={JACCARD_SIMILARITY_TH} | "
         f"NET_GAIN_TH={WFO_NET_GAIN_TH} DD_TH={WFO_DD_TH} R2_TH={WFO_R2_TH} WFR_TH={WFO_WFR_TH} | "
-        f"CORR_TH={CORRELATION_DD_TH} | "
+        f"CORR_TH={CORRELATION_OOS_TH} | "
         f"MV_PVALUE_TH={MULTIVERSE_PVALUE_TH}"
     )
     logger.info(
