@@ -8,7 +8,7 @@ from setup.config_core import settings
 logger = logging.getLogger("BOT_batch.pipeline.correlation")
 
 CORRELATION_IS_TH  = 0.90   # pre-WFO (IS) greedy threshold: removes near-duplicates only
-CORRELATION_OOS_TH = 0.70   # post-WFO (OOS) greedy threshold
+CORRELATION_OOS_TH = 0.30   # post-WFO (OOS) greedy threshold
 
 _SHARPE_CHECK_RTOL = 1e-4  # tolerance of the IS column-mapping check against the StepM Sharpe
 # =============================================================================

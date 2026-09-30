@@ -97,9 +97,10 @@ def sharpe_from_daily_values(daily_values: np.ndarray) -> float:
 def skew_kurtosis_from_daily_values(daily_values: np.ndarray) -> tuple:
 
     deviations = daily_values - daily_values.mean()
-    m2 = np.mean(deviations ** 2)
-    m3 = np.mean(deviations ** 3)
-    m4 = np.mean(deviations ** 4)
+    dev_sq = deviations * deviations
+    m2 = np.mean(dev_sq)
+    m3 = np.mean(dev_sq * deviations)
+    m4 = np.mean(dev_sq * dev_sq)
     return float(m3 / (m2 ** 1.5)), float(m4 / (m2 ** 2))
 
 def daily_values_from_sell_days(sell_days_ns: np.ndarray, profits: np.ndarray) -> tuple:

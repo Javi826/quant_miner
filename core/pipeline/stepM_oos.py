@@ -3,7 +3,8 @@ import logging
 import numpy as np
 import pandas as pd
 from pipeline.stepM_is import compute_bootstrap_null,compute_global_pvalue
-from pipeline.stepM_is import WHITE_N_BOOTSTRAP,WHITE_BLOCK_SIZE,RANDOM_SEED
+from pipeline.stepM_is import WHITE_N_BOOTSTRAP,RANDOM_SEED
+from setup.config_pipeline import STEPM_OOS_BLOCK_SIZE
 from utils.batch_metrics import daily_values_from_sell_days, _trading_days_between
 logger = logging.getLogger("BOT_batch.pipeline.stepM_oos")
 
@@ -153,7 +154,7 @@ def pipe_stepm_oos(
     wfo_results: list,
     alpha: float = STEPM_OOS_ALPHA,
     n_bootstrap: int = WHITE_N_BOOTSTRAP,
-    block_size: int = WHITE_BLOCK_SIZE,
+    block_size: int = STEPM_OOS_BLOCK_SIZE,
     seed: int = RANDOM_SEED,
     min_trades: int = STEPM_OOS_MIN_TRADES,
 ) -> None:

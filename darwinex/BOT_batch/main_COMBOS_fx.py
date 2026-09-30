@@ -55,15 +55,27 @@ DATASET           = "IS"   # "IS" or "MERGED"
 # =============================================================================
 # EXPERIMENT CONFIGURATION
 # =============================================================================
-SYMBOL_POOL = [
-    "EURCHF",
-    "GBPJPY",
+SYMBOL_POOL_BY_TIMEFRAME = {
+    "1H": [
     "USDJPY",
+    "EURAUD",
+    "NZDJPY",
+    "EURJPY",
+    "AUDJPY",
+    "EURCHF",
+    "GBPCHF",
+    "GBPJPY",
+    ],
+    "4H": [
+    "EURJPY",
+    "USDCAD",
+    "GBPJPY",
+    "AUDJPY",
     "CHFJPY",
-]
+    ],
+}
 
 TIMEFRAMES   = ["1H","4H"]
-TIMEFRAMES   = ["4H"]
 COMBO_SIZES  = [1,2]
 
 # Sample size per combo size. None = exhaustive (used automatically for N=1).
@@ -75,11 +87,11 @@ N_SAMPLES_PER_SIZE = {
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
         "SELL_AFTER": [100],
-        "TP_PCT":     [0.5,1.0,1.5],
-        "SL_PCT":     [0.5,1.0,1.5],
+        "TP_PCT":     [1.5],
+        "SL_PCT":     [0.5],
     },
     "4H": {
-        "SELL_AFTER": [100],
+        "SELL_AFTER": [40],
         "TP_PCT":     [1.5],
         "SL_PCT":     [0.5],
     },
@@ -87,8 +99,7 @@ PARAM_GRID_BY_TIMEFRAME = {
 
 # Ranking: rules passing StepM IS (as main_back_fx keeps them), then %<Real of the FF at RANK_PERCENTILES, in this
 # order (P100 = 1 - global White p). Combos with no rule passing are left out
-RANK_PERCENTILES = [100, 99.9]
-INFO_PERCENTILES = [99, 98, 95]     # shown in the table, not ranked
+RANK_PERCENTILES = [100, 99.9]     # also the only percentiles the FF computes (its top-M covers down to the lowest)
 RANK_TOP_N       = 30
 
 # =============================================================================
@@ -159,11 +170,12 @@ def _count_stepm_rules(raw_results: list, matrix_arr: np.ndarray, col_names: lis
     return sum(bool(r["passed_mbias"]) for r in res)
 
 
-def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timeframe: str, param_grid: dict) -> dict | None:
+def _run_combo(combo: tuple, combo_idx: int, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timeframe: str,
+               param_grid: dict) -> dict | None:
     ohlcv_is_combo  = {sym: ohlcv_is_pool[sym] for sym in combo}
     ohlcv_arr_combo = {sym: ohlcv_arr_pool[sym] for sym in combo}
 
-    combo_key = f"{timeframe}_{'+'.join(combo)}"
+    combo_key = f"{timeframe}_c{combo_idx:02d}"            # as main_back_fx: the index shown in "Testing: ... <i/n>"
     rules = _build_rule_dicts(ohlcv_is_combo, combo_key, timeframe, RULE_MAX_DEPTH)
 
     try:
@@ -176,12 +188,12 @@ def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timefram
             n_jobs                 = N_JOBS,
             apply_signal_cleaning  = SIGNAL_CLEANING,
         )
-        # The bootstrap null compacts in place the matrix it gets (degenerate columns out): the FF works on a copy,
-        # StepM on the backtest's own matrix
+
         ff_result = pipe_FF_test(
-            matrix_arr = np.array(matrix_arr, copy=True),
-            col_names  = col_names,
-            timeframe  = timeframe,
+            matrix_arr  = np.array(matrix_arr, copy=True),
+            col_names   = col_names,
+            percentiles = RANK_PERCENTILES,
+            timeframe   = timeframe,
         )
         if ff_result is None:
             return None
@@ -195,7 +207,7 @@ def _run_combo(combo: tuple, ohlcv_is_pool: dict, ohlcv_arr_pool: dict, timefram
         "n_symbols": len(combo),
         "symbols":   "+".join(combo),
         "rules":     n_rules,
-        **_pct_below_by_rank(ff_result, _report_percentiles()),
+        **_pct_below_by_rank(ff_result, RANK_PERCENTILES),
     }
 
 # =============================================================================
@@ -205,11 +217,6 @@ SYMBOLS_COL_WIDTH  = 20
 REPORT_LINE_WIDTH  = 100
 HEADER_LABEL_WIDTH = 24
 HEADER_INDENT       = " " * (2 + HEADER_LABEL_WIDTH + 3)   # aligns continuation lines under the value
-
-
-def _report_percentiles() -> list:
-    """RANK_PERCENTILES, then INFO_PERCENTILES, without repeats: the %<Real columns of the table, in order."""
-    return list(dict.fromkeys([*RANK_PERCENTILES, *INFO_PERCENTILES]))
 
 
 def _pct_col(p) -> str:
@@ -256,20 +263,21 @@ def _build_ranking(subset: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(keys, ascending=False, kind="stable").reset_index(drop=True)
 
 
-def _log_ranking(ranking: pd.DataFrame, n_tested: int, timeframe: str, top_n: int) -> None:
-    """Top-N combos of the ranking (combos with no rule passing StepM IS are already out)."""
+def _log_ranking(ranking: pd.DataFrame, n_tested: int, n_run: int, timeframe: str, top_n: int) -> None:
+    """Top-N combos of the ranking (combos with no rule passing StepM IS are already out). n_run: combos with a
+    result (the rest were skipped)."""
     shortlist = ranking.head(top_n)
 
     logger.info(f"\n{'=' * REPORT_LINE_WIDTH}")
-    logger.info(f"  RANKING {timeframe.upper()} ── TOP {len(shortlist)} of {len(ranking)} candidate(s) "
-                f"(combos with rules passing StepM IS, of {n_tested} tested)")
+    logger.info(f"  RANKING {timeframe.upper()} ── {n_tested} combos tested: {len(ranking)} with rules passing StepM IS, "
+                f"{n_run - len(ranking)} with 0 rules, {n_tested - n_run} skipped ── showing the top {len(shortlist)}")
     logger.info(f"{'=' * REPORT_LINE_WIDTH}")
 
     if shortlist.empty:
         logger.info("  No combo(s) to rank.")
         return
 
-    rename = {_pct_col(p): f"p{p}" for p in _report_percentiles()}
+    rename = {_pct_col(p): f"p{p}" for p in RANK_PERCENTILES}
     table  = shortlist[["symbols", "n_symbols", "rules", *rename]].rename(columns=rename)
     table["symbols"] = table["symbols"].str.ljust(SYMBOLS_COL_WIDTH)
     logger.info(table.round(2).to_string(index=False))
@@ -325,24 +333,26 @@ def _log_cross_ranking(cross_ranking: pd.DataFrame, timeframes: list, top_n: int
 # =============================================================================
 # MAIN
 # =============================================================================
-if __name__ == "__main__":
-    start = time.time()
+def main():
+    missing_pool = [tf for tf in TIMEFRAMES if not SYMBOL_POOL_BY_TIMEFRAME.get(tf)]
+    if missing_pool:
+        raise ValueError(f"SYMBOL_POOL_BY_TIMEFRAME has no symbols for timeframes: {missing_pool}")
 
     logger.info(f"\n{'─' * 100}")
     logger.info("  FF BOOTSTRAP — SYMBOL COMBINATION EXPERIMENT")
     logger.info(f"{'─' * 100}")
     logger.info(_header_line("DATASET", f"{DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET])}"))
     logger.info(_header_line("BACKTEST", str(settings.BACKTEST_MODE)))
-    logger.info(_header_line("SYMBOL_POOL", _format_symbol_pool(SYMBOL_POOL)))
+    for tf in TIMEFRAMES:
+        logger.info(_header_line(f"SYMBOL_POOL {tf}", _format_symbol_pool(SYMBOL_POOL_BY_TIMEFRAME[tf])))
     logger.info(_header_line("COMBO_SIZES", str(COMBO_SIZES)))
     logger.info(_header_line("PARAM_GRID_BY_TIMEFRAME", _format_param_grid(PARAM_GRID_BY_TIMEFRAME)))
     logger.info(_header_line("N_SAMPLES_PER_SIZE", str(N_SAMPLES_PER_SIZE)))
     logger.info(_header_line("RANKING", f"rules passing StepM IS, then %<Real at {RANK_PERCENTILES}"))
-    logger.info(_header_line("INFO_PERCENTILES", str(INFO_PERCENTILES)))
     logger.info(f"{'─' * 100}\n")
 
     ohlcv_data_by_timeframe = build_universe(
-        DATA_FOLDER_BY_DATASET[DATASET], {tf: SYMBOL_POOL for tf in TIMEFRAMES},
+        DATA_FOLDER_BY_DATASET[DATASET], {tf: SYMBOL_POOL_BY_TIMEFRAME[tf] for tf in TIMEFRAMES},
         dataset=DATASET,
     )
     ohlcv_arr_by_timeframe  = {
@@ -359,7 +369,7 @@ if __name__ == "__main__":
         param_grid     = PARAM_GRID_BY_TIMEFRAME[timeframe]
 
         for size in COMBO_SIZES:
-            combos   = _generate_combos(SYMBOL_POOL, size, N_SAMPLES_PER_SIZE.get(size), RANDOM_SEED)
+            combos   = _generate_combos(SYMBOL_POOL_BY_TIMEFRAME[timeframe], size, N_SAMPLES_PER_SIZE.get(size), RANDOM_SEED)
             n_combos = len(combos)
             n_tested[timeframe] = n_tested.get(timeframe, 0) + n_combos
             logger.info(f"\n{'=' * 100}")
@@ -370,23 +380,32 @@ if __name__ == "__main__":
                 logger.info(f"{'-' * 100}")
                 logger.info(f"Testing: {' + '.join(combo)} <{combo_idx}/{n_combos}>")
                 logger.info(f"{'-' * 100}")
-                row = _run_combo(combo, ohlcv_is_pool, ohlcv_arr_pool, timeframe, param_grid)
+                row = _run_combo(combo, combo_idx, ohlcv_is_pool, ohlcv_arr_pool, timeframe, param_grid)
                 if row is not None:
                     all_rows.append(row)
 
-    columns    = ["timeframe", "n_symbols", "symbols", "rules", *[_pct_col(p) for p in _report_percentiles()]]
+    columns    = ["timeframe", "n_symbols", "symbols", "rules", *[_pct_col(p) for p in RANK_PERCENTILES]]
     results_df = pd.DataFrame(all_rows, columns=columns)
 
     rankings_by_tf = {}
     for timeframe in TIMEFRAMES:
         subset  = results_df[results_df["timeframe"] == timeframe]
         ranking = _build_ranking(subset)
-        _log_ranking(ranking, n_tested.get(timeframe, 0), timeframe, RANK_TOP_N)
+        _log_ranking(ranking, n_tested.get(timeframe, 0), len(subset), timeframe, RANK_TOP_N)
         rankings_by_tf[timeframe] = ranking
 
     if len(rankings_by_tf) > 1:
         cross_ranking = _build_cross_ranking(rankings_by_tf)
         _log_cross_ranking(cross_ranking, list(rankings_by_tf), RANK_TOP_N)
 
-    elapsed = int(time.time() - start)
-    logger.info(f"\n🏁 TOTAL — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")
+
+if __name__ == "__main__":
+    start = time.time()
+    try:
+        main()
+        elapsed = int(time.time() - start)
+        logger.info(f"\n🏁 TOTAL — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")
+    except KeyboardInterrupt:
+        elapsed = int(time.time() - start)
+        logger.info(f"\n⛔  INTERRUPTED BY USER — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")
+        sys.exit(0)

@@ -59,36 +59,28 @@ SPLIT_MODE    = True
 DATASET_IS, DATASET_OOS = ("IS", "OOS") if SPLIT_MODE else ("MERGED", "MERGED")
 
 # =============================================================================
-TIMEFRAMES = ["4H"]
+TIMEFRAMES = ["1H","4H"]
 
 SYMBOL_COMBOS_BY_TIMEFRAME = {
     "1H": [
-    ["AUDCAD", "GBPCHF"],
-    ["EURCHF", "AUDCAD"],
-    ["AUDCAD"],
+    ["GBPJPY"],
+    ["AUDCAD", "EURAUD"],
     ],
     "4H": [
-    ["USDJPY", "CHFJPY"],
-    ["CHFJPY"],
-    ["GBPJPY", "CHFJPY"],
     ["GBPJPY"],
-    ["GBPJPY", "USDJPY"],
-    ["EURCHF", "GBPJPY"],
-    ["EURCHF"],
-    ["USDJPY"],
-    ["EURCHF", "CHFJPY"],
+    ["GBPJPY", "AUDJPY"],
     ]
 }
 
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
         "SELL_AFTER": [100],
-        "TP_PCT":     [0.5,1.0,1.5],
-        "SL_PCT":     [0.5,1.0,1.5],
+        "TP_PCT":     [1.3,1.5,1.7],
+        "SL_PCT":     [0.3,0.5,0.7],
     },
     "4H": {
-        "SELL_AFTER": [100],
-        "TP_PCT":     [1.3,1.5,1.7],
+        "SELL_AFTER": [40],
+        "TP_PCT":     [0.8,1.0,1.2],
         "SL_PCT":     [0.3,0.5,0.7],
     },
 }

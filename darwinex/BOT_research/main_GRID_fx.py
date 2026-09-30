@@ -39,8 +39,10 @@ for noisy_logger in ("joblib", "matplotlib", "numba"):
 # =============================================================================
 # CONFIG
 # =============================================================================
-MAX_DEPTHS = [2]   # one sweep per MAX_DEPTH (rules of 1..MAX_DEPTH conditions per side, as in the backtest), each
+MAX_DEPTHS = [3]      # one sweep per MAX_DEPTH (rules of 1..MAX_DEPTH conditions per side, as in the backtest), each
                       # with its ranking and winner. The table goes in the order of the first one
+N_WINNERS  = 3        # blocks printed per MAX_DEPTH: the first N of its ranking (ternas with 0 rules are skipped)
+SPLIT_MAX  = 5        # SPLIT column of the ranking: rules of the first N symbols (most rules first), the rest as +n
 TIMEFRAME = "4H"
 DATASET   = "IS"
 
@@ -60,7 +62,6 @@ def load_screen() -> dict:
                          f"BACKTEST_MODE={settings.BACKTEST_MODE} (setup/config_core): they must be the same")
     return doc
 
-
 def load_symbol(sym: str) -> tuple:
     """One independent universe per symbol, as load_ohlcv_by_combo of main_back_fx: (data, arrays)."""
     data = build_universe(DATA_FOLDER_BY_DATASET[DATASET], {TIMEFRAME: [sym]}, dataset=DATASET)[TIMEFRAME]
@@ -77,8 +78,7 @@ def count_rules(arr: dict, max_depth: int) -> int:
 # =============================================================================
 @contextmanager
 def bank_selection():
-    """SELECTED_INDICATORS_BY_TIMEFRAME[TIMEFRAME] of indicators_bank is set in memory to the TOP of each SELL_AFTER
-    (the file is not touched): on exit it gets back what it had, so nothing run later in the same console sees it."""
+
     had, orig = TIMEFRAME in SELECTED_INDICATORS_BY_TIMEFRAME, SELECTED_INDICATORS_BY_TIMEFRAME.get(TIMEFRAME)
     try:
         yield
@@ -91,8 +91,7 @@ def bank_selection():
 
 @contextmanager
 def pipeline_bars(show: bool):
-    """The backtest pipeline's own bars (signal mask, Jaccard, backtest, StepM): shown only if `show`. Their modules
-    get their tqdm back on exit."""
+
     mods = (signal_cleaning, backtest_runner, stepM_is)
     orig = [m.tqdm for m in mods]
     if not show:
@@ -106,10 +105,6 @@ def pipeline_bars(show: bool):
 
 
 def sweep_symbol(combo_key: str, sym: str, data: dict, arr: dict, param_grid: dict, max_depth: int, bar) -> dict:
-    """Rules and Jaccard once (they do not depend on the terna), one backtest with every terna of param_grid, then
-    StepM IS per terna on its own columns and on the days with activity in them: the same as backtesting each terna
-    alone. A terna that StepM skips (fewer than 2 columns) counts 0 rules, not all of them. bar: the SELL_AFTER's
-    bar, whose text says the step. In DEBUG, headers and prints as rule_runner, and one line per terna."""
     rules = _build_rule_dicts(data, combo_key, TIMEFRAME, max_depth)
     logger.debug(f"\n\033[36m{'─' * 70}")
     logger.debug(f"─ RULE MINING ── {combo_key} {[sym]} ── rules: {_fmt(len(rules))}")
@@ -158,7 +153,7 @@ def main():
     loaded = {sym: load_symbol(sym) for sym in symbols_all}             # all the data first, as main_back_fx
     grids  = {sa: {"SELL_AFTER": [sa], "TP_PCT": doc["tp_pct"], "SL_PCT": doc["sl_pct"]} for sa in sas}
     rows   = [{"sa": sa, "tp": p["TP_PCT"], "sl": p["SL_PCT"], "cid": _combo_id(p), "top": by_sa[sa]["top"],
-               "symbols": by_sa[sa]["symbols"], "total": {}, "n_sym": {}, "with_rules": {}}
+               "symbols": by_sa[sa]["symbols"], "total": {}, "n_sym": {}, "n_eff": {}, "split": {}, "with_rules": {}}
               for sa in sas for p in _combo_grid(grids[sa])]
     debug  = logger.isEnabledFor(logging.DEBUG)
     with pipeline_bars(show=debug), bank_selection():
@@ -178,6 +173,8 @@ def main():
                         per_sym = [by_sym[sym]["pass"][r["cid"]] for sym in symbols]
                         r["total"][depth] = sum(per_sym)
                         r["n_sym"][depth] = f"{sum(v > 0 for v in per_sym)}/{len(per_sym)}"
+                        r["n_eff"][depth] = sum(per_sym) ** 2 / sum(v * v for v in per_sym) if sum(per_sym) else 0.0
+                        r["split"][depth] = sorted((v for v in per_sym if v > 0), reverse=True)
                         r["with_rules"][depth] = [sym for sym, v in zip(symbols, per_sym) if v > 0]
     log_ranking(rows)
 
@@ -227,6 +224,14 @@ def log_sell_after(depth: int, sa: int, ternas: list, by_sym: dict) -> None:
     logger.debug(f"  {'TOTAL':<10}" + "".join(f"{sum(r['pass'][c] for r in by_sym.values()):>{w}}" for c in cids))
 
 
+def _split_text(counts: list) -> str:
+    """Rules per symbol with rules, most first, separated by |: the first SPLIT_MAX, the rest as +n."""
+    if not counts:
+        return "-"
+    text = " | ".join(str(v) for v in counts[:SPLIT_MAX])
+    return text + (f" +{len(counts) - SPLIT_MAX}" if len(counts) > SPLIT_MAX else "")
+
+
 def _log_vertical(label: str, items: list) -> None:
     logger.info(f"  {label} ({len(items)}):")
     for it in items:
@@ -242,50 +247,60 @@ def log_ranking(rows: list) -> None:
     d0 = MAX_DEPTHS[0]
     rows = sorted(rows, key=lambda r: r["rank"][d0])
 
-    def block(r, d):                                                # rank (the first is the row's own), rules, symbols
-        return (f"  {r['total'][d]:>6}  {r['n_sym'][d]:>8}" if d == d0 else
-                f"  {r['rank'][d]:>4}  {r['total'][d]:>6}  {r['n_sym'][d]:>8}")
+    w = {d: max(len("SPLIT"), *(len(_split_text(r["split"][d])) for r in rows)) for d in MAX_DEPTHS}
+
+    def block(r, d):                                                # rank (the first is the row's own), rules, symbols, n_eff, split
+        return (f"  {r['total'][d]:>6}  {r['n_sym'][d]:>8}  {r['n_eff'][d]:>6.1f}  {_split_text(r['split'][d]):<{w[d]}}"
+                if d == d0 else
+                f"  {r['rank'][d]:>4}  {r['total'][d]:>6}  {r['n_sym'][d]:>8}  {r['n_eff'][d]:>6.1f}  "
+                f"{_split_text(r['split'][d]):<{w[d]}}")
 
     lead  = f"  {'#':>3}  {'SA':>5}  {'TP':>6}  {'SL':>6}"
-    heads = [f"  {'RULES':>6}  {'SYMBOLS':>8}" if d == d0 else f"  {'#':>4}  {'RULES':>6}  {'SYMBOLS':>8}"
+    heads = [f"  {'RULES':>6}  {'SYMBOLS':>8}  {'N_EFF':>6}  {'SPLIT':<{w[d]}}" if d == d0 else
+             f"  {'#':>4}  {'RULES':>6}  {'SYMBOLS':>8}  {'N_EFF':>6}  {'SPLIT':<{w[d]}}"
              for d in MAX_DEPTHS]
     logger.info(f"\n{SEP}")
     logger.info(f"  RANKING ── rules passing StepM IS, summed over the SYMBOL_POOL of each SELL_AFTER "
                 f"(tie: smaller SELL_AFTER)")
     logger.info(f"{SEP}")
-    logger.info(" " * len(lead) + "".join(f"{f'MAX_DEPTH={d}':>{len(h)}}" for d, h in zip(MAX_DEPTHS, heads)))
+    logger.info(" " * len(lead) + "".join(f"{f'MAX_DEPTH={d}':>{len(h) - w[d] - 2}}{'':{w[d] + 2}}"   # over the numbers
+                                          for d, h in zip(MAX_DEPTHS, heads)))
     logger.info(lead + "".join(heads))
     for r in rows:
         logger.info(f"  {r['rank'][d0]:>3}  {r['sa']:>5}  {r['tp']:>6}  {r['sl']:>6}"
                     + "".join(block(r, d) for d in MAX_DEPTHS))
+    logger.info(f"  N_EFF: effective number of symbols with rules, (sum of rules)² / sum of (rules per symbol)² "
+                f"── 1 = every rule in one symbol")
+    logger.info(f"  SPLIT: rules of each symbol with rules, most first (the first {SPLIT_MAX}, the rest as +n)")
     logger.info(f"{SEP}")
     for d in MAX_DEPTHS:
         log_winner(sorted(rows, key=lambda r: r["rank"][d]), d)
 
 
 def log_winner(rows: list, d: int) -> None:
-    """The winner of MAX_DEPTH d. rows: in the order of its ranking."""
-    best = rows[0] if rows else None
-    if best is None or best["total"][d] == 0:
-        logger.info(f"  WINNER (MAX_DEPTH={d}): no terna has rules passing StepM IS")
+    """The first N_WINNERS ternas of MAX_DEPTH d, one block each. rows: in the order of its ranking."""
+    winners = [r for r in rows[:N_WINNERS] if r["total"][d] > 0]
+    if not winners:
+        logger.info(f"  WINNERS (MAX_DEPTH={d}): no terna has rules passing StepM IS")
         logger.info(f"{SEP}")
         return
-    tied = [r for r in rows if r["total"][d] == best["total"][d] and r["sa"] == best["sa"]]
-    logger.info(f"  WINNER (MAX_DEPTH={d}): SELL_AFTER={best['sa']} TP={best['tp']} SL={best['sl']} "
-                f"({best['total'][d]} rules)")
-    if len(tied) > 1:
-        logger.info(f"  ⚠ TIE in SELL_AFTER={best['sa']} between TP/SL "
-                    f"{', '.join(_label(r['tp'], r['sl']) for r in tied)}: the first in grid order is taken")
-    logger.info(f"")
-    logger.info(f"  PARAM_GRID_BY_TIMEFRAME          \"{TIMEFRAME}\": "
-                f"{{\"SELL_AFTER\": [{best['sa']}], \"TP_PCT\": [{best['tp']}], \"SL_PCT\": [{best['sl']}]}},")
-    logger.info(f"")
-    _log_vertical(f"SELECTED_INDICATORS_BY_TIMEFRAME \"{TIMEFRAME}\"", best["top"])
-    logger.info(f"")
-    _log_vertical(f"SYMBOL_COMBOS_BY_TIMEFRAME       \"{TIMEFRAME}\" SYMBOL_POOL of the json", best["symbols"])
-    logger.info(f"")
-    _log_vertical(f"SYMBOL_COMBOS_BY_TIMEFRAME       \"{TIMEFRAME}\" with rules in this terna", best["with_rules"][d])
-    logger.info(f"{SEP}")
+    for r in winners:
+        logger.info(f"  #{r['rank'][d]} (MAX_DEPTH={d}): {r['total'][d]} rules ── symbols with rules {r['n_sym'][d]} "
+                    f"── N_EFF {r['n_eff'][d]:.1f}")
+        logger.info(f"")
+        logger.info(f"  PARAM_GRID_BY_TIMEFRAME:")
+        logger.info(f'    "{TIMEFRAME}": {{')
+        logger.info(f'        "SELL_AFTER": [{r["sa"]}],')
+        logger.info(f'        "TP_PCT":     [{r["tp"]}],')
+        logger.info(f'        "SL_PCT":     [{r["sl"]}],')
+        logger.info(f"    }},")
+        logger.info(f"")
+        _log_vertical(f"SELECTED_INDICATORS_BY_TIMEFRAME \"{TIMEFRAME}\"", r["top"])
+        logger.info(f"")
+        _log_vertical(f"SYMBOL_COMBOS_BY_TIMEFRAME       \"{TIMEFRAME}\" SYMBOL_POOL of the json", r["symbols"])
+        logger.info(f"")
+        _log_vertical(f"SYMBOL_COMBOS_BY_TIMEFRAME       \"{TIMEFRAME}\" with rules in this terna", r["with_rules"][d])
+        logger.info(f"{SEP}")
 
 if __name__ == "__main__":
     start = time.time()

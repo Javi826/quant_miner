@@ -31,7 +31,7 @@ N_JOBS = -1
 # CONFIG
 # =============================================================================
 TOP_I       = 8
-GROUP_N     = 6     # symbols where an indicator (alone) or a pair must pass to be selected
+GROUP_N     = 5     # symbols where an indicator (alone) or a pair must pass to be selected
 J_TH        = 0.80  # redundancy of alones: two signals are twins if their Jaccard (candles) is >= this
 X_TH        = 0.80  # redundancy of alones: absorbed if >= this share of its useful signals, and its rule, have a twin
 MIN_COVER   = 0.05  # selection and pairs: rule firing on less of its symbols' candles out. Alones: useful signals
@@ -120,8 +120,6 @@ def save_output(out) -> None:
 def log_output(out, rules) -> None:
     """TOP, SYMBOL_POOL and rules per symbol of the TOP (rule_generator, both sides) of every SELL_AFTER."""
     logger.info(f"\n{'─' * 115}")
-    logger.info(f"  SCREENING OUTPUT ── {OUTPUT_PATH}")
-    logger.info(f"{'─' * 115}")
     for sa, o in out.items():
         top_lbl, pool_lbl = f"TOP ({len(o['top'])})", f"SYMBOL_POOL ({len(o['symbols'])})"
         w = max(len(top_lbl), len(pool_lbl), len("RULES"))
@@ -129,6 +127,8 @@ def log_output(out, rules) -> None:
         logger.info(f"  {'':<16} {pool_lbl:<{w}} : {', '.join(o['symbols']) or '(none)'}")
         logger.info(f"  {'':<16} {'RULES':<{w}} : "
                     + " | ".join(f"MAX_DEPTH={d}: {format(int(v), ',').replace(',', '.')}" for d, v in rules[sa].items()))
+    logger.info(f"{'─' * 115}")
+    logger.info(f"✅  SCREENING OUTPUT ── {OUTPUT_PATH}")
     logger.info(f"{'─' * 115}")
 
 

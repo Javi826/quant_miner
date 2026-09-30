@@ -6,13 +6,15 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import cupy as cp
 import cupyx
+import re
 from tqdm import tqdm
+from setup.config_pipeline import WHITE_BLOCK_SIZE_BY_TIMEFRAME
 from setup.config_core import settings
 from utils.paralelization import compact_columns_inplace
 from utils.reporting import print_stepm_matrix_debug, print_stepm_real_variance_filter_debug, print_stepm_block_starts_debug
 from utils.reporting import print_stepm_bootstrap_replicas_debug, print_stepm_se_filter_debug, print_stepm_studentization_debug
 from utils.reporting import print_stepm_pvalue_quantile_equivalence_debug, print_stepm_monotonicity_debug, print_stepm_brc_equivalence_debug
-from setup.config_pipeline import WHITE_BLOCK_SIZE
+
 logger = logging.getLogger("BOT_batch.pipeline.stepM_is")
 
 # =============================================================================
@@ -464,13 +466,40 @@ class BootstrapNull:
             index = _SuffixKthIndex(self.topm_vals, inv_order[self.topm_cols], self.n_kept)
             self._presorted = (order, index, self.z_stat[order])
         return self._presorted
+# =============================================================================
+# BLOCK SIZE — from the timeframe and the SELL_AFTER carried by the column names (rule_id__combo_id)
+# =============================================================================
+_SELL_AFTER_IN_COMBO = re.compile(r"(?:^|_)SELL_AFTER(\d+)(?:_|$)")
 
+
+def resolve_stepm_block_size(timeframe: str, col_names) -> int:
+    if col_names is None:
+        raise ValueError(f"STEPM ── {timeframe} ── no column names: the block cannot be resolved from SELL_AFTER")
+    sell_after = set()
+    for combo_id in {str(name).rsplit("__", 1)[-1] for name in col_names}:
+        match = _SELL_AFTER_IN_COMBO.search(combo_id)
+        if match is None:
+            raise ValueError(f"STEPM ── {timeframe} ── column suffix {combo_id!r} carries no SELL_AFTER")
+        sell_after.add(int(match.group(1)))
+    if len(sell_after) != 1:
+        raise ValueError(
+            f"STEPM ── {timeframe} ── the matrix mixes SELL_AFTER {sorted(sell_after)}: the block is calibrated "
+            f"for one SELL_AFTER per matrix, there is no calibrated value for a mix"
+        )
+    sa = sell_after.pop()
+    by_sa = WHITE_BLOCK_SIZE_BY_TIMEFRAME.get(timeframe, {})
+    if sa not in by_sa:
+        raise ValueError(
+            f"STEPM ── timeframe={timeframe!r} SELL_AFTER={sa} has no entry in WHITE_BLOCK_SIZE_BY_TIMEFRAME: "
+            f"calibrate it (calibration_BLOCK_sM_size.py), no fallback is defined"
+        )
+    return int(by_sa[sa])
 
 def compute_bootstrap_null(
     matrix_arr: np.ndarray,
     col_names: list,
     n_bootstrap: int = WHITE_N_BOOTSTRAP,
-    block_size: int = WHITE_BLOCK_SIZE,
+    block_size: int = None,
     seed: int = RANDOM_SEED,
     topm_size: int = None,
     progress_label: str = "",
@@ -478,6 +507,8 @@ def compute_bootstrap_null(
     desc: str = None,
 ) -> BootstrapNull:
 
+    if block_size is None:
+        raise ValueError(f"STEPM {progress_label}: block_size is required (resolve_stepm_block_size)")
     workers   = STEPM_WORKERS if workers is None else max(1, int(workers))
     topm_size = _fdp_topm_size(FDP_K_MAX, FDP_GAMMA) if topm_size is None else int(topm_size)
     debug     = logger.isEnabledFor(logging.DEBUG)
@@ -877,7 +908,7 @@ def pipe_stepm(
     matrix_arr: np.ndarray,
     col_names: list,
     n_bootstrap: int = WHITE_N_BOOTSTRAP,
-    block_size: int = WHITE_BLOCK_SIZE,
+    block_size: int = None,
     seed: int = RANDOM_SEED,
     timeframe: str = "",
 ) -> list:
@@ -889,6 +920,8 @@ def pipe_stepm(
     if matrix_arr.shape[1] < 2:
         logger.warning(f"STEPM ── {timeframe} ── insufficient columns — skipping, passing all rules through untouched")
         return [{**r, **empty_stepm_fields()} for r in raw_results]
+    if block_size is None:
+        block_size = resolve_stepm_block_size(timeframe, col_names)
     null = compute_bootstrap_null(
         matrix_arr, col_names, n_bootstrap=n_bootstrap, block_size=block_size,
         seed=seed, progress_label=timeframe, desc=f"{'STEPM BST IS':<16}{timeframe}",
@@ -929,6 +962,7 @@ def pipe_stepm(
     logger.info(f"  best Sharpe(z) : {real_sharpe[best_col_idx]:.4f}")
     logger.debug(f" best z-statistic: {global_result['best_statistic']:.4f}  (sigma_hat={sigma_hat[best_col_idx]:.4f})")
     logger.info(f"  global p-value : {global_result['global_p']:.4f}")
+    logger.debug(f"  block size     : {block_size}")
 
     cut = compute_cut_diagnostic(null, k_fwe)
     logger.info(

@@ -1,4 +1,4 @@
-#core/pipeline/backtest_runner.py
+#core/pipeline/backtest_runner.py OLD
 import os
 import logging
 import math
@@ -11,15 +11,14 @@ from joblib import Parallel, delayed, effective_n_jobs
 from multiprocessing.shared_memory import SharedMemory
 from setup.config_backtest import INITIAL_BALANCE, COMISION
 from setup.config_core import settings
-from utils.batch_metrics import sharpe_from_daily_values, skew_kurtosis_from_daily_values, equity_from_daily_values, _to_trading_days, _trading_days_between, _trading_day_table
+from utils.batch_metrics import sharpe_from_daily_values, skew_kurtosis_from_daily_values, daily_values_from_sell_days, equity_from_daily_values, _to_trading_days, _trading_days_between
 from utils.paralelization import arrays_to_shared_memory, arrays_from_shared_memory
 from signals.indicators_bank import ConditionBank
 from signals.signal_builder import build_signal_fn
-_bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
-backtest_grid         = getattr(_bt, "backtest_grid", None)
-build_rule_events     = getattr(_bt, "build_rule_events", None)
-market_arrays         = getattr(_bt, "market_arrays", None)
+_bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}_OLD")
+backtest_core         = _bt.backtest_core
 prepare_static_arrays = _bt.prepare_static_arrays
+prepare_signal_arrays = _bt.prepare_signal_arrays
 logger = logging.getLogger("BOT_batch.pipeline.backtest_runner")
 DTYPE  = np.float32
 # =============================================================================
@@ -28,7 +27,7 @@ DTYPE  = np.float32
 BACKTEST_N_JOBS             = -1
 BACKTEST_MIN_TRADES         = 150
 BACKTEST_TASKS_PER_WORKER   = 8      # load balancing: minimum number of tasks per worker
-BACKTEST_MAX_RULES_PER_TASK = 512    # rules per task (amortizes dispatch, pickling and shared-memory segments)
+BACKTEST_MAX_RULES_PER_TASK = 64     # rules per task (amortizes dispatch)
 MATRIX_GATHER_ROWS          = 512    # matrix rows copied per block in the final gather
 MATRIX_GATHER_THREADS       = 8      # threads for the final gather (numpy copies release the GIL)
 
@@ -45,42 +44,37 @@ def _combo_grid(param_grid: dict) -> list:
     return [dict(zip(keys, c)) for c in itertools.product(*[param_grid[k] for k in keys])]
 
 
-def _engine_grid(combos: list) -> tuple:
-    return (
-        np.array([int(p["SELL_AFTER"]) for p in combos], dtype=np.int64),
-        np.array([float(p["TP_PCT"]) for p in combos], dtype=np.float64),
-        np.array([float(p["SL_PCT"]) for p in combos], dtype=np.float64),
-    )
-
-
-def _all_days(ohlcv_arr: dict) -> np.ndarray:
-    return np.concatenate([arr["ts"] for arr in ohlcv_arr.values()]).astype("datetime64[D]")
-
-
 def _global_day_grid(ohlcv_arr: dict) -> tuple:
 
-    all_days = _all_days(ohlcv_arr)
+    all_ts   = np.concatenate([arr["ts"] for arr in ohlcv_arr.values()])
+    all_days = all_ts.astype("datetime64[D]")
     global_start_day = _to_trading_days(all_days.min())
     global_end_day   = _to_trading_days(all_days.max())
     n_days_range = int(_trading_days_between(global_start_day, global_end_day)) + 1
     return global_start_day, n_days_range
 
 
-def _trading_calendar(ohlcv_arr: dict, global_start_day: np.datetime64) -> tuple:
-    # (trading index per calendar day, first calendar day of the table, trading index of the global start day)
-    day_ints = _all_days(ohlcv_arr).view(np.int64)
-    table_first, _, trading_index = _trading_day_table(int(day_ints.min()), int(day_ints.max()))
-    trading_index = np.ascontiguousarray(trading_index, dtype=np.int64)
-    start_int     = int(np.datetime64(global_start_day, "D").astype(np.int64))
-    return trading_index, int(table_first), int(trading_index[start_int - table_first])
+def _compress_timeline(all_timestamps_int: np.ndarray, ev_col0: np.ndarray) -> np.ndarray:
+    n_ticks = all_timestamps_int.shape[0]
+    if n_ticks == 0 or ev_col0.shape[0] == 0:
+        return all_timestamps_int
+    pos = np.searchsorted(all_timestamps_int, ev_col0)
+    if pos[-1] >= n_ticks or not np.array_equal(all_timestamps_int[pos], ev_col0):
+        return all_timestamps_int
+    keep = np.zeros(n_ticks, dtype=bool)
+    keep[pos] = True
+    keep[pos[pos > 0] - 1] = True
+    keep[-1] = True
+    return all_timestamps_int[keep]
 
 
-def _build_signals_by_sid(ohlcv_arr: dict, signal_fn: callable, condition_banks: dict, symbols_by_sid: tuple) -> tuple:
-    signals = []
-    for sym in symbols_by_sid:
-        bank = condition_banks.get(sym) if condition_banks else None
-        signals.append(np.ascontiguousarray(signal_fn(ohlcv_arr[sym], live_trading=False, bank=bank), dtype=DTYPE))
-    return tuple(signals)
+def _build_full_period_ohlcv(ohlcv_arr: dict, signal_fn: callable, condition_banks: dict | None = None) -> dict:
+    ohlcv_arrays = {}
+    for sym, arr in ohlcv_arr.items():
+        bank    = condition_banks.get(sym) if condition_banks else None
+        signals = signal_fn(arr, live_trading=False, bank=bank)
+        ohlcv_arrays[sym] = {**arr, "signal": np.asarray(signals, dtype=DTYPE)}
+    return ohlcv_arrays
 
 
 def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sharpe: float, duration_is: float) -> dict:
@@ -138,7 +132,6 @@ def _get_worker_ctx(shm_metadata: dict) -> tuple:
 
     ohlcv_arr, shm_handles = arrays_from_shared_memory(shm_metadata)
     static_bundle   = prepare_static_arrays(ohlcv_arr)
-    static_bundle["calendar"] = _trading_calendar(ohlcv_arr, _global_day_grid(ohlcv_arr)[0])
     condition_banks = {sym: ConditionBank(arr) for sym, arr in ohlcv_arr.items()}
 
     if cache_key is None:
@@ -156,77 +149,73 @@ def _get_worker_ctx(shm_metadata: dict) -> tuple:
     _WORKER_CTX["key"], _WORKER_CTX["ctx"] = cache_key, ctx
     return ctx
 
-
 def _run_full_period_for_rule(
     rule_idx: int,
     specs: list,
     side: str,
     ctx: tuple,
-    engine_grid: tuple,
+    engine_params: list,
     combo_ids: list,
     order_amount: float,
     seg_rows: np.ndarray,
     seg_cols: list,
-    n_days_range: int,
+    global_start_day: np.datetime64,
+    n_combos: int,
 ) -> tuple:
 
     ohlcv_arr, static_bundle, condition_banks = ctx[0], ctx[1], ctx[2]
-    n_combos = len(combo_ids)
 
-    signal_fn = build_signal_fn(specs, side)
-    signals   = _build_signals_by_sid(ohlcv_arr, signal_fn, condition_banks, static_bundle["symbols_by_sid"])
-    signal_events, ev_short, timeline = build_rule_events(
-        signals, static_bundle["ts_int_2d"], static_bundle["sym_len"],
-        static_bundle["tick_pos_2d"], static_bundle["all_timestamps_int"], static_bundle["idx_workspace"],
-    )
-    if signal_events.shape[0] < BACKTEST_MIN_TRADES:
+    signal_fn           = build_signal_fn(specs, side)
+    ohlcv_arrays        = _build_full_period_ohlcv(ohlcv_arr, signal_fn, condition_banks)
+    max_possible_trades = sum(int(np.count_nonzero(arr["signal"])) for arr in ohlcv_arrays.values())
+    if max_possible_trades < BACKTEST_MIN_TRADES:
         return rule_idx, {**_empty_winner_metrics(), "best_combo_id": combo_ids[0]}
 
-    n_trades, day_start, n_days, n_nonzero, daily, duration = backtest_grid(
-        market_arrays(static_bundle), signal_events, ev_short, timeline,
-        *engine_grid,
-        float(INITIAL_BALANCE), float(COMISION) / 100.0, order_amount, BACKTEST_MIN_TRADES,
-        *static_bundle["calendar"], n_days_range,
-    )
+    engine_arrays = tuple(prepare_signal_arrays(static_bundle, ohlcv_arrays)[7])
+    engine_arrays = engine_arrays[:10] + (_compress_timeline(engine_arrays[10], engine_arrays[11]),) + engine_arrays[11:]
 
-    col_base = rule_idx * n_combos
-    neg_inf  = -np.inf
+    initial_balance = float(INITIAL_BALANCE)
+    comi_factor     = float(COMISION) / 100.0
+    col_base        = rule_idx * n_combos
+    neg_inf         = -np.inf
 
-    best_rank   = None
-    best_idx    = 0
-    best_valid  = False
-    best_sharpe = np.nan
+    best_rank = None
+    best_idx  = 0
+    best      = None
 
-    for combo_idx in range(n_combos):
-        combo_trades = int(n_trades[combo_idx])
-        if combo_trades == 0 or combo_trades < BACKTEST_MIN_TRADES:
-            rank, valid, sharpe_metric = neg_inf, False, np.nan
+    for combo_idx, (sell_after, tp_pct, sl_pct) in enumerate(engine_params):
+        core_output = backtest_core(*engine_arrays, initial_balance, comi_factor, order_amount, sell_after, tp_pct, sl_pct)
+
+        n_trades = core_output[0]
+        if n_trades == 0 or n_trades < BACKTEST_MIN_TRADES:
+            rank, bundle = neg_inf, None
         else:
-            start        = int(day_start[combo_idx])
-            stop         = start + int(n_days[combo_idx])
-            daily_values = daily[combo_idx, start:stop]
+            sell_time_int = core_output[4]
+            profits       = core_output[7]
+
+            daily_values, n_days, start_day = daily_values_from_sell_days(sell_time_int.view("datetime64[ns]"), profits)
 
             sharpe_metric = sharpe_from_daily_values(daily_values)
-            rank  = sharpe_metric if math.isfinite(sharpe_metric) else neg_inf
-            valid = True
+            rank = sharpe_metric if math.isfinite(sharpe_metric) else neg_inf
 
-            if n_nonzero[combo_idx] > 1:
+            if np.count_nonzero(daily_values) > 1:
                 # New segment pages are zero-filled by the OS: only the traded span is written.
-                seg_rows[len(seg_cols), start:stop] = daily_values
+                row_offset = int(_trading_days_between(global_start_day, start_day))
+                seg_rows[len(seg_cols), row_offset:row_offset + n_days] = daily_values.astype(np.float32)
                 seg_cols.append(col_base + combo_idx)
 
-        if best_rank is None or rank > best_rank:
-            best_rank, best_idx, best_valid, best_sharpe = rank, combo_idx, valid, sharpe_metric
+            bundle = (daily_values, n_days, sharpe_metric, core_output[2], sell_time_int)
 
-    if not best_valid:
+        if best_rank is None or rank > best_rank:
+            best_rank, best_idx, best = rank, combo_idx, bundle
+
+    if best is None:
         winner_metrics = _empty_winner_metrics()
     else:
-        best_trades      = int(n_trades[best_idx])
-        best_start       = int(day_start[best_idx])
-        best_n_days      = int(n_days[best_idx])
-        best_duration_is = float(np.mean(duration[best_idx, :best_trades])) / 1e9 / 86400.0
+        best_daily_values, best_n_days, best_sharpe_metric, best_buy, best_sell = best
+        best_duration_is = float(np.mean(best_sell - best_buy)) / 1e9 / 86400.0
         winner_metrics = _winner_metrics_from_daily_values(
-            daily[best_idx, best_start:best_start + best_n_days], best_n_days, best_sharpe, best_duration_is,
+            best_daily_values, best_n_days, best_sharpe_metric, best_duration_is,
         )
 
     return rule_idx, {**winner_metrics, "best_combo_id": combo_ids[best_idx]}
@@ -235,16 +224,17 @@ def _run_full_period_for_rule(
 def _run_rules_block_shm(
     block: tuple,
     shm_metadata: dict,
-    engine_grid: tuple,
+    engine_params: list,
     combo_ids: list,
     order_amount: float,
     seg_name: str,
     n_days_range: int,
+    global_start_day: np.datetime64,
+    n_combos: int,
 ) -> tuple:
     # Returns (rule results, valid column indices in segment order, non-zero day mask).
     rule_start, payloads = block
-    n_block  = len(payloads)
-    n_combos = len(combo_ids)
+    n_block = len(payloads)
 
     ctx = _get_worker_ctx(shm_metadata)
     seg = SharedMemory(name=seg_name, create=False)
@@ -254,7 +244,7 @@ def _run_rules_block_shm(
         results = [
             _run_full_period_for_rule(
                 rule_start + offset, specs, side, ctx,
-                engine_grid, combo_ids, order_amount, seg_rows, seg_cols, n_days_range,
+                engine_params, combo_ids, order_amount, seg_rows, seg_cols, global_start_day, n_combos,
             )
             for offset, (specs, side) in enumerate(payloads)
         ]
@@ -316,16 +306,17 @@ def run_full_period_search(
     ohlcv_arr: dict,
     param_grid: dict,
     order_amount: int,
+    global_start_day: np.datetime64,
     n_days_range: int,
     progress_label: str = "",
 ) -> tuple:
 
     desc = f"BACKTEST FULL   {progress_label}".strip()
 
-    combos      = _combo_grid(param_grid)
-    n_combos    = len(combos)
-    combo_ids   = [_combo_id(p) for p in combos]
-    engine_grid = _engine_grid(combos)
+    combos        = _combo_grid(param_grid)
+    n_combos      = len(combos)
+    combo_ids     = [_combo_id(p) for p in combos]
+    engine_params = [(int(p["SELL_AFTER"]), float(p["TP_PCT"]), float(p["SL_PCT"])) for p in combos]
 
     n_rules  = len(rules)
     row_size = n_days_range * np.dtype(np.float32).itemsize
@@ -348,8 +339,8 @@ def run_full_period_search(
             with tqdm(total=n_rules, desc=desc, dynamic_ncols=True) as pbar:
                 for block_results, block_cols, block_mask in Parallel(n_jobs=BACKTEST_N_JOBS, batch_size=1, pre_dispatch="all", return_as="generator")(
                     delayed(_run_rules_block_shm)(
-                        block, ohlcv_metadata, engine_grid, combo_ids, float(order_amount),
-                        seg_name, n_days_range,
+                        block, ohlcv_metadata, engine_params, combo_ids, float(order_amount),
+                        seg_name, n_days_range, global_start_day, n_combos,
                     )
                     for block, seg_name in zip(blocks, pending)
                 ):
@@ -404,10 +395,7 @@ def pipe_backtesting(
     _all_ts_dbg = np.concatenate([arr["ts"] for arr in ohlcv_arr.values()])
     logger.debug(f"BACKTEST FULL INPUT {timeframe}: date range [{_all_ts_dbg.min()} .. {_all_ts_dbg.max()}] over {len(ohlcv_arr)} symbol(s)")
 
-    _, n_days_range = _global_day_grid(ohlcv_arr)
-
-    if backtest_grid is None:
-        raise NotImplementedError(f"Backtester ZX_compute_BT_{settings.BACKTEST_MODE} does not implement the grid API (backtest_grid)")
+    global_start_day, n_days_range = _global_day_grid(ohlcv_arr)
 
     if not rules:
         return [], n_combos, np.empty((0, 0), dtype=np.float32), []
@@ -417,6 +405,7 @@ def pipe_backtesting(
         ohlcv_arr        = ohlcv_arr,
         param_grid       = param_grid,
         order_amount     = order_amount,
+        global_start_day = global_start_day,
         n_days_range     = n_days_range,
         progress_label   = timeframe,
     )

@@ -22,7 +22,6 @@ JACCARD_PRUNE_MARGIN   = 1e-4   # safety margin on the |A| window for pruning (o
 JACCARD_BATCH_SIZE     = 1000
 GPU_INITIAL_CAPACITY   = 20_000 # initial survivors buffer capacity, doubled on overflow
 SPEC_GATHER_BLOCK      = 256    # threads per block in the rule gather-AND kernel
-JACCARD_EXIT_CHECK     = 16     # tile passes between early-exit checks inside a candidate x survivor block
 
 
 def _spec_identity(spec: dict) -> tuple:
@@ -249,15 +248,8 @@ def _pairwise_intersection_gpu(words_a: cp.ndarray, words_b: cp.ndarray) -> cp.n
 
 
 _JACCARD_WINDOWED_SOURCE = r"""
-#define TILE        %d
-#define TILE_W      %d
-#define EXIT_CHECK  %d
-
-// Fresh read of a running max that other blocks update with atomicMax.
-__device__ __forceinline__ int load_fresh(const int* p)
-{
-    return *((const volatile int*)p);
-}
+#define TILE   %d
+#define TILE_W %d
 
 extern "C" __global__
 void jaccard_max_windowed(
@@ -270,17 +262,15 @@ void jaccard_max_windowed(
     const int* __restrict__ work_group,
     const int* __restrict__ work_start,
     const int* __restrict__ group_end,
-    int* max_bits,
+    int* __restrict__ max_bits,
     const int n_cand,
-    const int n_words,
-    const int skip_bits)
+    const int n_words)
 {
     // One block = TILE candidates (sorted by |A|) x TILE survivors from that group's |A| window.
     __shared__ unsigned long long tile_a[TILE][TILE_W + 1];
     __shared__ unsigned long long tile_b[TILE][TILE_W + 1];
     __shared__ int rows_a[TILE];
     __shared__ int rows_b[TILE];
-    __shared__ int row_done[TILE];
 
     const int group     = work_group[blockIdx.x];
     const int cand_base = group * TILE;
@@ -288,37 +278,25 @@ void jaccard_max_windowed(
     const int surv_end  = group_end[group];
     const int tid       = threadIdx.y * TILE + threadIdx.x;
 
-    // A candidate is done once its running max reaches skip_bits, a bound strictly above the
-    // threshold: it is already rejected, so its remaining pairs cannot change the decision.
     if (tid < TILE) {
         const int pos = cand_base + tid;
-        const int row = (pos < n_cand) ? cand_order[pos] : -1;
-        rows_a[tid]   = row;
-        row_done[tid] = (row < 0) || (load_fresh(&max_bits[row]) >= skip_bits);
+        rows_a[tid] = (pos < n_cand) ? cand_order[pos] : -1;
     } else if (tid < 2 * TILE) {
         const int pos = surv_base + (tid - TILE);
         rows_b[tid - TILE] = (pos < surv_end) ? surv_order[pos] : -1;
     }
-    if (__syncthreads_and(tid >= TILE || row_done[tid])) return;
+    __syncthreads();
 
     unsigned int accumulated = 0;
-    int tile_pass = 0;
 
-    for (int word_base = 0; word_base < n_words; word_base += TILE_W, ++tile_pass) {
-        if (tile_pass > 0 && tile_pass %% EXIT_CHECK == 0) {
-            if (tid < TILE && !row_done[tid]) {
-                row_done[tid] = (load_fresh(&max_bits[rows_a[tid]]) >= skip_bits);
-            }
-            if (__syncthreads_and(tid >= TILE || row_done[tid])) return;
-        }
-
+    for (int word_base = 0; word_base < n_words; word_base += TILE_W) {
         if (tid < TILE * TILE_W) {
             const int local_row   = tid / TILE_W;
             const int local_word  = tid %% TILE_W;
             const int global_row  = rows_a[local_row];
             const int global_word = word_base + local_word;
             tile_a[local_row][local_word] =
-                (!row_done[local_row] && global_word < n_words)
+                (global_row >= 0 && global_word < n_words)
                     ? cand_words[(size_t)global_row * n_words + global_word] : 0ULL;
         } else if (tid < 2 * TILE * TILE_W) {
             const int offset      = tid - TILE * TILE_W;
@@ -332,48 +310,34 @@ void jaccard_max_windowed(
         }
         __syncthreads();
 
-        // TILE == 32 == warp size: each warp is one candidate row, so this branch is warp-uniform.
-        if (!row_done[threadIdx.y]) {
-            for (int local_word = 0; local_word < TILE_W; ++local_word) {
-                accumulated += __popcll(tile_a[threadIdx.y][local_word] & tile_b[threadIdx.x][local_word]);
-            }
+        for (int local_word = 0; local_word < TILE_W; ++local_word) {
+            accumulated += __popcll(tile_a[threadIdx.y][local_word] & tile_b[threadIdx.x][local_word]);
         }
         __syncthreads();
     }
 
     // Same float32 ops as the former CuPy epilogue: U = (|A| + |B|) - I ; J = (U == 0) ? 1 : I / U
-    // A row that went done mid-block holds a partial count, so it publishes nothing.
-    const int  row_a = rows_a[threadIdx.y];
-    const int  row_b = rows_b[threadIdx.x];
-    const bool live  = !row_done[threadIdx.y];
+    const int row_a = rows_a[threadIdx.y];
+    const int row_b = rows_b[threadIdx.x];
     int best = 0;  // bits of 0.0f; non-negative floats order like their int bit patterns
-    if (live && row_b >= 0) {
+    if (row_a >= 0 && row_b >= 0) {
         const float inter = __uint2float_rn(accumulated);
         const float uni   = __fsub_rn(__fadd_rn(cand_sums[row_a], surv_sums[row_b]), inter);
         const float jac   = (uni == 0.0f) ? 1.0f : __fdiv_rn(inter, uni);
         if (jac > 0.0f) best = __float_as_int(jac);
     }
 
-    // Each warp is one candidate row -> warp max, one atomic per row.
+    // TILE == 32 == warp size: each warp is one candidate row -> warp max, one atomic per row.
     for (int offset = 16; offset > 0; offset >>= 1) {
         best = max(best, __shfl_xor_sync(0xffffffffu, best, offset));
     }
-    if (threadIdx.x == 0 && live && best > 0) {
+    if (threadIdx.x == 0 && best > 0) {
         atomicMax(&max_bits[row_a], best);
     }
 }
-""" % (JACCARD_TILE, JACCARD_TILE_WORDS, JACCARD_EXIT_CHECK)
+""" % (JACCARD_TILE, JACCARD_TILE_WORDS)
 
 _JACCARD_WINDOWED_KERNEL = cp.RawKernel(_JACCARD_WINDOWED_SOURCE, "jaccard_max_windowed")
-
-
-def _early_exit_bits(threshold: float) -> int:
-
-    # Smallest float32 above float32(threshold): a running max at or above it is rejected by
-    # `max_jaccard <= threshold` whether that comparison runs in float32 or in float64.
-    if not (0.0 < threshold < 1.0):
-        return int(np.iinfo(np.int32).max)  # J <= 1 never reaches it: early exit disabled
-    return int(np.nextafter(np.float32(threshold), np.float32(np.inf)).view(np.int32))
 
 
 def _survivor_work_items(
@@ -403,20 +367,7 @@ def _survivor_work_items(
     n_work     = int(n_tiles.sum())
     work_group = np.repeat(np.arange(n_groups, dtype=np.int32), n_tiles)
     tile_rank  = np.arange(n_work) - np.repeat(np.cumsum(n_tiles) - n_tiles, n_tiles)
-
-    # Visit each group's tiles center-out (closest |A| first, alternating sides): near-duplicates are found
-    # early, so later tiles skip candidates already rejected. Only the visiting order changes, never the tile set.
-    center_pos  = np.searchsorted(surv_cards_sorted, (group_min + group_max) / 2.0, side="left")
-    center_tile = np.clip((center_pos - win_start) // JACCARD_TILE, 0, np.maximum(n_tiles - 1, 0))
-    n_left      = center_tile
-    n_right     = np.maximum(n_tiles - 1 - center_tile, 0)
-    n_both      = np.repeat(np.minimum(n_left, n_right), n_tiles)
-    alternating = tile_rank <= 2 * n_both
-    step        = np.where(alternating, (tile_rank + 1) // 2, tile_rank - n_both)
-    go_left     = np.where(alternating, tile_rank % 2 == 1, np.repeat(n_left > n_right, n_tiles))
-    tile_index  = np.repeat(center_tile, n_tiles) + np.where(go_left, -step, step)
-    work_start  = (np.repeat(win_start, n_tiles) + tile_index * JACCARD_TILE).astype(np.int32)
-
+    work_start = (np.repeat(win_start, n_tiles) + tile_rank * JACCARD_TILE).astype(np.int32)
     return work_group, work_start, win_end.astype(np.int32)
 
 
@@ -448,27 +399,9 @@ def _max_jaccard_vs_survivors_gpu(
             (batch_gpu, batch_sums, cp.asarray(cand_order),
              survivors_gpu, survivor_sums_gpu, cp.asarray(surv_rows_sorted),
              cp.asarray(work_group), cp.asarray(work_start), cp.asarray(group_end),
-             max_bits, np.int32(n_batch_cols), np.int32(n_words), np.int32(_early_exit_bits(threshold))),
+             max_bits, np.int32(n_batch_cols), np.int32(n_words)),
         )
     return max_bits.view(cp.float32), n_work * JACCARD_TILE * JACCARD_TILE
-
-
-def _greedy_keep_within(intra_jaccard: np.ndarray, threshold: float) -> np.ndarray:
-
-    # Same decision as `intra_jaccard[i, kept].max() > threshold`, compared in the dtype NumPy uses
-    # for that scalar comparison (float64 on NumPy 1.x, the array dtype on NumPy 2.x).
-    cmp_dtype = np.result_type(intra_jaccard.dtype.type(0), threshold)
-    conflict  = np.ascontiguousarray((intra_jaccard.astype(cmp_dtype) > cmp_dtype.type(threshold)).T)
-
-    n_rows      = intra_jaccard.shape[0]
-    keep_within = np.zeros(n_rows, dtype=bool)
-    blocked     = np.zeros(n_rows, dtype=bool)  # blocked[i]: some kept j < i has J(i, j) > threshold
-    for i in range(n_rows):
-        if blocked[i]:
-            continue
-        keep_within[i] = True
-        blocked |= conflict[i]
-    return keep_within
 
 
 def _jaccard_filter_side_gpu(
@@ -531,7 +464,14 @@ def _jaccard_filter_side_gpu(
             intra_safe_union = cp.where(intra_empty_pair_mask, 1.0, intra_union)
             intra_jaccard = cp.asnumpy(cp.where(intra_empty_pair_mask, 1.0, intra_intersection / intra_safe_union))
 
-            keep_within = _greedy_keep_within(intra_jaccard, threshold)
+            keep_within = np.zeros(n_accepted, dtype=bool)
+            accepted_within = []
+            for i in range(n_accepted):
+                if accepted_within and intra_jaccard[i, accepted_within].max() > threshold:
+                    continue
+                keep_within[i] = True
+                accepted_within.append(i)
+
             final_local = cp.asnumpy(accepted_local)[keep_within]
         else:
             final_local = np.array([], dtype=np.int64)
@@ -556,11 +496,14 @@ def _jaccard_filter_side_gpu(
 
         survivor_chunks.append(batch_start + final_local)
 
+        del batch_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+
     del survivors_gpu, survivor_sums_gpu
     cp.get_default_memory_pool().free_all_blocks()
 
     if pairs_total:
-        logger.debug(f"JACCARD PRUNE   {timeframe}: {pairs_computed / pairs_total:.1%} of candidate-survivor pairs scheduled (prune={prune})")
+        logger.debug(f"JACCARD PRUNE   {timeframe}: {pairs_computed / pairs_total:.1%} of candidate-survivor pairs computed (prune={prune})")
 
     return np.concatenate(survivor_chunks) if survivor_chunks else np.array([], dtype=np.int64)
 

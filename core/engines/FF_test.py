@@ -2,15 +2,14 @@
 import time
 import logging
 import numpy as np
-from pipeline.stepM_is import compute_bootstrap_null, WHITE_N_BOOTSTRAP
-from pipeline.stepM_is import WHITE_BLOCK_SIZE, RANDOM_SEED, CROSS_SECTIONAL_PERCENTILES
+from pipeline.stepM_is import compute_bootstrap_null, resolve_stepm_block_size, WHITE_N_BOOTSTRAP
+from pipeline.stepM_is import RANDOM_SEED, CROSS_SECTIONAL_PERCENTILES
 logger = logging.getLogger("BOT_batch.pipeline.FF_test")
 
 # =============================================================================
 # CONFIG — every knob that affects the null is inherited from stepM.py so the
 # =============================================================================
 FF_N_BOOTSTRAP    = WHITE_N_BOOTSTRAP
-FF_BLOCK_SIZE     = WHITE_BLOCK_SIZE
 FF_RANDOM_SEED    = RANDOM_SEED
 FF_MIN_PERCENTILE = 90      # lowest percentile of the table: the top-M kept per replica is ~(100 - it)% of the columns
 FF_PERCENTILES    = CROSS_SECTIONAL_PERCENTILES[CROSS_SECTIONAL_PERCENTILES >= FF_MIN_PERCENTILE]
@@ -105,7 +104,7 @@ def pipe_FF_test(
     n_bootstrap: int = FF_N_BOOTSTRAP,
     percentiles: np.ndarray = FF_PERCENTILES,
     seed: int = FF_RANDOM_SEED,
-    block_size: int = FF_BLOCK_SIZE,
+    block_size: int = None,
     enabled: bool = True,
     timeframe: str = "",
 ) -> dict:
@@ -122,6 +121,8 @@ def pipe_FF_test(
             f"FF BOOTSTRAP ── {timeframe} ── n_obs ({matrix_arr.shape[0]}) must be >= 2 "
             f"to compute a sample variance."
         )
+    if block_size is None:
+        block_size = resolve_stepm_block_size(timeframe, col_names)
     if block_size > matrix_arr.shape[0]:
         raise ValueError(
             f"FF BOOTSTRAP ── {timeframe} ── block_size ({block_size}) exceeds "
