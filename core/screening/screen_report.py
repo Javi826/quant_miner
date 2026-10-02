@@ -660,8 +660,9 @@ def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, 
     if list(entry) != top:
         raise RuntimeError("_top_candidates is out of sync with top_list")
     top_symbols = _report_symbols(raw["symbols"], [sym_of(entry[nm])[1] for nm in top])
-    return {"selected": selected, "pruned": pruned, "top": top, "symbols": top_symbols, "rules": rules}
-
+    passes = {nm: [str(raw["symbols"][k]) for k in np.flatnonzero(sym_of(entry[nm])[1])] for nm in top}   # per TOP indicator
+    return {"selected": selected, "pruned": pruned, "top": top, "symbols": top_symbols, "rules": rules,
+            "passes": passes}
 
 def exclude_indicators(raw, exclude):
     """Raw results without the excluded indicators and every pair with them: the same as computing without them."""

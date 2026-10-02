@@ -43,7 +43,7 @@ from setup.config_backtest import ORDER_AMOUNT
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from signals.indicators_bank import ConditionBank
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
-from rule_mining.rule_runner import _build_rule_dicts
+from rule_mining.rule_runner import build_rule_templates, build_rule_dicts
 from pipeline import backtest_runner as backtest_module
 from pipeline import wfo as wfo_module
 from pipeline import stepM_is as stepm_module
@@ -131,11 +131,15 @@ def make_fixed_signal_fn(ts_ns: np.ndarray, signal: np.ndarray):
     return signal_fn
 
 
-def build_rules(sym: str, timeframe: str, sym_idx: int) -> tuple:
+def load_is_arrays(sym: str, timeframe: str) -> dict:
+    data_is = build_universe(DATA_FOLDER_BY_DATASET["IS"], {timeframe: [sym]}, dataset="IS")[timeframe]
+    return prepare_ohlcv_arrays(data_is)
+
+
+def build_rules(rule_templates: list, sym: str, timeframe: str, sym_idx: int) -> tuple:
     combo_key = f"{timeframe}_{sym}"
-    data_is   = build_universe(DATA_FOLDER_BY_DATASET["IS"], {timeframe: [sym]}, dataset="IS")[timeframe]
-    arr_is    = prepare_ohlcv_arrays(data_is)
-    rules     = _build_rule_dicts(data_is, combo_key, timeframe, RULE_MAX_DEPTH)
+    arr_is    = load_is_arrays(sym, timeframe)
+    rules     = build_rule_dicts(rule_templates, combo_key, timeframe)
     rules     = pipe_signal_cleaning_jaccard(rules=rules, ohlcv_arr=arr_is, timeframe=timeframe)
 
     bank_is    = ConditionBank(arr_is[sym])
@@ -310,11 +314,12 @@ def run_timeframe(timeframe: str) -> None:
     n_cols  = {sa: [] for sa in SELL_AFTER}
     n_days  = {sa: [] for sa in SELL_AFTER}
     t_side  = {(sa, side): [] for sa in SELL_AFTER for side in ("long", "short")}
+    rule_templates = build_rule_templates(load_is_arrays(symbols[0], timeframe), timeframe, RULE_MAX_DEPTH)
 
     for g, group in enumerate(symbol_groups(symbols), start=1):
         data_oos, rules_by_sym = {}, {}
         for sym in group:
-            rules, n_jaccard, n_eligible = build_rules(sym, timeframe, symbols.index(sym))
+            rules, n_jaccard, n_eligible = build_rules(rule_templates, sym, timeframe, symbols.index(sym))
             data_oos[sym] = build_universe(DATA_FOLDER_BY_DATASET["OOS"], {timeframe: [sym]}, dataset="OOS")[timeframe][sym]
             arr_oos       = prepare_ohlcv_arrays({sym: data_oos[sym]})[sym]
             if rules:

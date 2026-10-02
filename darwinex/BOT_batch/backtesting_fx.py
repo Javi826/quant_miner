@@ -63,25 +63,59 @@ TIMEFRAMES = ["1H","4H"]
 
 SYMBOL_COMBOS_BY_TIMEFRAME = {
     "1H": [
-    ["GBPJPY"],
-    ["AUDCAD", "EURAUD"],
+        ["GBPJPY"],
+        ["AUDCAD", "EURAUD"],
+        ["USDJPY", "EURAUD"],
+        ["USDJPY"],
+        ["EURAUD"],
+        ["AUDCAD", "EURGBP"],
+        ["USDJPY", "EURCAD"],
+        ["EURGBP", "NZDJPY"],
+        ["USDJPY", "AUDUSD"],
+        ["USDJPY", "NZDJPY"],
+        ["AUDUSD", "EURGBP"],
+        ["AUDUSD", "EURAUD"],
+        ["GBPJPY", "USDJPY"],
+        ["GBPJPY", "AUDJPY"],
+        ["AUDJPY", "EURAUD"],
+        ["GBPJPY", "EURGBP"],
+        ["GBPJPY", "EURCAD"],
+        ["EURGBP"],
+        ["EURAUD", "GBPCAD"],
+        ["USDJPY", "EURGBP"],
+        ["EURGBP", "GBPCAD"],
+        ["EURAUD", "EURCAD"],
+        ["GBPJPY", "EURAUD"],
+        ["AUDCAD", "NZDJPY"],
+        ["AUDJPY", "USDJPY"],
+        ["AUDJPY"],
+        ["AUDJPY", "EURCAD"],
+        ["NZDJPY"],
+        ["AUDCAD", "AUDJPY"],
+        ["AUDCAD", "AUDUSD"],
     ],
     "4H": [
-    ["GBPJPY"],
-    ["GBPJPY", "AUDJPY"],
-    ]
+        ["GBPJPY"],
+        ["GBPJPY", "AUDJPY"],
+        ["AUDJPY", "EURCAD"],
+        ["GBPJPY", "AUDCAD"],
+        ["GBPJPY", "EURCAD"],
+        ["AUDJPY"],
+        ["EURCAD", "GBPCHF"],
+        ["AUDJPY", "GBPCHF"],
+    ],
 }
 
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
         "SELL_AFTER": [100],
-        "TP_PCT":     [1.3,1.5,1.7],
-        "SL_PCT":     [0.3,0.5,0.7],
+        "TP_PCT":     [1.5,1.5,1.5],
+        "SL_PCT":     [0.5,0.5,0.5],
     },
     "4H": {
         "SELL_AFTER": [40],
-        "TP_PCT":     [0.8,1.0,1.2],
-        "SL_PCT":     [0.3,0.5,0.7],
+        "TP_PCT":     [1.0,1.0,1.0],
+        "SL_PCT":     [0.5,0.5,0.5],
     },
 }
 

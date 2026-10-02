@@ -5,29 +5,30 @@ from indicators.indicators_pool import CANDIDATE_REGISTRY, build_flat_specs, ins
 # =============================================================================
 # SELECTED INDICATORS — manual curation after reading the screening printout.
 # =============================================================================
+
 SELECTED_INDICATORS_BY_TIMEFRAME = {
     "1H": [
-        "ichimoku_price_vs_cloud",
-        "close_pos_in_bar",
-        "donchian_pos",
-        "ma_dist",
-        "vortex",
-        "bb_pctb",
         "bb_pctb_slope",
-        "ppo",
+        "ichimoku_cloud_thickness",
+        "ichimoku_price_vs_cloud",
+        "vol_of_vol",
+        "range_expansion",
+        "macd_hist",
+        "tpo_density",
+        "ichimoku_tenkan_K",
+        "return_entropy",
     ],
     "4H": [
-        "close_pos_in_bar",
-        "bb_pctb",
-        "open_close_momentum",
         "inside_outside_ratio",
+        "open_close_momentum",
+        "range_expansion",
+        "bb_bandwidth",
         "acceleration",
-        "donchian_pos",
-        "ichimoku_price_vs_cloud",
+        "return_entropy",
         "pivot_dist",
+        "donchian_width",
     ],
 }
-
 def _compare(value: np.ndarray, op: str, threshold: float) -> np.ndarray:
     return value > threshold if op == ">" else value < threshold
 

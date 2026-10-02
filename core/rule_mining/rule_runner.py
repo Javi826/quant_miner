@@ -1,12 +1,11 @@
 # core/rule_mining/rule_runner.py NEW
 import os
 import logging
-from utils.ohlcv_utils import prepare_ohlcv_arrays
 from pipeline.wfo import pipe_wfo, block_sell_after_grid
 from pipeline.backtest_runner import pipe_backtesting
 from pipeline.stepM_is import pipe_stepm
 from pipeline.stepM_oos import pipe_stepm_oos
-from pipeline.correlation import pipe_correlation_oos, pipe_correlation_is
+from pipeline.correlation import pipe_correlation_oos
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from utils.plotting import plot_rule_mining_filter_comparison, plot_rule_mining_portfolio_comparison
 from setup.config_backtest import INITIAL_BALANCE
@@ -28,27 +27,28 @@ def _slugify_label(label: str) -> str:
     return slug
 
 
-def _build_rule_id(i: int, combo_key: str, rule: dict) -> str:
-    return f"{i:06d}_{combo_key}_{rule['side']}_{_slugify_label(rule['label'])}"
+def _build_rule_id(i: int, combo_key: str, side: str, slug: str) -> str:
+    return f"{i:06d}_{combo_key}_{side}_{slug}"
 
 
-def _build_rule_dicts(ohlcv_data: dict, combo_key: str, timeframe: str, max_depth: int) -> list:
-
-    sample_sym = next(iter(ohlcv_data))
-    arr_sample = prepare_ohlcv_arrays({sample_sym: ohlcv_data[sample_sym]})[sample_sym]
+def build_rule_templates(ohlcv_arr: dict, timeframe: str, max_depth: int = MAX_DEPTH) -> list:
+    arr_sample = next(iter(ohlcv_arr.values()))
     all_rules  = generate_all_rules(arr_sample, max_depth=max_depth, timeframe=timeframe)
+    return [{**rule, "slug": _slugify_label(rule["label"])} for rule in all_rules]
 
+
+def build_rule_dicts(rule_templates: list, combo_key: str, timeframe: str) -> list:
     return [
         {
-            "rule_id":   _build_rule_id(i, combo_key, rule),
+            "rule_id":   _build_rule_id(i, combo_key, tpl["side"], tpl["slug"]),
             "combo_key": combo_key,
             "timeframe": timeframe,
-            "side":      rule["side"],
-            "specs":     rule["specs"],
-            "signal_fn": rule["signal_fn"],
-            "label":     rule["label"],
+            "side":      tpl["side"],
+            "specs":     tpl["specs"],
+            "signal_fn": tpl["signal_fn"],
+            "label":     tpl["label"],
         }
-        for i, rule in enumerate(all_rules)
+        for i, tpl in enumerate(rule_templates)
     ]
 
 def _empty_wfo_fields() -> dict:
@@ -94,11 +94,13 @@ def run_rule_mining_pipeline(
     # BACKTESTING — one combo at a time, ALL combos before moving on.
     # -------------------------------------------------------------------
     all_mbias_results = []
+    templates_tf, rule_templates = None, None
     for combo in combos:
         combo_key, timeframe = combo["combo_key"], combo["timeframe"]
-        rules = _build_rule_dicts(
-            ohlcv_data_is_by_combo[combo_key], combo_key, timeframe, max_depth,
-        )
+        if timeframe != templates_tf:
+            templates_tf   = timeframe
+            rule_templates = build_rule_templates(ohlcv_arr_is_by_combo[combo_key], timeframe, max_depth)
+        rules = build_rule_dicts(rule_templates, combo_key, timeframe)
         logger.info(f"\n\033[36m{'─' * 70}")
         logger.info(f"─ RULE MINING ── {combo_key} {combo['symbols']} ── rules: {format(len(rules), ',').replace(',', '.')}")
         logger.info(f"{'─' * 70}\033[0m")
@@ -124,38 +126,23 @@ def run_rule_mining_pipeline(
             timeframe   = timeframe,
         )
 
-        mbias_results = pipe_correlation_is(
-            rules      = mbias_results,
-            matrix_arr = matrix_arr,
-            col_names  = col_names,
-            label      = timeframe,
-        )
-
         del raw_results, matrix_arr
 
         all_mbias_results.extend([{**r, **_empty_wfo_fields()} for r in mbias_results])
 
-    passed_mbias_ids  = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"]}
-    passed_decorr_ids = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"] and r["passed_decorr_is"]}
+    passed_mbias_ids = {r["rule_id"] for r in all_mbias_results if r["passed_mbias"]}
 
     print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-MBIAS", scope="IS", survivor_ids=list(passed_mbias_ids))
     print_rule_mining_min_by_group_is(
         [r for r in all_mbias_results if r["passed_mbias"]], "POST-MBIAS (pre-WFO)",
         all_mbias_results,
     )
-
-    print_rule_mining_ranking(all_mbias_results, list(passed_mbias_ids), "POST-CORRELATION", scope="IS", survivor_ids=list(passed_decorr_ids))
-    print_rule_mining_min_by_group_is(
-        [r for r in all_mbias_results if r["rule_id"] in passed_decorr_ids], "POST-CORRELATION (pre-WFO)",
-        [r for r in all_mbias_results if r["passed_mbias"]],
-    )
-
     wfo_by_id = {}
     for combo in combos:
         combo_key, timeframe = combo["combo_key"], combo["timeframe"]
         rules_this_combo = [
             r for r in all_mbias_results
-            if r["combo_key"] == combo_key and r["passed_mbias"] and r["passed_decorr_is"]
+            if r["combo_key"] == combo_key and r["passed_mbias"]
         ]
 
         wfo_results = pipe_wfo(

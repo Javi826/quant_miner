@@ -29,7 +29,7 @@ def print_rule_mining_min_by_group_is(rows: list, stage_label: str, candidate_ro
     total_pass_pct    = n_total_passed / n_total_candidate if n_total_candidate else 0.0
 
     logger.info(f"\n{'─' * 142}")
-    logger.info(f"  RULE MINING RESULTS (IS) — {stage_label} ── {n_total_passed} / {n_total_candidate} passed ({total_pass_pct:.1%}) ✅")
+    logger.info(f"  RULE MINING RESULTS (IS) — {stage_label} ── {format_thousands(n_total_passed)} / {format_thousands(n_total_candidate)} passed ({total_pass_pct:.1%}) ✅")
     logger.info(f"{'─' * 142}")
     logger.info(
         f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}{'PASS%':<9}"
@@ -145,7 +145,8 @@ def print_all_curves_table(
     ]
     logger.info("\n".join(lines))
 
-
+def format_thousands(value: int) -> str:
+    return f"{value:,}".replace(",", ".")
 # =============================================================================
 # WFO SUMMARY
 # =============================================================================
@@ -312,8 +313,11 @@ def print_rule_mining_ranking(all_raw_results: list, candidate_ids: list, stage_
     status_width = 10 if show_status else 0
     table_width  = id_width + sum(width for _, _, _, width in columns) + label_width + status_width
 
-    count_str = f"{len(survivor_ids)} / {len(candidate_ids)} passed" if show_status else f"{len(rows)} / {len(candidate_ids)} tested"
-
+    count_str = (
+        f"{format_thousands(len(survivor_ids))} / {format_thousands(len(candidate_ids))} passed"
+        if show_status
+        else f"{format_thousands(len(rows))} / {format_thousands(len(candidate_ids))} tested"
+    )
     log_fn(f"\n{'─' * table_width}")
     log_fn(f"  RULE MINING RESULTS ({scope}) — {stage_label} ── {count_str}")
     log_fn(f"{'─' * table_width}")
@@ -364,7 +368,7 @@ def print_rule_mining_min_by_group(all_raw_results: list, highlight_ids: list, s
     total_pass_pct    = n_total_passed / n_total_candidate if n_total_candidate else 0.0
 
     logger.info(f"\n{'─' * 142}")
-    logger.info(f"  RULE MINING RESULTS (OOS) — {stage_label} ── {n_total_passed} / {n_total_candidate} passed ({total_pass_pct:.1%}) ✅")
+    logger.info(f"  RULE MINING RESULTS (OOS) — {stage_label} ── {format_thousands(n_total_passed)} / {format_thousands(n_total_candidate)} passed ({total_pass_pct:.1%}) ✅")
     logger.info(f"{'─' * 142}")
     logger.info(
         f"{'TIMEFRAME':<12}{'SIDE':<8}{'N':<6}{'PASS%':<9}"

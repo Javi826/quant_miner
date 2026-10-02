@@ -39,7 +39,7 @@ from setup.config_backtest import ORDER_AMOUNT
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from signals.indicators_bank import ConditionBank
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
-from rule_mining.rule_runner import _build_rule_dicts
+from rule_mining.rule_runner import build_rule_templates, build_rule_dicts
 from pipeline import backtest_runner as backtest_module
 from pipeline import stepM_is as stepm_module
 from pipeline.backtest_runner import _combo_id
@@ -111,8 +111,8 @@ def make_fixed_signal_fn(signal: np.ndarray):
     return signal_fn
 
 
-def build_rules(data: dict, ohlcv_arr: dict, sym: str, combo_key: str, timeframe: str) -> tuple:
-    rules = _build_rule_dicts(data, combo_key, timeframe, RULE_MAX_DEPTH)
+def build_rules(rule_templates: list, ohlcv_arr: dict, sym: str, combo_key: str, timeframe: str) -> tuple:
+    rules = build_rule_dicts(rule_templates, combo_key, timeframe)
     rules = pipe_signal_cleaning_jaccard(rules=rules, ohlcv_arr=ohlcv_arr, timeframe=timeframe)
 
     arr, bank = ohlcv_arr[sym], ConditionBank(ohlcv_arr[sym])
@@ -242,12 +242,15 @@ def run_timeframe(timeframe: str) -> None:
     tests  = build_tests()
     p_values = {(sa, block): [] for sa in tests for block in BLOCKS}
     n_cols   = {sa: [] for sa in tests}
+    rule_templates = None
 
     for i, sym in enumerate(SYMBOLS_BY_TIMEFRAME[timeframe]):
         combo_key = f"{timeframe}_{sym}"
         data      = build_universe(folder, {timeframe: [sym]}, dataset=DATASET)[timeframe]
         ohlcv_arr = prepare_ohlcv_arrays(data)
-        rules, n_jaccard, n_eligible = build_rules(data, ohlcv_arr, sym, combo_key, timeframe)
+        if rule_templates is None:
+            rule_templates = build_rule_templates(ohlcv_arr, timeframe, RULE_MAX_DEPTH)
+        rules, n_jaccard, n_eligible = build_rules(rule_templates, ohlcv_arr, sym, combo_key, timeframe)
         logger.info(f"\n{timeframe} {sym}: {len(rules)} rules (sampled from {n_eligible} with >= "
                     f"{backtest_module.BACKTEST_MIN_TRADES} signals, {n_jaccard} after Jaccard)")
         if len(rules) == 0:

@@ -9,9 +9,8 @@ import logging
 import warnings
 import numpy as np
 import pandas as pd
-cimport cython
 cimport numpy as np
-from libc.limits cimport LONG_MIN, LONG_MAX
+from libc.math cimport HUGE_VAL
 from libc.stdlib cimport malloc, free
 from libc.string cimport memcpy
 from libc.stdint cimport uint64_t
@@ -25,29 +24,19 @@ EXIT_REASON_NAMES   = np.array(['SELL_AFTER', 'TP', 'SL', 'END_OF_DATA'], dtype=
 POSITION_TYPE_NAMES = np.array(['LONG', 'SHORT'], dtype=object)
 
 # ============================================================
-# C-level search helpers
+# C-level binary search helpers  (replaces np.searchsorted)
 # ============================================================
-cdef inline Py_ssize_t _lower_bound(const long* arr, Py_ssize_t lo, Py_ssize_t n, long val) noexcept nogil:
-    # first index i >= lo with arr[i] >= val; gallops from lo, so it is cheap when the answer is close
-    cdef Py_ssize_t step = 1, hi, mid
-    if lo >= n or arr[lo] >= val:
-        return lo
-    hi = lo + 1
-    while hi < n and arr[hi] < val:
-        lo    = hi
-        step <<= 1
-        hi    = lo + step
-    if hi > n:
-        hi = n
-    lo += 1
+
+cdef int _searchsorted_right(long* arr, long val, int n) noexcept nogil:
+    # first index i where arr[i] > val (right side)
+    cdef int lo = 0, hi = n, mid
     while lo < hi:
         mid = (lo + hi) >> 1
-        if arr[mid] < val:
+        if arr[mid] <= val:
             lo = mid + 1
         else:
             hi = mid
     return lo
-
 # ============================================================
 # Manual min-heap over (time, counter) -> slot  (replaces heapq of dicts)
 # ============================================================
@@ -122,6 +111,73 @@ cdef inline int _heap_pop(
     return slot
 
 
+cdef inline void _detect_intrabar_exit_cy(
+    float* high_row,
+    float* low_row,
+    long*   high_time_row,
+    long*   low_time_row,
+    int buy_idx, int sell_idx,
+    double tp_price, double sl_price,
+    bint is_short, bint scan_to_last,
+    bint* out_intra, int* out_idx, int* out_reason, double* out_price
+) noexcept nogil:
+    cdef int bi, tp_first, sl_first, scan_last
+    cdef long tp_t, sl_t
+
+    tp_first = -1
+    sl_first = -1
+
+    if scan_to_last:
+        scan_last = sell_idx
+    else:
+        scan_last = sell_idx - 1
+
+    if is_short:
+        for bi in range(buy_idx, scan_last + 1):
+            if tp_first < 0 and low_row[bi] <= tp_price:
+                tp_first = bi
+            if sl_first < 0 and high_row[bi] >= sl_price:
+                sl_first = bi
+            if tp_first >= 0 or sl_first >= 0:
+                break
+    else:
+        for bi in range(buy_idx, scan_last + 1):
+            if tp_first < 0 and high_row[bi] >= tp_price:
+                tp_first = bi
+            if sl_first < 0 and low_row[bi] <= sl_price:
+                sl_first = bi
+            if tp_first >= 0 or sl_first >= 0:
+                break
+
+    if tp_first < 0 and sl_first < 0:
+        out_intra[0]  = False
+        out_idx[0]    = -1
+        out_reason[0] = 0
+        out_price[0]  = 0.0
+        return
+
+    if tp_first >= 0 and sl_first >= 0:
+        if tp_first == sl_first:
+            if is_short:
+                tp_t = low_time_row[tp_first]
+                sl_t = high_time_row[sl_first]
+            else:
+                tp_t = high_time_row[tp_first]
+                sl_t = low_time_row[sl_first]
+            if tp_t <= sl_t:
+                out_intra[0] = True; out_idx[0] = tp_first; out_reason[0] = 1; out_price[0] = tp_price
+            else:
+                out_intra[0] = True; out_idx[0] = sl_first; out_reason[0] = 2; out_price[0] = sl_price
+        elif sl_first < tp_first:
+            out_intra[0] = True; out_idx[0] = sl_first; out_reason[0] = 2; out_price[0] = sl_price
+        else:
+            out_intra[0] = True; out_idx[0] = tp_first; out_reason[0] = 1; out_price[0] = tp_price
+    elif sl_first >= 0:
+        out_intra[0] = True; out_idx[0] = sl_first; out_reason[0] = 2; out_price[0] = sl_price
+    else:
+        out_intra[0] = True; out_idx[0] = tp_first; out_reason[0] = 1; out_price[0] = tp_price
+
+
 # ============================================================
 # Static market arrays  (built once per data window)
 # ============================================================
@@ -190,36 +246,12 @@ def prepare_static_arrays(ohlcv_arrays):
     }
 
 
-def _day_index_2d(ts_int_2d, sym_len, trading_index, long table_first, long base_index):
-    # trading-day index (relative to the global start day) of every bar; padding bars stay at 0
-    ts_np  = np.asarray(ts_int_2d)
-    ti_np  = np.asarray(trading_index, dtype=np.int64)
-    day_2d = np.zeros(ts_np.shape, dtype=np.int64)
-    for sid in range(ts_np.shape[0]):
-        n = int(sym_len[sid])
-        if n > 0:
-            day_2d[sid, :n] = ti_np[ts_np[sid, :n] // _NS_PER_DAY - table_first] - base_index
-    return day_2d
-
-
 def market_arrays(static_bundle):
-    # the per-bar trading day is computed once per data window (when the bundle carries a calendar) and cached
-    day_2d = static_bundle.get("day_2d")
-    if day_2d is None:
-        if "calendar" in static_bundle:
-            trading_index, table_first, base_index = static_bundle["calendar"]
-            day_2d = _day_index_2d(
-                static_bundle["ts_int_2d"], static_bundle["sym_len"], trading_index, table_first, base_index,
-            )
-            static_bundle["day_2d"] = day_2d
-        else:
-            day_2d = np.zeros((0, 0), dtype=np.int64)
     return (
         static_bundle["open_2d"], static_bundle["close_2d"],
         static_bundle["high_2d"], static_bundle["low_2d"],
         static_bundle["high_time_2d"], static_bundle["low_time_2d"],
         static_bundle["ts_int_2d"], static_bundle["sym_len"],
-        static_bundle["tick_pos_2d"], static_bundle["all_timestamps_int"], day_2d,
     )
 
 
@@ -365,49 +397,29 @@ def build_rule_events(
         free(ends)
 
 
+cdef inline long _floor_div(long a, long b) noexcept nogil:
+    cdef long q = a / b
+    if (a % b != 0) and ((a < 0) != (b < 0)):
+        q -= 1
+    return q
+
+
 # ============================================================
 # Simulation engine  (NO_PYRAMID: new entries only when every position is closed)
-#
-#   * First-touch memo, shared by every combo of the rule: for each event, the bar where each TP / SL
-#     level is first touched. Each event is scanned once, up to the furthest bar any combo asks for.
-#   * Per combo, the engine jumps from batch to batch: nothing can happen while a batch is open.
-#   * Lockstep: every combo advances through the same block of bars before moving to the next block, so
-#     the market and the memo are read from cache by all combos instead of from RAM once per combo.
-# Bars, prices, exit rules and the order of every floating-point operation match the tick-by-tick engine.
 # ============================================================
-cdef enum:
-    _BLOCK_BARS = 256   # global bars per lockstep block
-
-
-cdef struct _ComboState:
-    double     cash_bank
-    double     blocked_cash
-    long       counter
-    long       min_time       # first entry time allowed for the next batch
-    long       day_lo
-    long       day_hi
-    Py_ssize_t ev_cursor
-    int        n_trades
-    bint       done
-
-
-@cython.final
 cdef class _GridEngine:
     cdef float[:, ::1] open_mv, close_mv, high_mv, low_mv
-    cdef long[:, ::1]  high_time_mv, low_time_mv, ts_int_mv, tick_pos_mv, day_mv, ev_mv
-    cdef long[::1]     sym_len_mv, ts_global_mv, ev_ts_mv
+    cdef long[:, ::1]  high_time_mv, low_time_mv, ts_int_mv, ev_mv
+    cdef long[::1]     sym_len_mv, ts_all_mv
     cdef signed char[::1] ev_short_mv
-    cdef double[::1]   tp_up, tp_dn, sl_up, sl_dn
 
     cdef double initial_balance, comi_factor, order_amount, margin_req
-    cdef Py_ssize_t n_events
-    cdef long   n_global
-    cdef int    n_syms, n_tp, n_sl
+    cdef int    n_ticks, n_events, n_syms
     cdef bint   full_log
     cdef public int max_trades
 
-    # trade log (single backtest API)
-    cdef long[::1]   tl_buy_time, tl_sell_time
+    # trade log (tl_day is a scratch buffer for the daily aggregation)
+    cdef long[::1]   tl_buy_time, tl_sell_time, tl_day
     cdef double[::1] tl_profit
     cdef int[::1]    tl_exit_reason
     # full trade log, only filled when full_log is set
@@ -416,57 +428,33 @@ cdef class _GridEngine:
     cdef int[::1]    tl_is_short
     cdef dict        tl_arrays
 
-    # positions of the batch being processed (at most one per symbol)
-    cdef long[::1]   pos_sym_id, pos_buy_time_int, pos_exit_time_int
-    cdef int[::1]    pos_exit_idx, pos_is_short, pos_exit_reason_code
+    cdef long[::1]   pos_sym_id, pos_buy_time_int, pos_sell_time_int, pos_exec_time_int
     cdef double[::1] pos_qty, pos_buy_price, pos_commission_buy, pos_blocked_amount, pos_exec_price
+    cdef int[::1]    pos_is_short, pos_has_exec, pos_exit_reason_code
 
     cdef long[::1] heap_time, heap_counter
     cdef int[::1]  heap_slot
 
-    # first-touch memo: next bar to scan, levels resolved so far and their touch bar, per event
-    cdef int[::1] memo_pos, memo_tp_ptr, memo_sl_ptr, memo_tp_hit, memo_sl_hit
-
-    def __cinit__(self, tuple market_arrays, signal_events, ev_short, timeline, tp_levels, sl_levels,
+    def __cinit__(self, tuple market_arrays, signal_events, ev_short, timeline,
                   double initial_balance, double comi_factor, double order_amount, double leverage,
                   bint full_log=False):
-        # tp_levels / sl_levels: sorted distinct non-zero percentages; combos refer to them by index (-1 = disabled).
-        # timeline is no longer needed (the engine jumps between batches); kept for API compatibility.
-        cdef double[::1] tp_mv, sl_mv
-        cdef Py_ssize_t k
         if leverage <= 0.0:
             raise ValueError(f"leverage must be > 0, got {leverage}")
 
         (self.open_mv, self.close_mv, self.high_mv, self.low_mv,
-         self.high_time_mv, self.low_time_mv, self.ts_int_mv, self.sym_len_mv,
-         self.tick_pos_mv, self.ts_global_mv, self.day_mv) = market_arrays
+         self.high_time_mv, self.low_time_mv, self.ts_int_mv, self.sym_len_mv) = market_arrays
         self.ev_mv       = signal_events
         self.ev_short_mv = ev_short
-        self.ev_ts_mv    = np.ascontiguousarray(np.asarray(signal_events)[:, 0])
-
-        tp_mv = np.ascontiguousarray(tp_levels, dtype=np.float64)
-        sl_mv = np.ascontiguousarray(sl_levels, dtype=np.float64)
-        self.n_tp  = tp_mv.shape[0]
-        self.n_sl  = sl_mv.shape[0]
-        self.tp_up = np.empty(self.n_tp, dtype=np.float64)
-        self.tp_dn = np.empty(self.n_tp, dtype=np.float64)
-        self.sl_up = np.empty(self.n_sl, dtype=np.float64)
-        self.sl_dn = np.empty(self.n_sl, dtype=np.float64)
-        for k in range(self.n_tp):
-            self.tp_up[k] = 1.0 + tp_mv[k] / 100.0
-            self.tp_dn[k] = 1.0 - tp_mv[k] / 100.0
-        for k in range(self.n_sl):
-            self.sl_up[k] = 1.0 + sl_mv[k] / 100.0
-            self.sl_dn[k] = 1.0 - sl_mv[k] / 100.0
+        self.ts_all_mv   = timeline
 
         self.initial_balance = initial_balance
         self.comi_factor     = comi_factor
         self.order_amount    = order_amount
         self.margin_req      = order_amount / leverage
 
+        self.n_ticks    = self.ts_all_mv.shape[0]
         self.n_events   = self.ev_mv.shape[0]
         self.n_syms     = self.sym_len_mv.shape[0]
-        self.n_global   = self.ts_global_mv.shape[0]
         self.max_trades = self.n_events + 1
         self.full_log   = full_log
 
@@ -494,250 +482,94 @@ cdef class _GridEngine:
             self.tl_comm_sell   = self.tl_arrays["commission_sell"]
             self.tl_is_short    = self.tl_arrays["is_short"]
 
-        self.tl_buy_time    = self.tl_arrays["buy_time"]
-        self.tl_sell_time   = self.tl_arrays["sell_time"]
-        self.tl_profit      = self.tl_arrays["profit"]
+        self.tl_buy_time  = self.tl_arrays["buy_time"]
+        self.tl_sell_time = self.tl_arrays["sell_time"]
+        self.tl_profit    = self.tl_arrays["profit"]
         self.tl_exit_reason = self.tl_arrays["exit_reason"]
+        self.tl_day       = np.empty(self.max_trades, dtype=np.int64)
 
         self.pos_sym_id           = np.empty(self.n_syms, dtype=np.int64)
         self.pos_buy_time_int     = np.empty(self.n_syms, dtype=np.int64)
-        self.pos_exit_time_int    = np.empty(self.n_syms, dtype=np.int64)
-        self.pos_exit_idx         = np.empty(self.n_syms, dtype=np.int32)
+        self.pos_sell_time_int    = np.empty(self.n_syms, dtype=np.int64)
+        self.pos_exec_time_int    = np.empty(self.n_syms, dtype=np.int64)
         self.pos_qty              = np.empty(self.n_syms, dtype=np.float64)
         self.pos_buy_price        = np.empty(self.n_syms, dtype=np.float64)
         self.pos_commission_buy   = np.empty(self.n_syms, dtype=np.float64)
         self.pos_blocked_amount   = np.empty(self.n_syms, dtype=np.float64)
         self.pos_exec_price       = np.empty(self.n_syms, dtype=np.float64)
         self.pos_is_short         = np.empty(self.n_syms, dtype=np.int32)
+        self.pos_has_exec         = np.empty(self.n_syms, dtype=np.int32)
         self.pos_exit_reason_code = np.empty(self.n_syms, dtype=np.int32)
 
         self.heap_time    = np.empty(self.n_syms, dtype=np.int64)
         self.heap_counter = np.empty(self.n_syms, dtype=np.int64)
         self.heap_slot    = np.empty(self.n_syms, dtype=np.int32)
 
-        self.memo_pos    = np.full(self.n_events, -1, dtype=np.int32)
-        self.memo_tp_ptr = np.zeros(self.n_events, dtype=np.int32)
-        self.memo_sl_ptr = np.zeros(self.n_events, dtype=np.int32)
-        self.memo_tp_hit = np.empty(self.n_events * self.n_tp, dtype=np.int32)
-        self.memo_sl_hit = np.empty(self.n_events * self.n_sl, dtype=np.int32)
-
-    cdef bint _first_touch(
-        self, Py_ssize_t ev_idx, int sid, int buy_idx, int scan_last, double price_t, bint is_short,
-        int tp_k, int sl_j, int* out_idx, int* out_reason, double* out_price
-    ) noexcept nogil:
-        # Earliest TP / SL touch of the event within [buy_idx, scan_last]; False if none.
-        # Levels are sorted from easiest to hardest, so at every scanned bar the unresolved ones are
-        # resolved in order and the scan resumes where the previous combo left it.
-        cdef int pos, tp_ptr, sl_ptr, h_tp = 0, h_sl = 0
-        cdef Py_ssize_t tp_base = ev_idx * self.n_tp
-        cdef Py_ssize_t sl_base = ev_idx * self.n_sl
-        cdef double hi, lo
-        cdef bint tp_ok, sl_ok, take_tp
-        cdef long tp_t, sl_t
-
-        if tp_k < 0 and sl_j < 0:
-            return False
-
-        pos    = self.memo_pos[ev_idx]
-        tp_ptr = self.memo_tp_ptr[ev_idx]
-        sl_ptr = self.memo_sl_ptr[ev_idx]
-        if pos < 0:
-            pos = buy_idx
-
-        while pos <= scan_last and (tp_k < 0 or tp_k >= tp_ptr) and (sl_j < 0 or sl_j >= sl_ptr):
-            hi = self.high_mv[sid, pos]
-            lo = self.low_mv[sid, pos]
-            if is_short:
-                while tp_ptr < self.n_tp and lo <= price_t * self.tp_dn[tp_ptr]:
-                    self.memo_tp_hit[tp_base + tp_ptr] = pos
-                    tp_ptr += 1
-                while sl_ptr < self.n_sl and hi >= price_t * self.sl_up[sl_ptr]:
-                    self.memo_sl_hit[sl_base + sl_ptr] = pos
-                    sl_ptr += 1
-            else:
-                while tp_ptr < self.n_tp and hi >= price_t * self.tp_up[tp_ptr]:
-                    self.memo_tp_hit[tp_base + tp_ptr] = pos
-                    tp_ptr += 1
-                while sl_ptr < self.n_sl and lo <= price_t * self.sl_dn[sl_ptr]:
-                    self.memo_sl_hit[sl_base + sl_ptr] = pos
-                    sl_ptr += 1
-            pos += 1
-
-        self.memo_pos[ev_idx]    = pos
-        self.memo_tp_ptr[ev_idx] = tp_ptr
-        self.memo_sl_ptr[ev_idx] = sl_ptr
-
-        # an unresolved level has not been touched before pos, so it is later than any resolved one
-        tp_ok = tp_k >= 0 and tp_k < tp_ptr
-        sl_ok = sl_j >= 0 and sl_j < sl_ptr
-        if tp_ok:
-            h_tp  = self.memo_tp_hit[tp_base + tp_k]
-            tp_ok = h_tp <= scan_last
-        if sl_ok:
-            h_sl  = self.memo_sl_hit[sl_base + sl_j]
-            sl_ok = h_sl <= scan_last
-        if not tp_ok and not sl_ok:
-            return False
-
-        if tp_ok and sl_ok:
-            if h_tp == h_sl:
-                if is_short:
-                    tp_t = self.low_time_mv[sid, h_tp]
-                    sl_t = self.high_time_mv[sid, h_sl]
-                else:
-                    tp_t = self.high_time_mv[sid, h_tp]
-                    sl_t = self.low_time_mv[sid, h_sl]
-                take_tp = tp_t <= sl_t
-            else:
-                take_tp = h_tp < h_sl
-        else:
-            take_tp = tp_ok
-
-        if take_tp:
-            out_idx[0]    = h_tp
-            out_reason[0] = 1
-            out_price[0]  = price_t * (self.tp_dn[tp_k] if is_short else self.tp_up[tp_k])
-        else:
-            out_idx[0]    = h_sl
-            out_reason[0] = 2
-            out_price[0]  = price_t * (self.sl_up[sl_j] if is_short else self.sl_dn[sl_j])
-        return True
-
-    cdef void _init_state(self, _ComboState* st) noexcept nogil:
-        st.cash_bank    = self.initial_balance
-        st.blocked_cash = 0.0
-        st.counter      = 0
-        st.min_time     = LONG_MIN
-        st.day_lo       = LONG_MAX
-        st.day_hi       = LONG_MIN
-        st.ev_cursor    = 0
-        st.n_trades     = 0
-        st.done         = self.n_events == 0
-
-    cdef void _advance(
-        self, _ComboState* st, int sell_after, int tp_k, int sl_j, long time_limit,
-        long* dur_row, double* daily_row
-    ) noexcept nogil:
-        # Runs the batches of one combo that open before time_limit. Grid mode (dur_row / daily_row set):
-        # every trade goes straight into the combo's duration and daily rows. Otherwise into the trade log.
-        cdef double cash_bank    = st.cash_bank
-        cdef double blocked_cash = st.blocked_cash
+    cdef int simulate(self, int sell_after, double tp_pct, double sl_pct) noexcept nogil:
+        cdef double cash_bank    = self.initial_balance
+        cdef double blocked_cash = 0.0
         cdef double comi_factor  = self.comi_factor
         cdef double order_amount = self.order_amount
         cdef double margin_req   = self.margin_req
-        cdef long   counter      = st.counter
-        cdef long   min_time     = st.min_time
-        cdef long   day_lo       = st.day_lo
-        cdef long   day_hi       = st.day_hi
-        cdef Py_ssize_t ev_cursor = st.ev_cursor
-        cdef int    n_trades     = st.n_trades
-        cdef bint   done         = False
+        cdef int    n_trades     = 0
         cdef int    heap_size    = 0
+        cdef long   counter      = 0
 
-        cdef Py_ssize_t ev_idx
-        cdef long   t_int, next_bar_time, close_time, last_close, tick, day
-        cdef int    sid, buy_idx, n_bars, exit_idx, scan_last, slot, batch_slot, reason_code
-        cdef double price_t, qty, comm_buy, exec_price, free_cash
+        cdef int    tick_i, ev_scan, ev_cursor
+        cdef long   t_int
+        cdef int    sid, buy_idx, n_bars, exit_idx, slot, batch_slot
+        cdef long   sell_time_int, exec_time_int
+        cdef double price_t, qty, comm_buy
+        cdef double tp_price, sl_price
+        cdef double free_cash, blocked_amount
+        cdef bint   is_short, intra, was_empty_before, search_signals, closed_any_tp_sl
+        cdef int    chosen_idx, reason_code
+        cdef double exec_price_intra
         cdef double qty_c, buy_price_c, comm_buy_c, comm_sell_c, profit_c, blocked_amount_c
-        cdef bint   is_short, is_short_c, tp_sl_at_last
+        cdef bint   is_short_c
+        cdef long   n_sym
 
-        while True:
-            # ── 1. Next batch: first event at or after min_time ──
-            ev_cursor = _lower_bound(&self.ev_ts_mv[0], ev_cursor, self.n_events, min_time)
-            if ev_cursor >= self.n_events:
-                done = True
-                break
-            t_int = self.ev_ts_mv[ev_cursor]
-            if t_int >= time_limit:
-                break
-            tick = self.tick_pos_mv[<int>self.ev_mv[ev_cursor, 1], <int>self.ev_mv[ev_cursor, 2]] + 1
-            if tick >= self.n_global:
-                done = True   # positions opened on the last bar of the timeline are never closed
-                break
-            next_bar_time = self.ts_global_mv[tick]
+        ev_cursor = 0
+        for tick_i in range(self.n_ticks):
+            t_int = self.ts_all_mv[tick_i]
 
-            # ── 2. Open the events of the batch while free cash allows ──
-            batch_slot = 0
-            while ev_cursor < self.n_events and self.ev_ts_mv[ev_cursor] == t_int:
-                ev_idx     = ev_cursor
-                ev_cursor += 1
-                sid        = <int>self.ev_mv[ev_idx, 1]
-                buy_idx    = <int>self.ev_mv[ev_idx, 2]
-                is_short   = self.ev_short_mv[ev_idx] != 0
+            # ── 1. Close expired / intrabar-exit positions ──
+            was_empty_before = (heap_size == 0)
+            closed_any_tp_sl = False
 
-                n_bars    = <int>self.sym_len_mv[sid]
-                free_cash = cash_bank - blocked_cash
-                if free_cash < margin_req + order_amount * comi_factor:
-                    break
-
-                price_t  = self.open_mv[sid, buy_idx]
-                qty      = order_amount / price_t
-                comm_buy = order_amount * comi_factor
-
-                if sell_after == 0:
-                    exit_idx = n_bars - 1
-                else:
-                    exit_idx = buy_idx + sell_after
-                    if exit_idx >= n_bars:
-                        exit_idx = n_bars - 1
-                if sell_after == 0 or exit_idx == n_bars - 1:
-                    scan_last = exit_idx
-                else:
-                    scan_last = exit_idx - 1
-
-                cash_bank    -= comm_buy
-                blocked_cash += margin_req
-
-                if not self._first_touch(ev_idx, sid, buy_idx, scan_last, price_t, is_short, tp_k, sl_j,
-                                         &exit_idx, &reason_code, &exec_price):
-                    if sell_after == 0 or exit_idx == n_bars - 1:
-                        exec_price  = self.close_mv[sid, exit_idx]
-                        reason_code = 3
-                    else:
-                        exec_price  = self.open_mv[sid, exit_idx]
-                        reason_code = 0
-
-                slot = batch_slot
-                batch_slot += 1
-
-                self.pos_sym_id[slot]           = sid
-                self.pos_qty[slot]              = qty
-                self.pos_buy_price[slot]        = price_t
-                self.pos_buy_time_int[slot]     = self.ts_int_mv[sid, buy_idx]
-                self.pos_commission_buy[slot]   = comm_buy
-                self.pos_is_short[slot]         = 1 if is_short else 0
-                self.pos_blocked_amount[slot]   = margin_req
-                self.pos_exit_idx[slot]         = exit_idx
-                self.pos_exit_time_int[slot]    = self.ts_int_mv[sid, exit_idx]
-                self.pos_exec_price[slot]       = exec_price
-                self.pos_exit_reason_code[slot] = reason_code
-                _heap_push(&self.heap_time[0], &self.heap_counter[0], &self.heap_slot[0], &heap_size,
-                           self.pos_exit_time_int[slot], counter, slot)
-                counter += 1
-
-            if batch_slot == 0:
-                done = True   # free cash only changes when positions close: no later batch can open either
-                break
-
-            # ── 3. Close the whole batch in (exit time, opening order) ──
-            last_close    = LONG_MIN
-            tp_sl_at_last = False
-            while heap_size > 0:
+            while heap_size > 0 and self.heap_time[0] <= t_int:
                 slot = _heap_pop(&self.heap_time[0], &self.heap_counter[0], &self.heap_slot[0], &heap_size)
 
-                exec_price       = self.pos_exec_price[slot]
-                reason_code      = self.pos_exit_reason_code[slot]
+                if self.pos_has_exec[slot] and self.pos_exec_time_int[slot] <= t_int:
+                    exec_price_intra = self.pos_exec_price[slot]
+                    exec_time_int    = self.pos_exec_time_int[slot]
+                    reason_code      = self.pos_exit_reason_code[slot]
+                else:
+                    sid   = <int>self.pos_sym_id[slot]
+                    n_sym = self.sym_len_mv[sid]
+                    exit_idx = _searchsorted_right(&self.ts_int_mv[sid, 0], self.pos_sell_time_int[slot], <int>n_sym) - 1
+                    if exit_idx < 0:
+                        exit_idx = 0
+
+                    if sell_after == 0 or exit_idx == <int>n_sym - 1:
+                        exec_price_intra = self.close_mv[sid, exit_idx]
+                        reason_code      = 3
+                    else:
+                        exec_price_intra = self.open_mv[sid, exit_idx]
+                        reason_code      = 0
+                    exec_time_int = self.pos_sell_time_int[slot]
+
                 qty_c            = self.pos_qty[slot]
                 buy_price_c      = self.pos_buy_price[slot]
                 is_short_c       = self.pos_is_short[slot] != 0
                 comm_buy_c       = self.pos_commission_buy[slot]
                 blocked_amount_c = self.pos_blocked_amount[slot]
-                comm_sell_c      = qty_c * exec_price * comi_factor
+                comm_sell_c      = qty_c * exec_price_intra * comi_factor
 
                 if is_short_c:
-                    profit_c = (buy_price_c - exec_price) * qty_c - comm_buy_c - comm_sell_c
+                    profit_c = (buy_price_c - exec_price_intra) * qty_c - comm_buy_c - comm_sell_c
                 else:
-                    profit_c = (exec_price - buy_price_c) * qty_c - comm_buy_c - comm_sell_c
+                    profit_c = (exec_price_intra - buy_price_c) * qty_c - comm_buy_c - comm_sell_c
 
                 cash_bank    += profit_c + comm_buy_c
                 blocked_cash -= blocked_amount_c
@@ -745,69 +577,142 @@ cdef class _GridEngine:
                 if blocked_cash < 0.0 and blocked_cash > -1e-9:
                     blocked_cash = 0.0
 
-                if dur_row != NULL:
-                    dur_row[n_trades] = self.pos_exit_time_int[slot] - self.pos_buy_time_int[slot]
-                    day = self.day_mv[self.pos_sym_id[slot], self.pos_exit_idx[slot]]
-                    daily_row[day] += profit_c
-                    if day < day_lo:
-                        day_lo = day
-                    if day > day_hi:
-                        day_hi = day
-                else:
-                    self.tl_buy_time[n_trades]    = self.pos_buy_time_int[slot]
-                    self.tl_sell_time[n_trades]   = self.pos_exit_time_int[slot]
-                    self.tl_profit[n_trades]      = profit_c
-                    self.tl_exit_reason[n_trades] = reason_code
-                    if self.full_log:
-                        self.tl_sym_id[n_trades]      = self.pos_sym_id[slot]
-                        self.tl_buy_price[n_trades]   = buy_price_c
-                        self.tl_sell_price[n_trades]  = exec_price
-                        self.tl_qty[n_trades]         = qty_c
-                        self.tl_comm_buy[n_trades]    = comm_buy_c
-                        self.tl_comm_sell[n_trades]   = comm_sell_c
-                        self.tl_is_short[n_trades]    = 1 if is_short_c else 0
+                self.tl_buy_time[n_trades]  = self.pos_buy_time_int[slot]
+                self.tl_sell_time[n_trades] = exec_time_int
+                self.tl_profit[n_trades]    = profit_c
+                self.tl_exit_reason[n_trades] = reason_code
+                if self.full_log:
+                    self.tl_sym_id[n_trades]      = self.pos_sym_id[slot]
+                    self.tl_buy_price[n_trades]   = buy_price_c
+                    self.tl_sell_price[n_trades]  = exec_price_intra
+                    self.tl_qty[n_trades]         = qty_c
+                    self.tl_comm_buy[n_trades]    = comm_buy_c
+                    self.tl_comm_sell[n_trades]   = comm_sell_c
+                    self.tl_is_short[n_trades]    = 1 if is_short_c else 0
                 n_trades += 1
 
-                # a position is processed on its exit bar, and never before the bar after its entry
-                close_time = self.pos_exit_time_int[slot]
-                if close_time < next_bar_time:
-                    close_time = next_bar_time
-                if close_time > last_close:
-                    last_close    = close_time
-                    tp_sl_at_last = reason_code == 1 or reason_code == 2
-                elif reason_code == 1 or reason_code == 2:
-                    tp_sl_at_last = True
+                if reason_code == 1 or reason_code == 2:
+                    closed_any_tp_sl = True
 
-            # ── 4. Re-entry on the last closing bar only if nothing closed there by TP / SL ──
-            min_time = last_close + 1 if tp_sl_at_last else last_close
+            # ── 2. Open new positions if heap empty ──
+            if heap_size == 0:
+                if was_empty_before:
+                    search_signals = True
+                else:
+                    search_signals = not closed_any_tp_sl
 
-        st.cash_bank    = cash_bank
-        st.blocked_cash = blocked_cash
-        st.counter      = counter
-        st.min_time     = min_time
-        st.day_lo       = day_lo
-        st.day_hi       = day_hi
-        st.ev_cursor    = ev_cursor
-        st.n_trades     = n_trades
-        st.done         = done
+                if search_signals:
+                    while ev_cursor < self.n_events and self.ev_mv[ev_cursor, 0] < t_int:
+                        ev_cursor += 1
+                    ev_scan    = ev_cursor
+                    batch_slot = 0
 
-    cdef int simulate(self, int sell_after, int tp_k, int sl_j) noexcept nogil:
-        cdef _ComboState st
-        self._init_state(&st)
-        if not st.done:
-            self._advance(&st, sell_after, tp_k, sl_j, LONG_MAX, NULL, NULL)
-        return st.n_trades
+                    while ev_scan < self.n_events and self.ev_mv[ev_scan, 0] == t_int:
+                        sid      = <int>self.ev_mv[ev_scan, 1]
+                        buy_idx  = <int>self.ev_mv[ev_scan, 2]
+                        is_short = self.ev_short_mv[ev_scan] != 0
+                        ev_scan += 1
+
+                        n_bars    = <int>self.sym_len_mv[sid]
+                        free_cash = cash_bank - blocked_cash
+
+                        if free_cash < margin_req + order_amount * comi_factor:
+                            break
+
+                        price_t  = self.open_mv[sid, buy_idx]
+                        qty      = order_amount / price_t
+                        comm_buy = order_amount * comi_factor
+
+                        if sell_after == 0:
+                            exit_idx = n_bars - 1
+                        else:
+                            exit_idx = buy_idx + sell_after
+                            if exit_idx >= n_bars:
+                                exit_idx = n_bars - 1
+
+                        sell_time_int = self.ts_int_mv[sid, exit_idx]
+
+                        if is_short:
+                            tp_price = price_t * (1.0 - tp_pct / 100.0) if tp_pct != 0.0 else -HUGE_VAL
+                            sl_price = price_t * (1.0 + sl_pct / 100.0) if sl_pct != 0.0 else  HUGE_VAL
+                        else:
+                            tp_price = price_t * (1.0 + tp_pct / 100.0) if tp_pct != 0.0 else  HUGE_VAL
+                            sl_price = price_t * (1.0 - sl_pct / 100.0) if sl_pct != 0.0 else -HUGE_VAL
+
+                        blocked_amount = margin_req
+                        cash_bank     -= comm_buy
+                        blocked_cash  += blocked_amount
+
+                        slot = batch_slot
+                        batch_slot += 1
+
+                        self.pos_sym_id[slot]         = sid
+                        self.pos_qty[slot]            = qty
+                        self.pos_buy_price[slot]      = price_t
+                        self.pos_buy_time_int[slot]   = self.ts_int_mv[sid, buy_idx]
+                        self.pos_sell_time_int[slot]  = sell_time_int
+                        self.pos_commission_buy[slot] = comm_buy
+                        self.pos_is_short[slot]       = 1 if is_short else 0
+                        self.pos_blocked_amount[slot] = blocked_amount
+
+                        _detect_intrabar_exit_cy(
+                            &self.high_mv[sid, 0], &self.low_mv[sid, 0],
+                            &self.high_time_mv[sid, 0], &self.low_time_mv[sid, 0],
+                            buy_idx, exit_idx, tp_price, sl_price, is_short,
+                            sell_after == 0 or exit_idx == n_bars - 1,
+                            &intra, &chosen_idx, &reason_code, &exec_price_intra
+                        )
+
+                        if intra:
+                            exec_time_int = self.ts_int_mv[sid, chosen_idx]
+                            self.pos_has_exec[slot]         = 1
+                            self.pos_exec_price[slot]       = exec_price_intra
+                            self.pos_exec_time_int[slot]    = exec_time_int
+                            self.pos_exit_reason_code[slot] = reason_code
+                            _heap_push(&self.heap_time[0], &self.heap_counter[0], &self.heap_slot[0], &heap_size,
+                                       exec_time_int, counter, slot)
+                        else:
+                            self.pos_has_exec[slot] = 0
+                            _heap_push(&self.heap_time[0], &self.heap_counter[0], &self.heap_slot[0], &heap_size,
+                                       sell_time_int, counter, slot)
+
+                        counter += 1
+
+        return n_trades
+
+    cdef void aggregate_daily(
+        self, int n_trades, long[::1] trading_index, long table_first, long base_index,
+        double[::1] daily_row, long* out_start, long* out_len, long* out_nonzero
+    ) noexcept nogil:
+        cdef int  i
+        cdef long day_idx, lo, hi, j, nonzero
+
+        lo = trading_index[_floor_div(self.tl_sell_time[0], _NS_PER_DAY) - table_first] - base_index
+        hi = lo
+        for i in range(n_trades):
+            day_idx = trading_index[_floor_div(self.tl_sell_time[i], _NS_PER_DAY) - table_first] - base_index
+            self.tl_day[i] = day_idx
+            if day_idx < lo:
+                lo = day_idx
+            if day_idx > hi:
+                hi = day_idx
+
+        for j in range(lo, hi + 1):
+            daily_row[j] = 0.0
+        for i in range(n_trades):
+            daily_row[self.tl_day[i]] += self.tl_profit[i]
+
+        nonzero = 0
+        for j in range(lo, hi + 1):
+            if daily_row[j] != 0.0:
+                nonzero += 1
+
+        out_start[0]   = lo
+        out_len[0]     = hi - lo + 1
+        out_nonzero[0] = nonzero
 
     def trade_log(self, int n_trades):
         return {name: arr[:n_trades] for name, arr in self.tl_arrays.items()}
-
-
-def _level_index(values):
-    # sorted distinct non-zero levels plus, per combo, the index of its level (-1 when the level is 0 = disabled)
-    vals   = np.asarray(values, dtype=np.float64)
-    levels = np.unique(vals[vals != 0.0])
-    index  = np.where(vals != 0.0, np.searchsorted(levels, vals), -1).astype(np.int32)
-    return levels, index
 
 
 # ============================================================
@@ -831,76 +736,40 @@ def backtest_grid(
     long n_days_range,
     double leverage = LEVERAGE
 ):
-    tp_levels, tp_k_arr = _level_index(tp_arr)
-    sl_levels, sl_k_arr = _level_index(sl_arr)
-    if market_arrays[10].shape[0] == 0:
-        market_arrays = market_arrays[:10] + (
-            _day_index_2d(market_arrays[6], market_arrays[7], trading_index, table_first, base_index),
-        )
-
     cdef _GridEngine engine = _GridEngine(
-        market_arrays, signal_events, ev_short, timeline, tp_levels, sl_levels,
+        market_arrays, signal_events, ev_short, timeline,
         initial_balance, comi_factor, order_amount, leverage,
     )
     cdef Py_ssize_t n_combos = sell_after_arr.shape[0]
-    cdef Py_ssize_t c
-    cdef long       n, j, lo, hi, nonzero, limit, bar0
+    cdef Py_ssize_t c, i
+    cdef int        n
 
     n_trades_arr  = np.zeros(n_combos, dtype=np.int64)
     day_start_arr = np.full(n_combos, -1, dtype=np.int64)
     n_days_arr    = np.zeros(n_combos, dtype=np.int64)
     nonzero_arr   = np.zeros(n_combos, dtype=np.int64)
-    daily_arr     = np.zeros((n_combos, n_days_range), dtype=np.float64)
+    daily_arr     = np.empty((n_combos, n_days_range), dtype=np.float64)
     duration_arr  = np.empty((n_combos, engine.max_trades), dtype=np.int64)
 
-    cdef long[::1]      n_trades_mv  = n_trades_arr
-    cdef long[::1]      day_start_mv = day_start_arr
-    cdef long[::1]      n_days_mv    = n_days_arr
-    cdef long[::1]      nonzero_mv   = nonzero_arr
-    cdef double[:, ::1] daily_mv     = daily_arr
-    cdef long[:, ::1]   duration_mv  = duration_arr
-    cdef int[::1]       tp_k_mv      = tp_k_arr
-    cdef int[::1]       sl_k_mv      = sl_k_arr
+    cdef long[::1]     n_trades_mv  = n_trades_arr
+    cdef long[::1]     day_start_mv = day_start_arr
+    cdef long[::1]     n_days_mv    = n_days_arr
+    cdef long[::1]     nonzero_mv   = nonzero_arr
+    cdef double[:, ::1] daily_mv    = daily_arr
+    cdef long[:, ::1]  duration_mv  = duration_arr
 
-    cdef _ComboState* states = <_ComboState*>malloc((n_combos + 1) * sizeof(_ComboState))
-    if states == NULL:
-        raise MemoryError()
-
-    try:
-        with nogil:
-            for c in range(n_combos):
-                engine._init_state(&states[c])
-
-            # lockstep: every combo runs the batches that open inside the block before the next block starts
-            bar0 = 0
-            while True:
-                limit = engine.ts_global_mv[bar0 + _BLOCK_BARS] if bar0 + _BLOCK_BARS < engine.n_global else LONG_MAX
-                for c in range(n_combos):
-                    if not states[c].done:
-                        engine._advance(
-                            &states[c], <int>sell_after_arr[c], tp_k_mv[c], sl_k_mv[c], limit,
-                            &duration_mv[c, 0], &daily_mv[c, 0],
-                        )
-                if limit == LONG_MAX:
-                    break
-                bar0 += _BLOCK_BARS
-
-            for c in range(n_combos):
-                n = states[c].n_trades
-                n_trades_mv[c] = n
-                if n == 0 or n < min_trades:
-                    continue
-                lo = states[c].day_lo
-                hi = states[c].day_hi
-                nonzero = 0
-                for j in range(lo, hi + 1):
-                    if daily_mv[c, j] != 0.0:
-                        nonzero += 1
-                day_start_mv[c] = lo
-                n_days_mv[c]    = hi - lo + 1
-                nonzero_mv[c]   = nonzero
-    finally:
-        free(states)
+    with nogil:
+        for c in range(n_combos):
+            n = engine.simulate(<int>sell_after_arr[c], tp_arr[c], sl_arr[c])
+            n_trades_mv[c] = n
+            for i in range(n):
+                duration_mv[c, i] = engine.tl_sell_time[i] - engine.tl_buy_time[i]
+            if n == 0 or n < min_trades:
+                continue
+            engine.aggregate_daily(
+                n, trading_index, table_first, base_index, daily_mv[c],
+                &day_start_mv[c], &n_days_mv[c], &nonzero_mv[c],
+            )
 
     return n_trades_arr, day_start_arr, n_days_arr, nonzero_arr, daily_arr, duration_arr
 
@@ -936,19 +805,17 @@ def prepare_backtest_data(ohlcv_arrays):
 
 def _simulate_prepared(prepared_data, sell_after, tp_pct, sl_pct, order_amount, bint full_log):
     static_bundle = prepared_data["static"]
-    tp_levels, tp_k_arr = _level_index([float(tp_pct)])
-    sl_levels, sl_k_arr = _level_index([float(sl_pct)])
     cdef _GridEngine engine = _GridEngine(
         market_arrays(static_bundle), prepared_data["signal_events"], prepared_data["ev_short"],
-        static_bundle["all_timestamps_int"], tp_levels, sl_levels,
+        static_bundle["all_timestamps_int"],
         float(INITIAL_BALANCE), float(COMISION) / 100.0, float(order_amount), LEVERAGE, full_log,
     )
-    cdef int sell_after_c = int(sell_after)
-    cdef int tp_k         = int(tp_k_arr[0])
-    cdef int sl_j         = int(sl_k_arr[0])
-    cdef int n_trades
+    cdef int    sell_after_c = int(sell_after)
+    cdef double tp_c         = float(tp_pct)
+    cdef double sl_c         = float(sl_pct)
+    cdef int    n_trades
     with nogil:
-        n_trades = engine.simulate(sell_after_c, tp_k, sl_j)
+        n_trades = engine.simulate(sell_after_c, tp_c, sl_c)
     return engine.trade_log(n_trades)
 
 
