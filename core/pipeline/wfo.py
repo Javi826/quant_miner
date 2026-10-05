@@ -1,4 +1,4 @@
-# core/pipeline/wfo.py
+# core/pipeline/wfo.py MEW
 import os
 import logging
 import numpy as np

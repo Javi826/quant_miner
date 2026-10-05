@@ -1,43 +1,17 @@
 #signals/indicators_bank.py (fx)
 import numpy as np
-from indicators.indicators_pool import CANDIDATE_REGISTRY, build_flat_specs, instance_key, describe_spec
+from indicators.indicators_pool import CANDIDATE_REGISTRY, instance_key, describe_spec
 
-# =============================================================================
-# SELECTED INDICATORS — manual curation after reading the screening printout.
-# =============================================================================
 
-SELECTED_INDICATORS_BY_TIMEFRAME = {
-    "1H": [
-        "bb_pctb_slope",
-        "ichimoku_cloud_thickness",
-        "ichimoku_price_vs_cloud",
-        "vol_of_vol",
-        "range_expansion",
-        "macd_hist",
-        "tpo_density",
-        "ichimoku_tenkan_K",
-        "return_entropy",
-    ],
-    "4H": [
-        "inside_outside_ratio",
-        "open_close_momentum",
-        "range_expansion",
-        "bb_bandwidth",
-        "acceleration",
-        "return_entropy",
-        "pivot_dist",
-        "donchian_width",
-    ],
-}
 def _compare(value: np.ndarray, op: str, threshold: float) -> np.ndarray:
     return value > threshold if op == ">" else value < threshold
 
+
 class ConditionBank:
 
-    def __init__(self, arr: dict, ctx: dict = None, timeframe: str = None):
+    def __init__(self, arr: dict, ctx: dict = None):
         self.arr = arr
         self.ctx = ctx or {}
-        self.timeframe = timeframe
         self.n = len(self.arr["close"])
         self._cache = {}
 
@@ -47,17 +21,6 @@ class ConditionBank:
             fn = CANDIDATE_REGISTRY[indicator]["fn"]
             self._cache[key] = fn(self.arr, self.ctx, params)
         return self._cache[key]
-
-    def build_condition_specs(self) -> list:
-        if self.timeframe not in SELECTED_INDICATORS_BY_TIMEFRAME:
-            raise ValueError(
-                f"No SELECTED_INDICATORS_BY_TIMEFRAME entry for timeframe: {self.timeframe}"
-            )
-        selected = SELECTED_INDICATORS_BY_TIMEFRAME[self.timeframe]
-        return [
-            spec for spec in build_flat_specs()
-            if spec["indicator"] in selected
-        ]
 
     def evaluate(self, spec: dict) -> np.ndarray:
         value = self._get_value(spec["indicator"], spec["params"])

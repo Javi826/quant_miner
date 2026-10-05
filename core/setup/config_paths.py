@@ -3,7 +3,6 @@ import os
 # DATASET FOLDERS — IS/OOS for split mode, MERGED for single-source mode
 # =============================================================================
 
-
 # =============================================================================
 # BITGET_ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bitget"))
 # SPLIT_BASE          = os.path.join(BITGET_ROOT, "data_crypto", "data_cr", "04_split")
@@ -17,10 +16,10 @@ import os
 #     "OOS":    DATA_FOLDER_OOS,
 #     "MERGED": DATA_FOLDER_MERGED,
 # }
+# 
 # =============================================================================
-
-BITGET_ROOT     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex"))
-SPLIT_BASE          = os.path.join(BITGET_ROOT, "data_forex", "data_fx", "04_split")
+_ROOT      = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex"))
+SPLIT_BASE = os.path.join(_ROOT, "data_forex", "data_fx", "04_split")
 
 DATA_FOLDER_IS      = os.path.join(SPLIT_BASE, "IS",  "fx_2017-01_2024-12_IS")
 DATA_FOLDER_OOS     = os.path.join(SPLIT_BASE, "OOS", "fx_2024-01_2026-09_OOS")

@@ -461,11 +461,11 @@ def _rescuer(nm, st_alone, st_pairs):
 def _report_selected(pool, names, best, mode):
     items = [nm for nm in names if nm in best]
     items.sort(key=lambda nm: _rank_key(best[nm]), reverse=True)
-    logger.info(f"\n{SEP}\nSELECTED ({len(items)}) [{mode}]\n{SEP}")
-    logger.info(_cols_header("indicator", "group", "via"))
+    logger.debug(f"\n{SEP}\nSELECTED ({len(items)}) [{mode}]\n{SEP}")
+    logger.debug(_cols_header("indicator", "group", "via"))
     for nm in items:
         o = best[nm]
-        logger.info(_cols(nm, _group(pool, nm), o) + f"  {_via_text(o['via'])}")
+        logger.debug(_cols(nm, _group(pool, nm), o) + f"  {_via_text(o['via'])}")
     if not items:
         logger.debug("(empty)")
     logger.debug("")
@@ -525,18 +525,18 @@ def _fmt_int(v):
 def _report_pruned(items, best, st_alone, st_pairs, kept):
     out = [nm for nm in items if nm in kept]
     pct = len(out) / len(items) if items else 0.0
-    logger.info(f"\n{SEP}\nAFTER REDUNDANCY ({len(out)} of {len(items)}, {pct:.0%})\n{SEP}")
+    logger.debug(f"\n{SEP}\nAFTER REDUNDANCY ({len(out)} of {len(items)}, {pct:.0%})\n{SEP}")
     _log_names(f"Kept ({len(out)}):", out)
     removed = [nm for nm in items if nm not in kept]
-    logger.info(f"Removed ({len(removed)}):")
+    logger.debug(f"Removed ({len(removed)}):")
     for nm in removed:
         c = cand_of(nm, best)
         st = st_alone[nm] if c[0] == "alone" else st_pairs[c[1]]
         r = _pct(st["r"]) if c[0] == "alone" else "/".join(_pct(v) for v in st["r"])
-        logger.info(f"  {nm:<26}{'alone' if c[0] == 'alone' else cand_name(c)}: absorbed by "
-                    f"{st['by'] if c[0] == 'alone' else pair_name(*st['by'])} (R={r}, J={st['rule_j']:.2f})")
+        logger.debug(f"  {nm:<26}{'alone' if c[0] == 'alone' else cand_name(c)}: absorbed by "
+                     f"{st['by'] if c[0] == 'alone' else pair_name(*st['by'])} (R={r}, J={st['rule_j']:.2f})")
     if not removed:
-        logger.info("  (none)")
+        logger.debug("  (none)")
     return out
 
 

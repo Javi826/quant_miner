@@ -1,30 +1,23 @@
-#quant_miner/darwinex/BOT_research/04_combos_fx.py (forex)
+# core/research/stages/combos.py
 import os
 import sys
 import math
-import time
 import random
 import logging
 import itertools
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from functools import partial
 import pandas as pd
 from tqdm import tqdm
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "core")))
+from setup import config_research as cr
+from research import artifacts as ra
 
 # =============================================================================
 # LOGGING
 # =============================================================================
 LOG_LEVEL = logging.INFO    # INFO: a header, a bar and a summary per timeframe and N. DEBUG: every combo as the backtest
-logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout, force=True)
-logger = logging.getLogger("BOT_research.combos")
-logger.setLevel(LOG_LEVEL)
-logging.getLogger("BOT_batch").setLevel(logging.INFO if LOG_LEVEL <= logging.DEBUG else logging.WARNING)
-for noisy_logger in ("joblib", "matplotlib", "numba"):
-    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
-# -----------------------------------------------------------------------------
+logger    = logging.getLogger("BOT_research.combos")
 
 from symbols.universe import build_universe
 from setup.config_paths import DATA_FOLDER_BY_DATASET
@@ -36,70 +29,42 @@ from pipeline import signal_cleaning, backtest_runner, stepM_is
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from pipeline.stepM_is import pipe_stepm, STEPM_ALPHA
 from setup.config_core import settings
-
 # =============================================================================
-# GENERAL
+# MODULE CONFIG
 # =============================================================================
 RANDOM_SEED       = 42
 N_JOBS            = -1
 SIGNAL_CLEANING   = True
-DATASET           = "IS"   # "IS" or "MERGED"
+
+RANK_TOP_N  = 30
+NOISE_PCTL  = 0.90
+SPLIT_MAX   = 5   
+
 
 # =============================================================================
-# EXPERIMENT CONFIGURATION
+# STAGE CONFIG (set by the orchestrator)
 # =============================================================================
-SYMBOL_POOL_BY_TIMEFRAME = {
-    "1H": [
-        "GBPJPY",
-        "AUDCAD",
-        "AUDJPY",
-        "USDJPY",
-        "AUDUSD",
-        "EURGBP",
-        "EURAUD",
-        "EURCAD",
-        "GBPCAD",
-        "NZDJPY",
+@dataclass(frozen=True)
+class CombosStageConfig:
+    plus_minus:         float = 0.2
+    combo_sizes:        list  = field(default_factory=lambda: [1, 2])
+    n_samples_per_size: dict  = field(default_factory=lambda: {1: None, 99: 99})    # None = exhaustive
 
-    ],
-    "4H": [
-        "AUDJPY",
-        "USDJPY",
-        "AUDUSD",
-        "CHFJPY",
-        "GBPCAD",
-        "EURJPY",
-        "EURGBP",
-        "AUDCAD",
-    ],
-}
+    def __post_init__(self):
+        if self.plus_minus < 0:
+            raise ValueError(f"plus_minus must be >= 0: {self.plus_minus}")
+        if not self.combo_sizes or any(not isinstance(n, int) or n < 1 for n in self.combo_sizes):
+            raise ValueError(f"combo_sizes must be integers >= 1: {self.combo_sizes}")
+        bad = {n: v for n, v in self.n_samples_per_size.items() if v is not None and (not isinstance(v, int) or v < 1)}
+        if bad:
+            raise ValueError(f"n_samples_per_size values must be None or integers >= 1: {bad}")
 
-PARAM_GRID_BY_TIMEFRAME = {
-    "1H": {
-        "SELL_AFTER": [100],
-        "TP_PCT":     [1.5],
-        "SL_PCT":     [0.5],
-    },
-    "4H": {
-        "SELL_AFTER": [20],
-        "TP_PCT":     [1.0],
-        "SL_PCT":     [0.5],
-    },
-}
 
-TIMEFRAMES   = ["1H","4H"]
-COMBO_SIZES  = [1,2]
-
-# Sample size per combo size. None = exhaustive (used automatically for N=1).
-N_SAMPLES_PER_SIZE = {
-     1:  None,
-     99: 99 ,
-}
-
-RANK_TOP_N       = 30
-NOISE_PCTL       = 0.90            # noise ceiling: percentile of binomial(n_combos, STEPM_ALPHA) above which the
-                                   # combos with rules are more than chance alone would give
-SPLIT_MAX        = 5               # combos listed in the SKIPPED line of every timeframe and N: the first N, the rest as +n
+def configure_loggers() -> None:
+    logger.setLevel(LOG_LEVEL)
+    logging.getLogger("BOT_batch").setLevel(logging.INFO if LOG_LEVEL <= logging.DEBUG else logging.WARNING)
+    for noisy_logger in ("joblib", "matplotlib", "numba"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 # =============================================================================
 # COMBO GENERATION
@@ -127,12 +92,8 @@ def pipeline_bars(show: bool):
         for m, t in zip(mods, orig):
             m.tqdm = t
 
-
 @contextmanager
 def stepm_capture():
-    """Wraps compute_global_pvalue and resolve_k_by_fdp of stepM_is, as pipe_stepm calls them, to keep the global
-    p-value and k of the last run in the dict it yields (pipe_stepm only logs them). Clear it before every call:
-    empty after a call means StepM skipped."""
     cap = {}
     orig_gp, orig_k = stepM_is.compute_global_pvalue, stepM_is.resolve_k_by_fdp
 
@@ -194,9 +155,7 @@ def _run_backtest_universe(
 # =============================================================================
 def _run_combo(combo: tuple, combo_idx: int, ohlcv_arr_pool: dict, rule_templates: list, timeframe: str,
                param_grid: dict, bar, cap: dict) -> dict | None:
-    """One combo: backtest and StepM IS. None if skipped. Rules passing StepM IS as main_back_fx keeps them
-    (POST-MBIAS); if StepM skips (fewer than 2 columns) it lets every rule through untouched: that counts 0, and
-    global_p and k are None. cap: the dict of stepm_capture."""
+
     name = "+".join(combo)
     ohlcv_arr_combo = {sym: ohlcv_arr_pool[sym] for sym in combo}
 
@@ -262,11 +221,10 @@ def _format_param_grid(grid: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_symbol_pool(pool: list, per_line: int = 5) -> str:
-    """SYMBOL_POOL as a multi-line list for the run header (max `per_line` symbols per line)."""
+def _format_list(items: list, per_line: int = 5) -> str:
     lines = []
-    for i in range(0, len(pool), per_line):
-        chunk = ", ".join(f"'{s}'" for s in pool[i:i + per_line])
+    for i in range(0, len(items), per_line):
+        chunk = ", ".join(f"'{s}'" for s in items[i:i + per_line])
         lines.append(chunk + ",")
     return "\n".join(lines)
 
@@ -281,7 +239,8 @@ def _capped(parts: list, sep: str = " | ") -> str:
 def _list(values: list) -> str:
     return "[" + ",".join(str(v) for v in values) + "]"
 
-
+def _spread(values: list, plus_minus: float) -> list:
+    return sorted({round(v + d, 10) for v in values for d in (-plus_minus, 0.0, plus_minus)})
 def _ordered_timeframes(timeframes: list) -> list:
     return sorted(timeframes, key=get_bars_per_day, reverse=True)    # smallest timeframe first
 
@@ -296,8 +255,7 @@ def _log_block_header(timeframe: str, size: int, k: int, n_sizes: int, n_combos:
 
 
 def _log_block(timeframe: str, size: int, rows: list, skipped: list) -> None:
-    """WHITE: range of the global p-value and combos with p <= STEPM_ALPHA. STEPM: range of k. RULES: rules passing
-    StepM IS, summed over the combos. SKIPPED, only if any. WHITE and STEPM leave out the combos StepM skipped."""
+
     tag = f"N={size}"
     ran = [r for r in rows if r["global_p"] is not None]
     if ran:
@@ -372,55 +330,84 @@ def _log_summary(rows: list) -> None:
     logger.info(f"{'=' * REPORT_LINE_WIDTH}")
 
 
-def _log_paste(shortlists: dict) -> None:
-    """SYMBOL_COMBOS_BY_TIMEFRAME (the TOP of every timeframe, in ranking order) and PARAM_GRID_BY_TIMEFRAME (every
-    TP_PCT and SL_PCT value three times), smallest timeframe first, ready to paste."""
+def _backtest_config(shortlists: dict, param_grids: dict, indicators: dict, plus_minus: float) -> dict:
+    return {
+        timeframe: {
+            "combos":     [combo.split("+") for combo in shortlist["symbols"]],
+            "param_grid": {"SELL_AFTER": list(param_grids[timeframe]["SELL_AFTER"]),
+                           "TP_PCT":     _spread(param_grids[timeframe]["TP_PCT"], plus_minus),
+                           "SL_PCT":     _spread(param_grids[timeframe]["SL_PCT"], plus_minus)},
+            "indicators": list(indicators[timeframe]),
+        }
+        for timeframe, shortlist in shortlists.items()
+    }
+
+
+def _log_paste(result: dict) -> None:
+
     logger.info("\nSYMBOL_COMBOS_BY_TIMEFRAME = {")
-    for timeframe, shortlist in shortlists.items():
-        if shortlist.empty:
+    for timeframe, r in result.items():
+        if not r["combos"]:
             logger.info(f'    "{timeframe}": [],')
             continue
         logger.info(f'    "{timeframe}": [')
-        for combo in shortlist["symbols"]:
-            logger.info("        [" + ", ".join(f'"{s}"' for s in combo.split("+")) + "],")
+        for combo in r["combos"]:
+            logger.info("        [" + ", ".join(f'"{s}"' for s in combo) + "],")
         logger.info("    ],")
     logger.info("}")
 
     logger.info("\nPARAM_GRID_BY_TIMEFRAME = {")
-    for timeframe in shortlists:
-        grid = PARAM_GRID_BY_TIMEFRAME[timeframe]
+    for timeframe, r in result.items():
+        grid = r["param_grid"]
         logger.info(f'    "{timeframe}": {{')
         logger.info(f'        "SELL_AFTER": {_list(grid["SELL_AFTER"])},')
-        logger.info(f'        "TP_PCT":     {_list([v for v in grid["TP_PCT"] for _ in range(3)])},')
-        logger.info(f'        "SL_PCT":     {_list([v for v in grid["SL_PCT"] for _ in range(3)])},')
+        logger.info(f'        "TP_PCT":     {_list(grid["TP_PCT"])},')
+        logger.info(f'        "SL_PCT":     {_list(grid["SL_PCT"])},')
         logger.info("    },")
     logger.info("}")
 
+    logger.info("\nSELECTED_INDICATORS_BY_TIMEFRAME = {")
+    for timeframe, r in result.items():
+        logger.info(f'    "{timeframe}": [')
+        for ind in r["indicators"]:
+            logger.info(f'        "{ind}",')
+        logger.info("    ],")
+    logger.info("}")
+
 # =============================================================================
-# MAIN
+# RUN
 # =============================================================================
-def main():
-    missing_pool = [tf for tf in TIMEFRAMES if not SYMBOL_POOL_BY_TIMEFRAME.get(tf)]
-    if missing_pool:
-        raise ValueError(f"SYMBOL_POOL_BY_TIMEFRAME has no symbols for timeframes: {missing_pool}")
+def run(cfg: CombosStageConfig, inputs: dict | None = None) -> dict:
+    configure_loggers()
+    if inputs is None:
+        doc = ra.load_combos_input(settings.BACKTEST_MODE, cr.TIMEFRAMES)
+    else:
+        doc = ra.check_combos_input(inputs, settings.BACKTEST_MODE, cr.TIMEFRAMES)
+    inputs      = {tf: doc["by_timeframe"][tf] for tf in cr.TIMEFRAMES}
+    pools       = {tf: e["symbols"] for tf, e in inputs.items()}
+    param_grids = {tf: e["param_grid"] for tf, e in inputs.items()}
+    indicators  = {tf: e["indicators"] for tf, e in inputs.items()}
 
     logger.info(f"\n{'─' * 100}")
-    logger.info("  SYMBOL COMBINATION EXPERIMENT")
+    logger.info("  COMBOS START")
     logger.info(f"{'─' * 100}")
-    logger.info(_header_line("DATASET", f"{DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET])}"))
+    logger.info(_header_line("DATASET", f"{cr.DATASET} ── {os.path.basename(DATA_FOLDER_BY_DATASET[cr.DATASET])}"))
     logger.info(_header_line("BACKTEST", str(settings.BACKTEST_MODE)))
-    for tf in TIMEFRAMES:
-        logger.info(_header_line(f"SYMBOL_POOL {tf}", _format_symbol_pool(SYMBOL_POOL_BY_TIMEFRAME[tf])))
-    logger.info(_header_line("COMBO_SIZES", str(COMBO_SIZES)))
-    logger.info(_header_line("MAX_DEPTH", str(RULE_MAX_DEPTH)))
-    logger.info(_header_line("PARAM_GRID_BY_TIMEFRAME", _format_param_grid(PARAM_GRID_BY_TIMEFRAME)))
-    logger.info(_header_line("N_SAMPLES_PER_SIZE", str(N_SAMPLES_PER_SIZE)))
+    logger.info(_header_line("GRIDS", f"{ra.combos_path()} (created {doc['created']})"))
+    for tf in cr.TIMEFRAMES:
+        logger.info(_header_line(f"SYMBOL_POOL {tf}", _format_list(pools[tf])))
+        logger.info(_header_line(f"INDICATORS {tf}", _format_list(indicators[tf], per_line=3)))
+    logger.info(_header_line("COMBO_SIZES", str(cfg.combo_sizes)))
+    logger.info(_header_line("MAX_DEPTH", f"{RULE_MAX_DEPTH} (grids: {doc['max_depth']})"))
+    logger.info(_header_line("PARAM_GRID_BY_TIMEFRAME", _format_param_grid(param_grids)))
+    logger.info(_header_line("N_SAMPLES_PER_SIZE", str(cfg.n_samples_per_size)))
+    logger.info(_header_line("PLUS_MINUS", str(cfg.plus_minus)))
     logger.info(_header_line("RANKING", "rules passing StepM IS, then global p-value"))
     logger.info(f"{'─' * 100}")
 
     ohlcv_data_by_timeframe = build_universe(
-        DATA_FOLDER_BY_DATASET[DATASET], {tf: SYMBOL_POOL_BY_TIMEFRAME[tf] for tf in TIMEFRAMES},
-        dataset=DATASET,
+        DATA_FOLDER_BY_DATASET[cr.DATASET], {tf: pools[tf] for tf in cr.TIMEFRAMES},
+        dataset=cr.DATASET,
     )
     ohlcv_arr_by_timeframe  = {
         timeframe: prepare_ohlcv_arrays(ohlcv_is)
@@ -430,20 +417,21 @@ def main():
     all_rows = []
     debug    = logger.isEnabledFor(logging.DEBUG)
     with pipeline_bars(show=debug), stepm_capture() as cap:
-        for timeframe in TIMEFRAMES:
-            pool           = SYMBOL_POOL_BY_TIMEFRAME[timeframe]
+        for timeframe in cr.TIMEFRAMES:
+            pool           = pools[timeframe]
             ohlcv_arr_pool = ohlcv_arr_by_timeframe[timeframe]
-            param_grid     = PARAM_GRID_BY_TIMEFRAME[timeframe]
-            rule_templates = build_rule_templates(ohlcv_arr_pool, timeframe, RULE_MAX_DEPTH)
+            param_grid     = param_grids[timeframe]
+            rule_templates = build_rule_templates(ohlcv_arr_pool, indicators=indicators[timeframe],
+                                                  max_depth=RULE_MAX_DEPTH)
 
-            for i_size, size in enumerate(COMBO_SIZES, start=1):
-                combos   = _generate_combos(pool, size, N_SAMPLES_PER_SIZE.get(size), RANDOM_SEED)
+            for i_size, size in enumerate(cfg.combo_sizes, start=1):
+                combos   = _generate_combos(pool, size, cfg.n_samples_per_size.get(size), RANDOM_SEED)
                 n_combos = len(combos)
-                _log_block_header(timeframe, size, i_size, len(COMBO_SIZES), n_combos, len(pool),
+                _log_block_header(timeframe, size, i_size, len(cfg.combo_sizes), n_combos, len(pool),
                                   len(rule_templates))
 
                 rows, skipped = [], []
-                bar = tqdm(combos, desc=f"{f'COMBOS {DATASET} N={size}':<16}{timeframe}", dynamic_ncols=True,
+                bar = tqdm(combos, desc=f"{f'COMBOS {cr.DATASET} N={size}':<16}{timeframe}", dynamic_ncols=True,
                            disable=debug, file=sys.stdout)
                 for combo_idx, combo in enumerate(bar, start=1):
                     logger.debug(f"{'-' * 100}")
@@ -463,7 +451,7 @@ def main():
     results_df = pd.DataFrame(all_rows, columns=columns)
 
     shortlists, summary = {}, []
-    for timeframe in _ordered_timeframes(TIMEFRAMES):
+    for timeframe in _ordered_timeframes(cr.TIMEFRAMES):
         subset    = results_df[results_df["timeframe"] == timeframe]
         ranking   = _build_ranking(subset)
         shortlist = ranking.head(RANK_TOP_N)
@@ -471,16 +459,6 @@ def main():
         shortlists[timeframe] = shortlist
         summary.append(_summary_row(timeframe, ranking, shortlist, len(subset)))
     _log_summary(summary)
-    _log_paste(shortlists)
-
-
-if __name__ == "__main__":
-    start = time.time()
-    try:
-        main()
-        elapsed = int(time.time() - start)
-        logger.info(f"\n🏁 TOTAL — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")
-    except KeyboardInterrupt:
-        elapsed = int(time.time() - start)
-        logger.info(f"\n⛔  INTERRUPTED BY USER — {elapsed // 3600} h {(elapsed % 3600) // 60} min {elapsed % 60} s")
-        sys.exit(0)
+    result = _backtest_config(shortlists, param_grids, indicators, cfg.plus_minus)
+    _log_paste(result)
+    return result

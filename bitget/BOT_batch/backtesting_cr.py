@@ -1,4 +1,4 @@
-#BOT_batch_E1/main_pipeline.py (crypto)
+#BOT_batch_BZ/backtesting_cr.py 
 import os
 import sys
 import time
@@ -6,6 +6,7 @@ import logging
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "core")))
+
 # =============================================================================
 # LOGGING CONFIGURATION
 # =============================================================================
@@ -39,66 +40,93 @@ from symbols.universe import build_universe, MIN_START_DATE_BY_DATASET
 from setup.config_paths import DATA_FOLDER_BY_DATASET
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
 from pipeline.wfo import WFO_TRAIN_MONTHS, WFO_TEST_MONTHS, EMA_ALPHA, WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH
-from pipeline.correlation import CORRELATION_DD_TH
+from pipeline.correlation import CORRELATION_OOS_TH
 from pipeline.multiverse import MULTIVERSE_PVALUE_TH
 from pipeline.signal_cleaning import JACCARD_SIMILARITY_TH
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from setup.config_backtest import ORDER_AMOUNT
 from rule_mining.rule_runner import run_rule_mining_pipeline
+from rule_mining.rule_generator import validate_indicators_by_timeframe
+from setup.config_core import settings
+# =============================================================================
+# PATHS
+# =============================================================================
+STRATEGIES_DZ_FOLDER = os.path.join(os.path.dirname(__file__), "strategies_DZ")
+BRIEF_TRADES_FOLDER  = os.path.join(STRATEGIES_DZ_FOLDER, "brief_trades")
+DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_DZ_FOLDER, "rules_files", "rules_batch.py")
 
 # =============================================================================
 # RUNS + OUTPUTS — portfolio construction and output stages
 # =============================================================================
 SHOW_PLOTS    = True
 SAVE_TRADES   = False
-RUN_DEPLOY    = True
+RUN_DEPLOY    = False
 SPLIT_MODE    = False
 
 DATASET_IS, DATASET_OOS = ("IS", "OOS") if SPLIT_MODE else ("MERGED", "MERGED")
-#------------------------------------------------------------------------------
-#------------------------------------------------------------------------------
 
-TIMEFRAMES = ["1H","4H","6H","12H"]
-#TIMEFRAMES = ["12H"]
+# =============================================================================
+TIMEFRAMES = ["1H","4H"]
 
 SYMBOL_COMBOS_BY_TIMEFRAME = {
-    "1H":  [["ADAUSDT","AVAXUSDT","BCHUSDT","BNBUSDT","DOGEUSDT","LINKUSDT","NEARUSDT","SOLUSDT","UNIUSDT","XRPUSDT"]],
-    "4H":  [["ADAUSDT","AVAXUSDT","BCHUSDT","BNBUSDT","DOGEUSDT","LINKUSDT","NEARUSDT","SOLUSDT","UNIUSDT","XRPUSDT"]],
-    "6H":  [["ADAUSDT","AVAXUSDT","BCHUSDT","BNBUSDT","DOGEUSDT","LINKUSDT","NEARUSDT","SOLUSDT","UNIUSDT","XRPUSDT"]],
-    "12H": [["ADAUSDT","AVAXUSDT","BCHUSDT","BNBUSDT","DOGEUSDT","LINKUSDT","NEARUSDT","SOLUSDT","UNIUSDT","XRPUSDT"]],
+    "1H": [
+        ["BTCUSDT", "ETHUSDT"],
+    ],
+    "4H": [
+        ["BTCUSDT", "ETHUSDT"],
+    ],
 }
 
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
-        "SELL_AFTER": [0],
+        "SELL_AFTER": [40],
         "TP_PCT":     [6,8,10],
         "SL_PCT":     [6,8],
     },
     "4H": {
-        "SELL_AFTER": [0],
+        "SELL_AFTER": [40],
         "TP_PCT":     [6,8,10],
         "SL_PCT":     [6,8],
     },
 }
 
-# =============================================================================
-# PATHS
-# =============================================================================
-STRATEGIES_E1_FOLDER = os.path.join(os.path.dirname(__file__), "strategies_E1")
-BRIEF_TRADES_FOLDER  = os.path.join(STRATEGIES_E1_FOLDER, "brief_trades")
-DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_E1_FOLDER, "rules_files", "rules_batch.py")
+SELECTED_INDICATORS_BY_TIMEFRAME = {
+    "1H": [
+        "kalman_slope",
+        "choppiness",
+        "close_pos_in_bar",
+        "vortex",
+        "ichimoku_price_vs_cloud",
+        "donchian_pos",
+        "rvi",
+        "close_pct_rank",
+    ],
+    "4H": [
+        "close_pos_in_bar",
+        "bb_pctb",
+        "open_close_momentum",
+        "inside_outside_ratio",
+        "acceleration",
+        "donchian_pos",
+        "ichimoku_price_vs_cloud",
+        "pivot_dist",
+    ],
+}
 
 # =============================================================================
 # RUN CONFIG — single source of truth: printed at startup AND persisted
 # =============================================================================
-run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_IS": DATASET_IS, "DATASET_OOS": DATASET_OOS, 
-              "TIMEFRAMES": TIMEFRAMES, "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, 
-              "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME}
+run_config = {"SPLIT_MODE": SPLIT_MODE,
+              "DATASET_IS": DATASET_IS, 
+              "DATASET_OOS": DATASET_OOS, 
+              "TIMEFRAMES": TIMEFRAMES, 
+              "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, 
+              "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME,
+              "SELECTED_INDICATORS_BY_TIMEFRAME": SELECTED_INDICATORS_BY_TIMEFRAME}
 # =============================================================================
 # COMBOS — each timeframe can be mined with several independent symbol baskets
 # =============================================================================
 def build_combos() -> list:
-    """Flatten SYMBOL_COMBOS_BY_TIMEFRAME into an ordered list of combo descriptors."""
     return [
         {
             "combo_key": f"{timeframe}_c{combo_idx:02d}",
@@ -143,17 +171,21 @@ def log_run_config() -> None:
             f"  DATASET     : {DATASET_IS} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_IS])} "
             f"({MIN_START_DATE_BY_DATASET[DATASET_IS]})"
         )
-    logger.info(f"  SYMBOLS     :")
+    logger.debug(f"  SYMBOLS     :")
     for combo in build_combos():
-        logger.info(f"    {combo['combo_key']:<12}({len(combo['symbols'])}) {combo['symbols']}")
+        logger.debug(f"    {combo['combo_key']:<12}({len(combo['symbols'])}) {combo['symbols']}")
     logger.info(f"  TIMEFRAMES  : {TIMEFRAMES}")
+    logger.info(f"  BACKTEST    : {settings.BACKTEST_MODE}")
     logger.debug(f"  MAX DEPTH  : {RULE_MAX_DEPTH}")
     logger.info(f"  PARAM GRID  : {PARAM_GRID_BY_TIMEFRAME}")
+    for i, (tf, indicators) in enumerate(SELECTED_INDICATORS_BY_TIMEFRAME.items()):
+        lead = "  INDICATORS  : " if i == 0 else " " * 16
+        logger.info(f"{lead}{tf} ── {', '.join(indicators)}")
     logger.info(f"  WFO WINDOWS : train={WFO_TRAIN_MONTHS}m test={WFO_TEST_MONTHS}m | EMA_ALPHA: {EMA_ALPHA}")
     logger.info(
         f"  PIPES       : JACCARD_TH={JACCARD_SIMILARITY_TH} | "
         f"NET_GAIN_TH={WFO_NET_GAIN_TH} DD_TH={WFO_DD_TH} R2_TH={WFO_R2_TH} WFR_TH={WFO_WFR_TH} | "
-        f"CORR_TH={CORRELATION_DD_TH} | "
+        f"CORR_TH={CORRELATION_OOS_TH} | "
         f"MV_PVALUE_TH={MULTIVERSE_PVALUE_TH}"
     )
     logger.info(
@@ -170,12 +202,11 @@ if __name__ == "__main__":
         missing_tf = [tf for tf in TIMEFRAMES if not SYMBOL_COMBOS_BY_TIMEFRAME.get(tf)]
         if missing_tf:
             raise ValueError(f"SYMBOL_COMBOS_BY_TIMEFRAME has no combos for timeframes: {missing_tf}")
-
+        validate_indicators_by_timeframe(SELECTED_INDICATORS_BY_TIMEFRAME, TIMEFRAMES)
         log_run_config()
 
         # -------------------------------------------------------------------
-        # DATA LOADING — one call validates and loads every symbol, every
-        # timeframe, up front (fails fast if any symbol is bad).
+        # DATA LOADING — one call validates and loads every symbol
         # -------------------------------------------------------------------
         combos = build_combos()
 
@@ -188,19 +219,19 @@ if __name__ == "__main__":
                 combos, DATA_FOLDER_BY_DATASET[DATASET_OOS], DATASET_OOS,
             )
         else:
-            # Single-source mode: both roles share the same already-loaded dataset.
             ohlcv_data_oos_by_combo = ohlcv_data_is_by_combo
             ohlcv_arr_oos_by_combo  = ohlcv_arr_is_by_combo
         # -------------------------------------------------------------------
         # RULE MINING — Phase A: DSR for every timeframe, then a combined
         # -------------------------------------------------------------------
-        validated_wfo_test, all_mbias_results = run_rule_mining_pipeline(
+        validated_wfo_test, all_mbias_results  = run_rule_mining_pipeline(
             ohlcv_data_is_by_combo             = ohlcv_data_is_by_combo,
             ohlcv_arr_is_by_combo              = ohlcv_arr_is_by_combo,
             ohlcv_data_oos_by_combo            = ohlcv_data_oos_by_combo,
             ohlcv_arr_oos_by_combo             = ohlcv_arr_oos_by_combo,
             combos                             = combos,
             param_grid                         = PARAM_GRID_BY_TIMEFRAME,
+            indicators_by_timeframe            = SELECTED_INDICATORS_BY_TIMEFRAME,
             order_amount                       = ORDER_AMOUNT,
             data_folder                        = DATA_FOLDER_BY_DATASET[DATASET_OOS],
             max_depth                          = RULE_MAX_DEPTH,

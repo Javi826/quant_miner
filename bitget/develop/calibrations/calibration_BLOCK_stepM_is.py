@@ -1,4 +1,4 @@
-#research/calibrations/calibration_BLOCK_sM_size.py forex
+#research/calibrations/calibration_BLOCK_sM_size.py
 import os
 import sys
 import math
@@ -37,7 +37,7 @@ from pipeline.multiverse import _build_path_bundle, _build_synthetic_ohlcv_arr, 
 DATASET    = "IS"           # StepM runs on the IS data
 TIMEFRAMES = ["4H", "1H"]
 SYMBOLS = [
-    "EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD",
+    "BTCUSDT", "ETHUSDT", "GBPUSD", "AUDUSD", "USDCAD",
     "USDCHF", "NZDUSD", "EURJPY", "GBPJPY", "EURGBP",
     "EURCHF", "AUDJPY", "CADJPY", "CHFJPY", "EURAUD",
     "EURCAD", "AUDCAD", "GBPCAD", "NZDJPY", "GBPCHF",

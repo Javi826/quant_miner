@@ -1,4 +1,4 @@
-#signals/signal_builder.py
+#signals/signal_builder.py 
 import numpy as np
 
 from signals.indicators_bank import ConditionBank

@@ -1,4 +1,4 @@
-# quant_miner/darwinex/BOT_research/A0_caches_fx.py (forex)
+# quant_miner/darwinex/BOT_research/precompute/caches.py (forex)
 import os
 import sys
 import time
@@ -7,15 +7,19 @@ from dataclasses import replace
 
 import numpy as np
 
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))       # quant_miner
+sys.path.append(_ROOT)
+sys.path.append(os.path.join(_ROOT, "core"))
+sys.path.append(os.path.join(_ROOT, "darwinex"))
 
-import config_cache_fx as cc    # what defines the caches (dataset, symbols, grid, NULL_PCT, MODE); sets sys.path
+from setup import config_research as cr    # what defines the caches (dataset, symbols, grid, NULL_PCT, MODE)
+from research import artifacts as ra
 
 from indicators.indicators_pool import CANDIDATE_REGISTRY, GROUP_NAMES, build_flat_instances, instance_key
-from screening.screen_engine import (NULL_BATCH, IndicatorPool, align_symbols, build_bins, build_targets,
+from research.screening.screen_engine import (NULL_BATCH, IndicatorPool, align_symbols, build_bins, build_targets,
                                      build_exits, phase2_shifts, swap_pair, run_screen, save_cache, progress,
                                      _pair_z_npy)
-from screening.screen_kernels_cpu import (MIN_PILOT_N, pair_edge_moments, pair_valid_mask, pair_z_edges,
+from research.screening.screen_kernels_cpu import (MIN_PILOT_N, pair_edge_moments, pair_valid_mask, pair_z_edges,
                                           pair_null_distribution)
 
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout, force=True)
@@ -43,7 +47,7 @@ def _session(data, cfg, pool):
     shifts, pilot = phase2_shifts(data.n, cfg)
     ses = {"Y": Y, "shifts": shifts, "pilot": pilot, "n_sym": len(data.symbols), "ncut": pool.ncut}
     if cfg.mode == "NPY":
-        from screening.screen_kernels_gpu import npy_prepare, npy_shifts
+        from research.screening.screen_kernels_gpu import npy_prepare, npy_shifts
         ses["prep"] = npy_prepare(Y, build_exits(data.ohlcv_arr, data, cfg))
         ses["shifts_d"] = npy_shifts(shifts, data.n)
         ses["pilot_d"] = npy_shifts(pilot, data.n)
@@ -53,7 +57,7 @@ def _session(data, cfg, pool):
 def pair_nulls_npy(bA, bB, ncvA, ncvB, ses):
 
     import cupy as cp
-    from screening.screen_kernels_gpu import npy_edges, npy_pair_setup, npy_pair_moments, npy_pair_null
+    from research.screening.screen_kernels_gpu import npy_edges, npy_pair_setup, npy_pair_moments, npy_pair_null
 
     Y, prep, ncut, n_sym = ses["Y"], ses["prep"], ses["ncut"], ses["n_sym"]
     nA, nB, n_tg         = bA.shape[0], bB.shape[0], Y.shape[2]
@@ -125,7 +129,7 @@ def pair_nulls_ypy(bA, bB, ncvA, ncvB, ses):
 
 def fill_nulls(data, pool, cfg, raw, bins, ncv, path):
 
-    full = raw.setdefault(cc.FULL_KEY, set())
+    full = raw.setdefault(ra.FULL_KEY, set())
     todo = [p for p in raw["pairs"] if p not in full]
     logger.info(f"🟡 Phase 2 nulls without early stop, {len(todo)} of {len(raw['pairs'])} pairs to complete: "
                 f"{os.path.basename(path)}")
@@ -166,16 +170,16 @@ def fill_nulls(data, pool, cfg, raw, bins, ncv, path):
 def main():
     log_run_config()
     pool = IndicatorPool(CANDIDATE_REGISTRY, build_flat_instances(), instance_key, GROUP_NAMES)
-    ohlcv = cc.load_data(TIMEFRAME)
-    data = align_symbols(ohlcv, cc.SYMBOLS)
+    ohlcv = ra.load_data(TIMEFRAME)
+    data = align_symbols(ohlcv, cr.SYMBOLS)
     bins = ncv = None
-    for k, sa in enumerate(cc.SELL_AFTER, start=1):
-        logger.info(f"\n{'─' * 115}\n  SELL_AFTER={sa} ({k}/{len(cc.SELL_AFTER)})\n{'─' * 115}")
-        cfg = replace(cc.CFGS[sa], n_jobs=N_JOBS)
-        path, _key = cc.cache_file(sa, TIMEFRAME)
-        raw = run_screen(ohlcv, cc.SYMBOLS, pool, cfg, cache_dir=cc.CACHE_DIR, cache_name=cc.cache_name(TIMEFRAME),
-                         cache_tag=cc.cache_tag(TIMEFRAME))
-        if not cc.missing_nulls(raw):
+    for k, sa in enumerate(cr.SELL_AFTER, start=1):
+        logger.info(f"\n{'─' * 115}\n  SELL_AFTER={sa} ({k}/{len(cr.SELL_AFTER)})\n{'─' * 115}")
+        cfg = replace(ra.CFGS[sa], n_jobs=N_JOBS)
+        path, _key = ra.cache_file(sa, TIMEFRAME)
+        raw = run_screen(ohlcv, cr.SYMBOLS, pool, cfg, cache_dir=ra.CACHE_DIR, cache_name=ra.cache_name(TIMEFRAME),
+                         cache_tag=ra.cache_tag(TIMEFRAME))
+        if not ra.missing_nulls(raw):
             logger.info(f"🟢 Phase 2 nulls complete: {os.path.basename(path)}")
             continue
         if bins is None:
@@ -185,16 +189,16 @@ def main():
 
 
 def log_run_config() -> None:
-    cfg = cc.CFGS[cc.SELL_AFTER[0]]
+    cfg = ra.CFGS[cr.SELL_AFTER[0]]
     logger.info(f"\n{'─' * 115}")
     logger.info("  CACHES START")
     logger.info(f"{'─' * 115}")
-    logger.info(f"  DATASET     : {cc.DATASET} ── {TIMEFRAME}")
-    logger.info(f"  MODE        : {cc.MODE}")
-    logger.info(f"  PARAM GRID  : TP_PCT={cc.TP_PCT} SL_PCT={cc.SL_PCT} "
+    logger.info(f"  DATASET     : {cr.DATASET} ── {TIMEFRAME}")
+    logger.info(f"  MODE        : {cr.MODE}")
+    logger.info(f"  PARAM GRID  : TP_PCT={cr.TP_PCT} SL_PCT={cr.SL_PCT} "
                 f"({len(cfg.configs)} configs, {len(cfg.targets)} targets per SELL_AFTER)")
-    logger.info(f"  SELL_AFTER  : {cc.SELL_AFTER} (one cache each)")
-    logger.info(f"  NULL FLOOR  : N_NULL_PATHS={cfg.n_null_paths} NULL_PCT={cc.NULL_PCT}")
+    logger.info(f"  SELL_AFTER  : {cr.SELL_AFTER} (one cache each)")
+    logger.info(f"  NULL FLOOR  : N_NULL_PATHS={cfg.n_null_paths} NULL_PCT={cr.NULL_PCT}")
     logger.info(f"  PILOT (z)   : N_PILOTS={cfg.n_pilots}")
     logger.info(f"  COMPUTE     : N_JOBS={N_JOBS} SAVE_MIN={SAVE_MIN}")
     logger.info(f"{'─' * 115}\n")

@@ -10,7 +10,7 @@ from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from utils.plotting import plot_rule_mining_filter_comparison, plot_rule_mining_portfolio_comparison
 from setup.config_backtest import INITIAL_BALANCE
 from runs.run_portfolio import find_best_portfolio_combination_wfo
-from rule_mining.rule_generator import generate_all_rules, MAX_DEPTH
+from rule_mining.rule_generator import generate_all_rules, validate_indicators_by_timeframe, MAX_DEPTH
 from rule_mining.rule_writter import run_deploy_rule, save_rule_deploy_batch
 from utils.reporting import print_rule_mining_ranking, print_rule_mining_min_by_group, print_rule_mining_min_by_group_is
 from pipeline.multiverse import pipe_multiverse
@@ -31,9 +31,9 @@ def _build_rule_id(i: int, combo_key: str, side: str, slug: str) -> str:
     return f"{i:06d}_{combo_key}_{side}_{slug}"
 
 
-def build_rule_templates(ohlcv_arr: dict, timeframe: str, max_depth: int = MAX_DEPTH) -> list:
+def build_rule_templates(ohlcv_arr: dict, *, indicators, max_depth: int = MAX_DEPTH) -> list:
     arr_sample = next(iter(ohlcv_arr.values()))
-    all_rules  = generate_all_rules(arr_sample, max_depth=max_depth, timeframe=timeframe)
+    all_rules  = generate_all_rules(arr_sample, indicators=indicators, max_depth=max_depth)
     return [{**rule, "slug": _slugify_label(rule["label"])} for rule in all_rules]
 
 
@@ -78,6 +78,7 @@ def run_rule_mining_pipeline(
     ohlcv_arr_oos_by_combo: dict,
     combos: list,
     param_grid: dict,   # dict keyed by timeframe: {"1H": {...}, "4H": {...}}
+    indicators_by_timeframe: dict,
     order_amount: int,
     data_folder: str,
     show_progress: bool = False,
@@ -90,6 +91,7 @@ def run_rule_mining_pipeline(
     run_config: dict = None,
     run_deploy: bool = False,
 ) -> list:
+    validate_indicators_by_timeframe(indicators_by_timeframe, [c["timeframe"] for c in combos])
     #-----------------------------------------------------------------
     # BACKTESTING — one combo at a time, ALL combos before moving on.
     # -------------------------------------------------------------------
@@ -99,7 +101,8 @@ def run_rule_mining_pipeline(
         combo_key, timeframe = combo["combo_key"], combo["timeframe"]
         if timeframe != templates_tf:
             templates_tf   = timeframe
-            rule_templates = build_rule_templates(ohlcv_arr_is_by_combo[combo_key], timeframe, max_depth)
+            rule_templates = build_rule_templates(ohlcv_arr_is_by_combo[combo_key],
+                                                  indicators=indicators_by_timeframe[timeframe], max_depth=max_depth)
         rules = build_rule_dicts(rule_templates, combo_key, timeframe)
         logger.info(f"\n\033[36m{'─' * 70}")
         logger.info(f"─ RULE MINING ── {combo_key} {combo['symbols']} ── rules: {format(len(rules), ',').replace(',', '.')}")

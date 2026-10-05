@@ -955,21 +955,21 @@ def pipe_stepm(
     logger.debug(f"  best real Sharpe  : {real_sharpe[best_raw_idx]:.4f}")
     logger.debug(f"{'─' * 70}\n")
 
-    logger.info(f"\n{'─' * 70}")
-    logger.info(f"  GLOBAL WHITE p-value (studentized) ── {timeframe}")
-    logger.info(f"{'─' * 70}")
-    logger.info(f"  best column(z) : {best_col_name}")
-    logger.info(f"  best Sharpe(z) : {real_sharpe[best_col_idx]:.4f}")
+    logger.debug(f"\n{'─' * 70}")
+    logger.debug(f"  GLOBAL WHITE p-value (studentized) ── {timeframe}")
+    logger.debug(f"{'─' * 70}")
+    logger.debug(f"  best column(z) : {best_col_name}")
+    logger.debug(f"  best Sharpe(z) : {real_sharpe[best_col_idx]:.4f}")
     logger.debug(f" best z-statistic: {global_result['best_statistic']:.4f}  (sigma_hat={sigma_hat[best_col_idx]:.4f})")
-    logger.info(f"  global p-value : {global_result['global_p']:.4f}")
+    logger.debug(f"  global p-value : {global_result['global_p']:.4f}")
     logger.debug(f"  block size     : {block_size}")
 
     cut = compute_cut_diagnostic(null, k_fwe)
-    logger.info(
+    logger.debug(
         f"  P{cut['percentile']:<14.6g}: {cut['pct_below']:.2f}% <Real  "
         f"(k={f'{k_fwe:,}'.replace(',', '.')})"
     )
-    logger.info(f"{'─' * 70}\n")
+    logger.debug(f"{'─' * 70}\n")
 
     logger.debug(f"STEPM ── {timeframe} ── k-FWE level k={k_fwe}" + (" (strict FWE)" if k_fwe == 1 else " (relaxed control — reasoned extension, see module docstring)"))
 
@@ -1014,9 +1014,9 @@ def pipe_stepm(
     n_cols_kept_fmt     = f"{len(kept_columns):,}".replace(",", ".")
 
     logger.info(
-        f"STEPM COLUMNS  {timeframe}: k={k_fwe_fmt} ── {n_cols_rejected_fmt}/{n_cols_kept_fmt} columns rejected "
+        f"STEPM COLUMNS   {timeframe}: k={k_fwe_fmt} ── {n_cols_rejected_fmt}/{n_cols_kept_fmt} columns rejected "
         f"── gamma_implied={gamma_implied:.4f}"
     )
-    logger.info(f"STEPM RULES    {timeframe}: {n_passed_fmt}/{n_total_fmt} rules pass")
+    logger.info(f"STEPM RULES     {timeframe}: {n_passed_fmt}/{n_total_fmt} rules pass")
 
     return results

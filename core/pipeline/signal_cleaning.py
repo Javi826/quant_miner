@@ -1,4 +1,4 @@
-# core/pipeline/signal_cleaning.py
+# core/pipeline/signal_cleaning.py NEW
 import logging
 import numpy as np
 import cupy as cp
@@ -11,7 +11,7 @@ logger = logging.getLogger("BOT_batch.pipeline.signal_cleaning")
 #==============================================================================
 # CONFIG
 #==============================================================================
-JACCARD_SIMILARITY_TH  = 0.85
+JACCARD_SIMILARITY_TH  = 0.82
 #------------------------------------------------------------------------------
 
 

@@ -20,7 +20,7 @@ CRYPTO = Settings(
 FOREX = Settings(
     DAYS_PER_YEAR=252,
     WEEKMASK="1111100",
-    CUSTOM_FIELDS={"lot": 0.2, "magic": "AUTO_INCREMENT"},
+    CUSTOM_FIELDS={"lot": 1.0, "magic": "AUTO_INCREMENT"},
     BACKTEST_MODE="NPY",
 )
 _MARKET_SETTINGS = {

@@ -1,4 +1,4 @@
-#BOT_batch_BZ/main_backt_fx.py (forex)
+#BOT_batch_BZ/backtesting_fx.py 
 import os
 import sys
 import time
@@ -46,7 +46,14 @@ from pipeline.signal_cleaning import JACCARD_SIMILARITY_TH
 from utils.ohlcv_utils import prepare_ohlcv_arrays
 from setup.config_backtest import ORDER_AMOUNT
 from rule_mining.rule_runner import run_rule_mining_pipeline
+from rule_mining.rule_generator import validate_indicators_by_timeframe
 from setup.config_core import settings
+# =============================================================================
+# PATHS
+# =============================================================================
+STRATEGIES_DZ_FOLDER = os.path.join(os.path.dirname(__file__), "strategies_DZ")
+BRIEF_TRADES_FOLDER  = os.path.join(STRATEGIES_DZ_FOLDER, "brief_trades")
+DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_DZ_FOLDER, "rules_files", "rules_batch.py")
 
 # =============================================================================
 # RUNS + OUTPUTS — portfolio construction and output stages
@@ -63,77 +70,116 @@ TIMEFRAMES = ["1H","4H"]
 
 SYMBOL_COMBOS_BY_TIMEFRAME = {
     "1H": [
-        ["GBPJPY"],
-        ["AUDCAD", "EURAUD"],
-        ["USDJPY", "EURAUD"],
-        ["USDJPY"],
-        ["EURAUD"],
-        ["AUDCAD", "EURGBP"],
-        ["USDJPY", "EURCAD"],
-        ["EURGBP", "NZDJPY"],
-        ["USDJPY", "AUDUSD"],
-        ["USDJPY", "NZDJPY"],
-        ["AUDUSD", "EURGBP"],
-        ["AUDUSD", "EURAUD"],
-        ["GBPJPY", "USDJPY"],
-        ["GBPJPY", "AUDJPY"],
-        ["AUDJPY", "EURAUD"],
-        ["GBPJPY", "EURGBP"],
-        ["GBPJPY", "EURCAD"],
-        ["EURGBP"],
-        ["EURAUD", "GBPCAD"],
-        ["USDJPY", "EURGBP"],
-        ["EURGBP", "GBPCAD"],
-        ["EURAUD", "EURCAD"],
-        ["GBPJPY", "EURAUD"],
-        ["AUDCAD", "NZDJPY"],
-        ["AUDJPY", "USDJPY"],
-        ["AUDJPY"],
-        ["AUDJPY", "EURCAD"],
-        ["NZDJPY"],
-        ["AUDCAD", "AUDJPY"],
-        ["AUDCAD", "AUDUSD"],
+        ["AUDCAD", "USDJPY", "EURGBP", "EURCAD", "GBPUSD"],
+        ["CHFJPY", "AUDCAD", "EURGBP", "EURCAD", "EURJPY"],
+        ["CHFJPY", "AUDCAD", "GBPCHF", "EURCAD", "AUDJPY"],
+        ["CHFJPY", "AUDCAD", "EURCAD", "EURJPY", "AUDJPY"],
+        ["CHFJPY", "AUDCAD", "EURGBP", "EURJPY", "GBPUSD"],
+        ["AUDCAD", "EURGBP", "EURCAD", "GBPJPY", "GBPUSD"],
+        ["EURGBP", "EURAUD", "EURCAD", "NZDJPY", "GBPUSD"],
+        ["CHFJPY", "EURGBP", "USDCAD", "EURCAD", "NZDJPY"],
+        ["CHFJPY", "EURGBP", "GBPCHF", "EURCAD", "AUDJPY"],
+        ["EURGBP", "EURAUD", "EURCAD", "EURJPY", "NZDJPY"],
+        ["AUDCAD", "USDJPY", "EURGBP", "EURAUD", "EURJPY"],
+        ["AUDCAD", "GBPCAD", "EURGBP", "USDCAD", "EURJPY"],
+        ["EURUSD", "USDJPY", "EURCAD", "AUDJPY", "GBPUSD"],
+        ["EURCAD", "EURJPY", "AUDJPY", "CADJPY", "NZDUSD"],
+        ["AUDCAD", "EURGBP", "CADJPY", "NZDJPY", "GBPUSD"],
+        ["USDJPY", "EURGBP", "GBPJPY", "NZDJPY", "GBPUSD"],
+        ["CHFJPY", "GBPCAD", "EURGBP", "EURAUD", "GBPUSD"],
+        ["AUDCAD", "AUDJPY", "CADJPY", "GBPUSD", "AUDUSD"],
+        ["AUDCAD", "USDCAD", "EURAUD", "EURJPY", "AUDUSD"],
+        ["CHFJPY", "EURUSD", "EURGBP", "AUDJPY", "GBPUSD"],
+        ["CHFJPY", "EURUSD", "EURGBP", "EURCAD", "AUDUSD"],
+        ["GBPCAD", "USDJPY", "EURGBP", "AUDJPY", "NZDJPY"],
+        ["AUDCAD", "EURGBP", "GBPCHF", "USDCAD", "GBPJPY"],
+        ["GBPCAD", "EURGBP", "USDCAD", "CADJPY", "NZDJPY"],
+        ["AUDCAD", "USDCAD", "EURCHF", "EURAUD", "EURJPY"],
+        ["USDJPY", "EURGBP", "CADJPY", "NZDJPY", "GBPUSD"],
+        ["EURGBP", "EURAUD", "EURJPY", "AUDJPY", "NZDUSD"],
+        ["CHFJPY", "EURUSD", "EURGBP", "EURJPY", "GBPUSD"],
+        ["AUDCAD", "GBPCAD", "USDCAD", "GBPUSD", "AUDUSD"],
+        ["EURAUD", "EURCAD", "AUDJPY", "NZDJPY", "GBPUSD"],
     ],
     "4H": [
+        ["CHFJPY"],
+        ["EURCAD", "AUDUSD", "USDCHF", "GBPJPY", "CHFJPY"],
         ["GBPJPY"],
-        ["GBPJPY", "AUDJPY"],
-        ["AUDJPY", "EURCAD"],
-        ["GBPJPY", "AUDCAD"],
-        ["GBPJPY", "EURCAD"],
-        ["AUDJPY"],
-        ["EURCAD", "GBPCHF"],
-        ["AUDJPY", "GBPCHF"],
+        ["NZDJPY", "GBPCAD", "EURAUD", "GBPCHF", "USDJPY"],
+        ["EURCHF", "AUDCAD", "GBPJPY", "NZDUSD", "CHFJPY"],
+        ["EURGBP", "GBPUSD", "EURCAD", "GBPCHF", "NZDUSD"],
+        ["EURJPY", "GBPCAD", "USDJPY", "AUDUSD", "CHFJPY"],
+        ["EURGBP", "EURJPY", "GBPUSD", "CADJPY", "USDCAD"],
+        ["NZDJPY", "EURJPY", "GBPJPY", "CADJPY", "CHFJPY"],
+        ["NZDJPY", "USDJPY", "USDCHF", "CADJPY", "CHFJPY"],
+        ["EURCHF", "EURJPY", "GBPCHF", "NZDUSD", "CHFJPY"],
+        ["EURGBP", "EURUSD", "AUDJPY", "EURAUD", "USDCAD"],
+        ["EURJPY", "AUDJPY", "GBPJPY", "CADJPY", "USDCAD"],
+        ["EURGBP", "NZDJPY", "USDCHF", "NZDUSD", "CHFJPY"],
+        ["EURJPY", "GBPUSD", "EURCAD", "AUDUSD", "USDCHF"],
+        ["EURGBP", "AUDJPY", "GBPCAD", "GBPCHF", "USDCHF"],
+        ["NZDJPY", "AUDCAD", "EURAUD", "USDCAD", "CHFJPY"],
+        ["GBPUSD", "GBPCHF", "USDCHF", "USDCAD", "CHFJPY"],
+        ["EURUSD", "NZDJPY", "EURAUD", "AUDUSD", "NZDUSD"],
+        ["EURJPY", "AUDCAD", "USDJPY", "AUDUSD", "GBPJPY"],
+        ["EURUSD", "EURAUD", "USDJPY", "GBPJPY", "CHFJPY"],
+        ["EURCHF", "AUDCAD", "EURAUD", "GBPCHF", "USDJPY"],
+        ["NZDJPY", "EURJPY", "AUDCAD", "USDJPY", "GBPJPY"],
+        ["NZDJPY", "GBPCAD", "EURAUD", "EURCAD", "GBPCHF"],
+        ["EURGBP", "AUDJPY", "GBPUSD", "EURAUD", "CHFJPY"],
+        ["EURCHF", "EURJPY", "AUDJPY", "EURCAD", "USDCAD"],
+        ["EURUSD", "EURJPY", "GBPCAD", "GBPUSD", "USDJPY"],
+        ["EURCHF", "NZDJPY", "AUDJPY", "USDCHF", "CHFJPY"],
+        ["EURJPY", "USDJPY", "AUDUSD", "USDCHF", "CADJPY"],
+        ["EURGBP", "EURUSD", "GBPUSD", "USDJPY", "USDCAD"],
     ],
 }
-
 PARAM_GRID_BY_TIMEFRAME = {
     "1H": {
-        "SELL_AFTER": [100],
-        "TP_PCT":     [1.5,1.5,1.5],
-        "SL_PCT":     [0.5,0.5,0.5],
+        "SELL_AFTER": [20],
+        "TP_PCT":     [0.8,1.0,1.2],
+        "SL_PCT":     [0.3,0.5,0.7],
     },
     "4H": {
-        "SELL_AFTER": [40],
-        "TP_PCT":     [1.0,1.0,1.0],
-        "SL_PCT":     [0.5,0.5,0.5],
+        "SELL_AFTER": [100],
+        "TP_PCT":     [1.3,1.5,1.7],
+        "SL_PCT":     [0.3,0.5,0.7],
     },
 }
 
-# =============================================================================
-# PATHS
-# =============================================================================
-STRATEGIES_DZ_FOLDER = os.path.join(os.path.dirname(__file__), "strategies_DZ")
-BRIEF_TRADES_FOLDER  = os.path.join(STRATEGIES_DZ_FOLDER, "brief_trades")
-DEPLOY_OUTPUT_PATH   = os.path.join(STRATEGIES_DZ_FOLDER, "rules_files", "rules_batch.py")
-
+SELECTED_INDICATORS_BY_TIMEFRAME = {
+    "1H": [
+        "ichimoku_tenkan_K",
+        "ichimoku_price_vs_cloud",
+        "close_pos_in_bar",
+        "donchian_pos",
+        "macd_hist",
+        "bb_pctb",
+        "open_close_momentum",
+        "pivot_dist",
+    ],
+    "4H": [
+        "parkinson_ratio",
+        "bb_pctb",
+        "ichimoku_price_vs_cloud",
+        "bb_pctb_slope",
+        "pivot_dist",
+        "vortex",
+        "ppo",
+        "acceleration",
+        "close_pos_in_bar",
+    ],
+}
 # =============================================================================
 # RUN CONFIG — single source of truth: printed at startup AND persisted
 # =============================================================================
-run_config = {"SPLIT_MODE": SPLIT_MODE, "DATASET_IS": DATASET_IS, 
+run_config = {"SPLIT_MODE": SPLIT_MODE,
+              "DATASET_IS": DATASET_IS, 
               "DATASET_OOS": DATASET_OOS, 
               "TIMEFRAMES": TIMEFRAMES, 
               "SYMBOL_COMBOS_BY_TIMEFRAME": SYMBOL_COMBOS_BY_TIMEFRAME, 
-              "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME}
+              "PARAM_GRID_BY_TIMEFRAME": PARAM_GRID_BY_TIMEFRAME,
+              "SELECTED_INDICATORS_BY_TIMEFRAME": SELECTED_INDICATORS_BY_TIMEFRAME}
 # =============================================================================
 # COMBOS — each timeframe can be mined with several independent symbol baskets
 # =============================================================================
@@ -183,13 +229,16 @@ def log_run_config() -> None:
             f"  DATASET     : {DATASET_IS} ── {os.path.basename(DATA_FOLDER_BY_DATASET[DATASET_IS])} "
             f"({MIN_START_DATE_BY_DATASET[DATASET_IS]})"
         )
-    logger.info(f"  SYMBOLS     :")
+    logger.debug(f"  SYMBOLS     :")
     for combo in build_combos():
-        logger.info(f"    {combo['combo_key']:<12}({len(combo['symbols'])}) {combo['symbols']}")
+        logger.debug(f"    {combo['combo_key']:<12}({len(combo['symbols'])}) {combo['symbols']}")
     logger.info(f"  TIMEFRAMES  : {TIMEFRAMES}")
     logger.info(f"  BACKTEST    : {settings.BACKTEST_MODE}")
     logger.debug(f"  MAX DEPTH  : {RULE_MAX_DEPTH}")
     logger.info(f"  PARAM GRID  : {PARAM_GRID_BY_TIMEFRAME}")
+    for i, (tf, indicators) in enumerate(SELECTED_INDICATORS_BY_TIMEFRAME.items()):
+        lead = "  INDICATORS  : " if i == 0 else " " * 16
+        logger.info(f"{lead}{tf} ── {', '.join(indicators)}")
     logger.info(f"  WFO WINDOWS : train={WFO_TRAIN_MONTHS}m test={WFO_TEST_MONTHS}m | EMA_ALPHA: {EMA_ALPHA}")
     logger.info(
         f"  PIPES       : JACCARD_TH={JACCARD_SIMILARITY_TH} | "
@@ -211,6 +260,7 @@ if __name__ == "__main__":
         missing_tf = [tf for tf in TIMEFRAMES if not SYMBOL_COMBOS_BY_TIMEFRAME.get(tf)]
         if missing_tf:
             raise ValueError(f"SYMBOL_COMBOS_BY_TIMEFRAME has no combos for timeframes: {missing_tf}")
+        validate_indicators_by_timeframe(SELECTED_INDICATORS_BY_TIMEFRAME, TIMEFRAMES)
         log_run_config()
 
         # -------------------------------------------------------------------
@@ -239,6 +289,7 @@ if __name__ == "__main__":
             ohlcv_arr_oos_by_combo             = ohlcv_arr_oos_by_combo,
             combos                             = combos,
             param_grid                         = PARAM_GRID_BY_TIMEFRAME,
+            indicators_by_timeframe            = SELECTED_INDICATORS_BY_TIMEFRAME,
             order_amount                       = ORDER_AMOUNT,
             data_folder                        = DATA_FOLDER_BY_DATASET[DATASET_OOS],
             max_depth                          = RULE_MAX_DEPTH,

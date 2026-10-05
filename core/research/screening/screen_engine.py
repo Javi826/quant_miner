@@ -1,4 +1,4 @@
-# core/screening/screen_engine.py
+# core/research/screening/screen_engine.py
 import os
 import ast
 import sys
@@ -845,11 +845,13 @@ def _h_update(h, x):
     h.update(b"|")
 
 
-CODE_DIR = os.path.dirname(os.path.abspath(__file__))                            # core/screening
-CODE_DIRS = (CODE_DIR, os.path.join(os.path.dirname(CODE_DIR), "indicators"))     # their code is in the cache key
+CODE_DIR  = os.path.dirname(os.path.abspath(__file__))                           # core/research/screening
+CORE_DIR  = os.path.dirname(os.path.dirname(CODE_DIR))                           # core
+CODE_DIRS = (                                                                    # their code is in the cache key
+    (CODE_DIR, os.path.dirname(CODE_DIR)),                                       # (folder, root of its paths): screening/...
+    (os.path.join(CORE_DIR, "indicators"), CORE_DIR),                            # indicators/...
+)
 CODE_EXCLUDE = (os.path.join(CODE_DIR, "screen_report.py"),)                     # does not change the raw results
-
-
 def cache_key(symbols, cfg, tag=None):
     """Only the tag, the symbols, cfg.identity() (TP/SL/SELL_AFTER grid, commission, mode, N_NULL_PATHS, N_PILOTS,
     seeds and lookback), NULL_PCT and the code of CODE_DIRS."""
@@ -863,11 +865,9 @@ def cache_key(symbols, cfg, tag=None):
 
 
 def _code_files():
-    """(path relative to core, path) of every .py of CODE_DIRS and their subfolders, except CODE_EXCLUDE."""
-    root = os.path.dirname(CODE_DIR)
     skip = {os.path.normcase(os.path.abspath(p)) for p in CODE_EXCLUDE}
     files = []
-    for top in CODE_DIRS:
+    for top, root in CODE_DIRS:
         if not os.path.isdir(top):
             raise FileNotFoundError(f"Code folder of the cache key not found: {top}")
         for d, subdirs, names in os.walk(top):
