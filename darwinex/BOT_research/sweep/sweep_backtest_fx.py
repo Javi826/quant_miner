@@ -10,7 +10,8 @@ import pandas as pd
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",".."))       # quant_miner
 sys.path.append(_ROOT)
 sys.path.append(os.path.join(_ROOT, "core"))
-sys.path.append(os.path.join(_ROOT, "darwinex"))
+from setup import config_research as cr
+sys.path.append(os.path.join(_ROOT, cr.BROKER))
 
 from symbols.universe import build_universe
 from setup.config_paths import DATA_FOLDER_BY_DATASET
@@ -34,16 +35,17 @@ SWEEP_DIR    = os.path.join(os.path.dirname(__file__), "sweep")
 CONFIGS_DIR  = os.path.join(SWEEP_DIR, "configs")        # written by sweep_research_fx
 RESULTS_PATH = os.path.join(SWEEP_DIR, "results.csv")    # one row per config: a config already here is not run again
 
-FUNNEL_STAGES = ["mbias", "wfo"]        # captured by pipeline_patches: the pipeline stops right after POST-WFO
+FUNNEL_STAGES = ["mbias", "wfo", "corr"]    # captured by pipeline_patches: the pipeline stops right after POST-CORRELATION
+# corr: the rules left by the correlation stage (repeated variants of one edge out) ── the count to compare configs
 
 SEP   = "═" * 115
 LBL_W = 12
 
 # =============================================================================
-# PIPELINE PATCHES ── funnel counts of rule_runner, stop right after POST-WFO
+# PIPELINE PATCHES ── funnel counts of rule_runner, stop right after POST-CORRELATION
 # =============================================================================
-class _StopAfterWFO(Exception):
-    """Raised after the POST-WFO table: correlation, multiverse and portfolio are not run."""
+class _StopAfterCorrelation(Exception):
+    """Raised after the POST-CORRELATION table: multiverse and portfolio are not run."""
 
 
 @contextmanager
@@ -57,11 +59,13 @@ def pipeline_patches():
         return orig_min_is(rows, stage_label, candidate_rows)
 
     def min_by_group(all_raw_results, highlight_ids, stage_label, candidate_ids):
-        if stage_label != "POST-WFO":
-            return orig_min(all_raw_results, highlight_ids, stage_label, candidate_ids)
-        cap["wfo"] = (len(highlight_ids), len(candidate_ids))
-        orig_min(all_raw_results, highlight_ids, stage_label, candidate_ids)      # the POST-WFO table, then stop
-        raise _StopAfterWFO
+        out = orig_min(all_raw_results, highlight_ids, stage_label, candidate_ids)
+        if stage_label == "POST-WFO":
+            cap["wfo"] = (len(highlight_ids), len(candidate_ids))
+        elif stage_label == "POST-CORRELATION":
+            cap["corr"] = (len(highlight_ids), len(candidate_ids))
+            raise _StopAfterCorrelation                                         # the POST-CORRELATION table, then stop
+        return out
 
     rule_runner.print_rule_mining_min_by_group_is = min_by_group_is
     rule_runner.print_rule_mining_min_by_group    = min_by_group
@@ -172,8 +176,9 @@ def run_one(doc: dict) -> dict:
                 show_plots              = False,
                 run_deploy              = False,
             )
-        except _StopAfterWFO:
+        except _StopAfterCorrelation:
             pass
+    cap.setdefault("corr", (0, 0))             # no rule passed the WFO: rule_runner skips the correlation table
     missing = [key for key in FUNNEL_STAGES if key not in cap]
     if missing:
         raise RuntimeError(f"Funnel stages not captured: {missing} (update pipeline_patches)")
@@ -201,7 +206,7 @@ def main() -> None:
         elapsed = time.time() - t0
         _append_row({"config": name, **doc["params"], **funnel, "elapsed_s": int(elapsed)})
         logger.info(f"\n💾 {name} ── WFO {funnel['wfo_passed']}/{funnel['wfo_candidates']} ({funnel['wfo_pct']}%) ── "
-                    f"{_elapsed(elapsed)}")
+                    f"CORR {funnel['corr_passed']} ── {_elapsed(elapsed)}")
     if failed:
         logger.warning(f"\n⚠  {len(failed)} configs failed: {failed}")
 

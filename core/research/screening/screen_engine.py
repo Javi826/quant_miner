@@ -22,7 +22,7 @@ from .screen_kernels_cpu import compute_exits, npy_walk
 
 logger = logging.getLogger(__name__)
 
-NULL_BATCH   = 32    # phase 2 shifts per batch (in order). Speed only: the selection does not depend on it
+NULL_BATCH   = 32    # phase 2 shifts per batch on the CPU (YPY). Memory only: the results do not depend on it
 N_NULL_PATHS = 500   # null: synthetic paths of phase 1 = shifts per null and pair of phase 2 (build the floor)
 N_PILOTS     = 50    # pilot: paths of phase 1 = shifts per pilot and pair of phase 2 (mean and std of every combination, for z)
 MODES        = ("YPY", "NPY")   # YPY: a trade on every signal. NPY: a trade only while flat on its symbol (GPU)
@@ -38,7 +38,7 @@ class ScreenConfig:
     sl_pct: tuple
     sell_after: tuple
     commission: float           # % of the notional, charged on entry and on exit
-    null_pct: float             # percentile of the floor: pass / no pass and combination picked. Phase 2 early stop
+    null_pct: float             # percentile of the floor: pass / no pass and combination picked
     mode: str = "YPY"           # how the edge of a segment is measured: one of MODES
     n_null_paths: int = N_NULL_PATHS
     n_pilots: int = N_PILOTS
@@ -512,30 +512,18 @@ def swap_pair(x, nA, nB, n_tg, ncut, xp=np):
     return xp.ascontiguousarray(y).reshape(nA * nB * n_tg * ncut * 2 * ncut * 2, n_sym)
 
 
-def null_stop_count(n_null, null_pct):
-
-    lo = int(np.floor((n_null - 1) * (null_pct / 100) - 1e-9))
-    lo = min(max(lo, 0), n_null - 1)
-    return n_null - lo
-
-
-def pair_null_early(bA, bB, ncvA, ncvB, Y, shifts, z1_mu, z1_sd, z2_mu, z2_sd, t_real, alive, m_stop, ncut):
-
-    n_k = shifts.shape[0]
-    n_sym = t_real.shape[0]
-    null = np.full((n_k, n_sym), np.nan)
-    hits = np.zeros(n_sym, dtype=np.int64)
-    alive = np.array(alive, dtype=np.bool_)
-    for q0 in range(0, n_k, NULL_BATCH):
-        sym_idx = np.flatnonzero(alive).astype(np.int64)
-        if sym_idx.size == 0:
-            break
+def pair_null(bA, bB, ncvA, ncvB, Y, shifts, z1_mu, z1_sd, z2_mu, z2_sd, t_real, ncut):
+    """The whole null of a pair: T of every shift of B (rows) and symbol (columns), YPY statistic (CPU), in batches
+    of NULL_BATCH. Only where T competes (finite t_real): NaN in the other symbols."""
+    null = np.full((shifts.shape[0], t_real.shape[0]), np.nan)
+    sym_idx = np.flatnonzero(np.isfinite(t_real)).astype(np.int64)
+    if sym_idx.size == 0:
+        return null
+    for q0 in range(0, shifts.shape[0], NULL_BATCH):
         sh = np.ascontiguousarray(shifts[q0:q0 + NULL_BATCH])
-        ts = pair_null_distribution(bA, bB, ncvA, ncvB, Y, sh, z1_mu, z1_sd, z2_mu, z2_sd, sym_idx, ncut)[:, sym_idx]
-        null[q0:q0 + sh.shape[0], sym_idx] = ts
-        hits[sym_idx] += (ts >= t_real[sym_idx]).sum(axis=0)
-        alive[sym_idx] = hits[sym_idx] < m_stop
-    return null, alive
+        null[q0:q0 + sh.shape[0], sym_idx] = pair_null_distribution(bA, bB, ncvA, ncvB, Y, sh, z1_mu, z1_sd, z2_mu,
+                                                                    z2_sd, sym_idx, ncut)[:, sym_idx]
+    return null
 
 
 def pilot_shifts(n, exclude, cfg):
@@ -583,7 +571,7 @@ def _pair_result(bA, bB, Y, E, picked, null_A, null_B, target_side, ncut):
     return {**_pair_stats(bA, bB, Y, E, *picked, target_side, ncut), "null2_A": null_A, "null2_B": null_B}
 
 
-def screen_pair(bA, bB, ncvA, ncvB, Y, E, shifts, pilot, m_stop, null_pct, target_side, ncut):
+def screen_pair(bA, bB, ncvA, ncvB, Y, E, shifts, pilot, null_pct, target_side, ncut):
 
     nA, nB, n_tg = bA.shape[0], bB.shape[0], Y.shape[2]
 
@@ -603,13 +591,11 @@ def screen_pair(bA, bB, ncvA, ncvB, Y, E, shifts, pilot, m_stop, null_pct, targe
     z, e = pair_z_edges(bA, bB, ncvA, ncvB, Y, muA, sdA, muB, sdB, ncut)
     t_sym = z.max(axis=0)
 
-    null_B, alive = pair_null_early(bA, bB, ncvA, ncvB, Y, shifts, muA, sdA, muB, sdB,
-                                    t_sym, np.isfinite(t_sym), m_stop, ncut)
+    null_B = pair_null(bA, bB, ncvA, ncvB, Y, shifts, muA, sdA, muB, sdB, t_sym, ncut)
     muB_ba, sdB_ba = swap_pair(muB, nA, nB, n_tg, ncut), swap_pair(sdB, nA, nB, n_tg, ncut)
     del muA, sdA, muB, sdB
 
-    null_A, _alive = pair_null_early(bB, bA, ncvB, ncvA, Y, shifts, muA_ba, sdA_ba, muB_ba, sdB_ba,
-                                     t_sym, alive, m_stop, ncut)
+    null_A = pair_null(bB, bA, ncvB, ncvA, Y, shifts, muA_ba, sdA_ba, muB_ba, sdB_ba, t_sym, ncut)
     del muA_ba, sdA_ba, muB_ba, sdB_ba
 
     # --- pick: the largest edge among the combinations above both floors
@@ -625,29 +611,15 @@ def _pair_z_npy(v, osum, mu1, sd1, mu2, sd2, xp):
     return xp.where(ok, xp.minimum(z1, z2), -xp.inf)
 
 
-def pair_null_early_npy(ctx, shifts, mu1, sd1, mu2, sd2, t_real, alive, m_stop):
-    """As pair_null_early (B of ctx shifted, same batches and early stop), NPY statistic on the GPU: the shifts of
-    a batch in one launch, z and its maximum in the kernel. ctx: npy_pair_setup; shifts: npy_shifts."""
+def pair_null_npy(ctx, shifts, mu1, sd1, mu2, sd2, t_real):
+    """As pair_null (B of ctx shifted), NPY statistic on the GPU: every shift at once (the kernel batches them by
+    memory), z and its maximum in the kernel. ctx: npy_pair_setup; shifts: npy_shifts."""
     from .screen_kernels_gpu import npy_pair_null
 
-    n_k = shifts.shape[0]
-    n_sym = t_real.shape[0]
-    null = np.full((n_k, n_sym), np.nan)
-    hits = np.zeros(n_sym, dtype=np.int64)
-    alive = np.array(alive, dtype=np.bool_)
-    for q0 in range(0, n_k, NULL_BATCH):
-        sym_idx = np.flatnonzero(alive).astype(np.int64)
-        if sym_idx.size == 0:
-            break
-        q1 = min(q0 + NULL_BATCH, n_k)
-        ts = npy_pair_null(ctx, shifts[q0:q1], mu1, sd1, mu2, sd2, sym_idx)
-        null[q0:q1, sym_idx] = ts[:, sym_idx]
-        hits[sym_idx] += (null[q0:q1, sym_idx] >= t_real[sym_idx]).sum(axis=0)
-        alive[sym_idx] = hits[sym_idx] < m_stop
-    return null, alive
+    return npy_pair_null(ctx, shifts, mu1, sd1, mu2, sd2, np.flatnonzero(np.isfinite(t_real)).astype(np.int64))
 
 
-def screen_pair_npy(bA, bB, ncvA, ncvB, Y, E, prep, shifts, pilot, m_stop, null_pct, target_side, ncut):
+def screen_pair_npy(bA, bB, ncvA, ncvB, Y, E, prep, shifts, pilot, null_pct, target_side, ncut):
     """As screen_pair, NPY statistic on the GPU. prep: npy_prepare(Y, E) of the real data; shifts and pilot:
     npy_shifts of the phase 2 shifts."""
     import cupy as cp
@@ -676,9 +648,9 @@ def screen_pair_npy(bA, bB, ncvA, ncvB, Y, E, prep, shifts, pilot, m_stop, null_
     del v, osum
     t_sym = z.max(axis=0)
 
-    null_B, alive = pair_null_early_npy(ctx_ab, shifts, *ab, t_sym, np.isfinite(t_sym), m_stop)
+    null_B = pair_null_npy(ctx_ab, shifts, *ab, t_sym)
     del ab
-    null_A, _alive = pair_null_early_npy(ctx_ba, shifts, *ba, t_sym, alive, m_stop)
+    null_A = pair_null_npy(ctx_ba, shifts, *ba, t_sym)
     del ba
 
     # --- pick: the largest edge among the combinations above both floors
@@ -734,16 +706,14 @@ def _phase2_ypy(data, pool, cfg, bins, ncv, Y, E):
     """(pairs, phase 2 raw results of every pair), YPY statistic (CPU)."""
     n, names, by_ind, target_side = data.n, pool.names, pool.by_ind, cfg.target_side
     shifts, pilot = phase2_shifts(n, cfg)
-    m_stop = null_stop_count(cfg.n_null_paths, cfg.null_pct)
     pairs = [(names[i], names[j]) for i in range(len(names)) for j in range(i + 1, len(names))]
     p2 = {}
     t1 = time.time()
     for k, (a, b) in enumerate(pairs):
         p2[(a, b)] = screen_pair(np.ascontiguousarray(bins[by_ind[a]]), np.ascontiguousarray(bins[by_ind[b]]),
-                                 ncv[by_ind[a]], ncv[by_ind[b]], Y, E, shifts, pilot, m_stop, cfg.null_pct,
+                                 ncv[by_ind[a]], ncv[by_ind[b]], Y, E, shifts, pilot, cfg.null_pct,
                                  target_side, pool.ncut)
         progress(f"Phase 2, {len(pairs)} pairs x 2 nulls", k + 1, len(pairs), t1)
-    _log_early_stop(cfg, m_stop, p2, len(data.symbols), len(pairs))
     return pairs, p2
 
 
@@ -753,7 +723,6 @@ def _phase2_npy(data, pool, cfg, bins, ncv, Y, E):
 
     n, names, by_ind, target_side = data.n, pool.names, pool.by_ind, cfg.target_side
     shifts, pilot = phase2_shifts(n, cfg)
-    m_stop = null_stop_count(cfg.n_null_paths, cfg.null_pct)
     prep = npy_prepare(Y, E)
     shifts_d, pilot_d = npy_shifts(shifts, n), npy_shifts(pilot, n)                 # on the GPU once
     pairs = [(names[i], names[j]) for i in range(len(names)) for j in range(i + 1, len(names))]
@@ -761,18 +730,10 @@ def _phase2_npy(data, pool, cfg, bins, ncv, Y, E):
     t1 = time.time()
     for k, (a, b) in enumerate(pairs):
         p2[(a, b)] = screen_pair_npy(np.ascontiguousarray(bins[by_ind[a]]), np.ascontiguousarray(bins[by_ind[b]]),
-                                     ncv[by_ind[a]], ncv[by_ind[b]], Y, E, prep, shifts_d, pilot_d, m_stop,
+                                     ncv[by_ind[a]], ncv[by_ind[b]], Y, E, prep, shifts_d, pilot_d,
                                      cfg.null_pct, target_side, pool.ncut)
         progress(f"Phase 2 [NPY], {len(pairs)} pairs x 2 nulls", k + 1, len(pairs), t1)
-    _log_early_stop(cfg, m_stop, p2, len(data.symbols), len(pairs))
     return pairs, p2
-
-
-def _log_early_stop(cfg, m_stop, p2, n_sym, n_pairs):
-    done = sum(int((~np.isnan(r[nk])).sum()) for r in p2.values() for nk in ("null2_A", "null2_B"))
-    logger.info(f"Phase 2 early stop (NULL_PCT={cfg.null_pct}: fails at {m_stop} null values >= T2): "
-                f"{100 * done / max(2 * cfg.n_null_paths * n_sym * n_pairs, 1):.1f}% "
-                f"of the null shifts computed")
 
 
 def compute_raw(data, pool, cfg):

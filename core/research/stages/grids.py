@@ -1,7 +1,6 @@
 # core/research/stages/grids.py
 import sys
 import logging
-from dataclasses import dataclass
 from contextlib import contextmanager
 from functools import partial
 import numpy as np
@@ -29,27 +28,10 @@ logger    = logging.getLogger("BOT_research.grid")
 # =============================================================================
 # MODULE CONFIG
 # =============================================================================
-N_WINNERS      = 1  
 MAX_ROWS       = 5
-SPLIT_MAX      = 5   
+SPLIT_MAX      = 5
 
-RANK_BYS        = {"SYMBOLS": ("symbols with rules", "rules"), "RULES": ("rules", "symbols with rules")}   # (key, tie)
-SYMBOLS_DEPLOYS = ("all", "terna")
-
-
-# =============================================================================
-# STAGE CONFIG (set by the orchestrator)
-# =============================================================================
-@dataclass(frozen=True)
-class GridsStageConfig:
-    rank_by:        str = "SYMBOLS"
-    symbols_deploy: str = "all"      # all: SYMBOL_POOL of the screen ── terna: symbols with rules in the winner
-
-    def __post_init__(self):
-        if self.rank_by not in RANK_BYS:
-            raise ValueError(f"rank_by must be one of {list(RANK_BYS)}: {self.rank_by}")
-        if self.symbols_deploy not in SYMBOLS_DEPLOYS:
-            raise ValueError(f"symbols_deploy must be one of {list(SYMBOLS_DEPLOYS)}: {self.symbols_deploy}")
+RANKING = "rules (tie: symbols with rules, then the smaller SELL_AFTER)"     # the winner terna, the best of all
 
 
 def configure_loggers() -> None:
@@ -155,11 +137,11 @@ def _grids_inputs(tfs: list, inputs: dict | None) -> dict:
     return {tf: ra.check_grids_input(inputs[tf], tf, settings.BACKTEST_MODE) for tf in tfs}
 
 
-def run(cfg: GridsStageConfig, inputs: dict | None = None) -> dict:
+def run(inputs: dict | None = None) -> dict:
     configure_loggers()
     tfs  = _ordered_timeframes(cr.TIMEFRAMES)
     docs = _grids_inputs(tfs, inputs)                                  # all the screenings first: fail before the run
-    log_run_config(cfg, docs)
+    log_run_config(docs)
     winners_by_tf = {}
     debug  = logger.isEnabledFor(logging.DEBUG)
     with pipeline_bars(show=debug), stepm_capture() as cap:
@@ -175,7 +157,7 @@ def run(cfg: GridsStageConfig, inputs: dict | None = None) -> dict:
             grids  = {sa: {"SELL_AFTER": [sa], "TP_PCT": doc["tp_pct"], "SL_PCT": doc["sl_pct"]} for sa in sas}
             rows   = [{"tf": tf, "sa": sa, "tp": p["TP_PCT"], "sl": p["SL_PCT"], "cid": _combo_id(p),
                        "top": by_sa[sa]["top"], "symbols": by_sa[sa]["symbols"], "total": 0, "n_sym": 0,
-                       "n_eff": 0.0, "with_rules": []}
+                       "n_eff": 0.0}
                       for sa in sas for p in _combo_grid(grids[sa])]
             for k, sa in enumerate(sas, start=1):
                 top, symbols = by_sa[sa]["top"], by_sa[sa]["symbols"]
@@ -187,16 +169,15 @@ def run(cfg: GridsStageConfig, inputs: dict | None = None) -> dict:
                                             grids[sa], bar, cap)
                           for i, sym in enumerate(bar, start=1)}
                 bar.close()
-                log_sell_after(cfg, tf, sa, _combo_grid(grids[sa]), by_sym)
+                log_sell_after(tf, sa, _combo_grid(grids[sa]), by_sym)
                 for r in rows:
                     if r["sa"] == sa:
                         per_sym = [by_sym[sym]["pass"][r["cid"]] for sym in symbols]
                         r["total"] = sum(per_sym)
                         r["n_sym"] = sum(v > 0 for v in per_sym)
                         r["n_eff"] = sum(per_sym) ** 2 / sum(v * v for v in per_sym) if sum(per_sym) else 0.0
-                        r["with_rules"] = [sym for sym, v in zip(symbols, per_sym) if v > 0]
-            winners_by_tf[tf] = log_ranking(cfg, tf, rows)
-    return save_output(cfg, winners_by_tf)
+            winners_by_tf[tf] = log_ranking(tf, rows)
+    return save_output(winners_by_tf)
 
 # =============================================================================
 # PRINT
@@ -216,22 +197,23 @@ def _ordered_timeframes(timeframes: list) -> list:
     return sorted(timeframes, key=get_bars_per_day, reverse=True)    # smallest timeframe first
 
 
-def log_run_config(cfg: GridsStageConfig, docs: dict) -> None:
+def log_run_config(docs: dict) -> None:
     logger.info(f"\n{SEP}")
     logger.info("  GRIDS START")
     logger.info(f"{SEP}")
     for tf, doc in docs.items():
         by_sa = {int(sa) for sa in doc["by_sell_after"]}
         sel = doc["selection"]
+        gn  = " | ".join(f"SA={sa}: " + " ".join(f"{kind} {'-' if g is None else g}" for kind, g in o["group_n"].items())
+                         for sa, o in doc["by_sell_after"].items())
         logger.info(f"  {'SCREENING':<12}: {tf} ── {ra.grids_path(tf)} (created {doc['created']})")
         logger.info(f"  {'PARAM GRID':<12}: {tf} ── SELL_AFTER={sorted(by_sa)} TP_PCT={doc['tp_pct']} SL_PCT={doc['sl_pct']}")
-        logger.info(f"  {'SELECTION':<12}: {tf} ── GROUP_N={sel['group_n']} TOP_I={sel['top_i']}")
+        logger.info(f"  {'SELECTION':<12}: {tf} ── LUCK_MAX={sel['luck_max']:.0%} TOP_I={sel['top_i']} ── GROUP_N {gn}")
     first = next(iter(docs.values()))
     logger.info(f"  {'DATASET':<12}: {cr.DATASET} ── {list(docs)}")
     logger.info(f"  {'MODE':<12}: {first['mode']} (screening) = {settings.BACKTEST_MODE} (BACKTEST_MODE)")
     logger.info(f"  {'RULES':<12}: MAX_DEPTH={RULE_MAX_DEPTH}")
-    logger.info(f"  {'RANKING':<12}: RANK_BY={cfg.rank_by}")
-    logger.info(f"  {'DEPLOY':<12}: SYMBOLS_DEPLOY={cfg.symbols_deploy}")
+    logger.info(f"  {'RANKING':<12}: {RANKING}")
     logger.info(f"{SEP}\n")
 
 
@@ -241,7 +223,7 @@ def log_sell_after_header(tf: str, sa: int, k: int, n_sa: int, n_sym: int, n_ind
     logger.info(f"\n{'─' * (len(text) + 2)}\n{text}\n{'─' * (len(text) + 2)}")
 
 
-def log_sell_after(cfg: GridsStageConfig, tf: str, sa: int, ternas: list, by_sym: dict) -> None:
+def log_sell_after(tf: str, sa: int, ternas: list, by_sym: dict) -> None:
 
     labels = [_label(p["TP_PCT"], p["SL_PCT"]) for p in ternas]
     cids   = [_combo_id(p) for p in ternas]
@@ -272,10 +254,7 @@ def log_sell_after(cfg: GridsStageConfig, tf: str, sa: int, ternas: list, by_sym
         logger.info(f"{f'WHITE {tag}':<16}{tf}: -")
     logger.info(f"{f'RULES {tag}':<16}{tf}: {_fmt(sum(by_terna.values()))} in {n_terna}/{len(cids)} ternas ── "
                 f"{n_symbol}/{len(by_sym)} symbols")
-    if cfg.rank_by == "SYMBOLS":
-        best = min(labels, key=lambda lbl: (-sym_terna[lbl], -by_terna[lbl]))
-    else:
-        best = min(labels, key=lambda lbl: (-by_terna[lbl], -sym_terna[lbl]))
+    best = min(labels, key=lambda lbl: (-by_terna[lbl], -sym_terna[lbl]))      # as _rank_key
     if by_terna[best] > 0:
         logger.info(f"{f'BEST {tag}':<16}{tf}: {best} ── {_fmt(by_terna[best])} rules ── "
                     f"{sym_terna[best]}/{len(by_sym)} symbols")
@@ -299,66 +278,60 @@ def _sym_text(r: dict) -> str:
     return f"{r['n_sym']}/{len(r['symbols'])}"
 
 
-def _rank_key(r: dict, rank_by: str) -> tuple:
-    """Ranking by rank_by, the other one as tie, then the smaller SELL_AFTER (then grid order)."""
-    if rank_by == "SYMBOLS":
-        return -r["n_sym"], -r["total"], r["sa"]
+def _rank_key(r: dict) -> tuple:
+    """Rules, then symbols with rules, then the smaller SELL_AFTER (stable sort: then grid order)."""
     return -r["total"], -r["n_sym"], r["sa"]
 
 
-def log_ranking(cfg: GridsStageConfig, tf: str, rows: list) -> list:
-
-    rows = sorted(rows, key=lambda r: _rank_key(r, cfg.rank_by))
+def log_ranking(tf: str, rows: list) -> dict | None:
+    """The ternas of every SELL_AFTER ranked by rules. Returns the winner, None if no terna has rules."""
+    rows = sorted(rows, key=_rank_key)
     for pos, r in enumerate(rows, start=1):
         r["pos"] = pos
 
     lead = f"  {'#':>3}  {'SA':>5}  {'TP':>6}  {'SL':>6}"
     head = f"  │{'RULES':>7}{'SYMBOLS':>9}{'N_EFF':>7}"
-    key, tie = RANK_BYS[cfg.rank_by]
     logger.info(f"\n{SEP}")
-    logger.info(f"  RANKING {tf} ── MAX_DEPTH={RULE_MAX_DEPTH} ── rules passing StepM IS, summed over the SYMBOL_POOL of each SELL_AFTER ── RANK_BY={cfg.rank_by}")
+    logger.info(f"  RANKING {tf} ── MAX_DEPTH={RULE_MAX_DEPTH} ── rules passing StepM IS, summed over the SYMBOL_POOL of each SELL_AFTER")
     logger.info(f"{SEP}")
     logger.info(lead + head)
     for r in rows[:MAX_ROWS]:
         logger.info(f"  {r['pos']:>3}  {r['sa']:>5}  {r['tp']:>6}  {r['sl']:>6}"
                     f"  │{r['total']:>7}{_sym_text(r):>9}{r['n_eff']:>7.1f}")
-    logger.debug(f"  #: ranking by {key} (tie: {tie}, then smaller SELL_AFTER)")
+    logger.debug(f"  #: ranking by {RANKING}")
     logger.debug(f"  N_EFF: effective number of symbols with rules, (sum of rules)² / sum of (rules per symbol)² "
                  f"── 1 = every rule in one symbol")
     logger.info(f"{SEP}")
     return log_winner(tf, rows)
 
 
-def log_winner(tf: str, rows: list) -> list:
-    """The first N_WINNERS ternas of the table, their summary line each. rows: in the order of the table. Returns
-    the winners: the first one of every timeframe is saved by save_output."""
-    winners = [r for r in rows[:N_WINNERS] if r["total"] > 0]
-    if not winners:
-        logger.info(f"  WINNERS {tf}: no terna has rules passing StepM IS")
-        logger.info(f"{SEP}")
-        return []
-    for r in winners:
+def log_winner(tf: str, rows: list) -> dict | None:
+    """The first terna of the table, its summary line. rows: in the order of the table. Returns the winner, None
+    if it has no rules (then no terna has)."""
+    r = rows[0] if rows and rows[0]["total"] > 0 else None
+    if r is None:
+        logger.info(f"  WINNER {tf}: no terna has rules passing StepM IS")
+    else:
         logger.info(f"  {tf} #{r['pos']}: {r['total']} rules ── symbols with rules {_sym_text(r)} "
                     f"── N_EFF {r['n_eff']:.1f}")
-        logger.info(f"{SEP}")
-    return winners
+    logger.info(f"{SEP}")
+    return r
 
 
 # =============================================================================
 # OUTPUT
 # =============================================================================
-def _winner_entry(r: dict, symbols_deploy: str) -> dict:
+def _winner_entry(r: dict) -> dict:
     return {
-        "symbols":    list(r["symbols"] if symbols_deploy == "all" else r["with_rules"]),
+        "symbols":    list(r["symbols"]),                                        # the SYMBOL_POOL of its SELL_AFTER
         "param_grid": {"SELL_AFTER": [r["sa"]], "TP_PCT": [r["tp"]], "SL_PCT": [r["sl"]]},
         "indicators": list(r["top"]),
     }
 
 
-def save_output(cfg: GridsStageConfig, winners_by_tf: dict) -> dict:
-    by_tf = {tf: _winner_entry(ws[0], cfg.symbols_deploy) for tf, ws in winners_by_tf.items() if ws}
-    meta  = {"mode": settings.BACKTEST_MODE, "max_depth": RULE_MAX_DEPTH,
-             "selection": {"rank_by": cfg.rank_by, "symbols_deploy": cfg.symbols_deploy}}
+def save_output(winners_by_tf: dict) -> dict:
+    by_tf = {tf: _winner_entry(w) for tf, w in winners_by_tf.items() if w}
+    meta  = {"mode": settings.BACKTEST_MODE, "max_depth": RULE_MAX_DEPTH}
     doc   = ra.save_combos_input(by_tf, meta)
     logger.info("")
     for tf, e in by_tf.items():
@@ -368,9 +341,9 @@ def save_output(cfg: GridsStageConfig, winners_by_tf: dict) -> dict:
         logger.info(f"  {tf:<4}{'PARAM_GRID':<{w}} : SELL_AFTER={g['SELL_AFTER']} TP_PCT={g['TP_PCT']} SL_PCT={g['SL_PCT']}")
         logger.info(f"  {'':<4}{sym_lbl:<{w}} : {', '.join(e['symbols'])}")
         logger.info(f"  {'':<4}{ind_lbl:<{w}} : {', '.join(e['indicators'])}")
-    for tf in (tf for tf, ws in winners_by_tf.items() if not ws):
+    for tf in (tf for tf, win in winners_by_tf.items() if not win):
         logger.warning(f"  {tf:<4}no winner: not saved, the combos stage cannot run this timeframe")
     logger.info(f"{SEP}")
-    logger.info(f"✅  GRIDS OUTPUT ── {ra.combos_path()} (SYMBOLS_DEPLOY={cfg.symbols_deploy})")
+    logger.info(f"✅  GRIDS OUTPUT ── {ra.combos_path()}")
     logger.info(f"{SEP}")
     return doc

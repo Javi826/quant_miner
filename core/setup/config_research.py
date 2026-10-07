@@ -7,6 +7,8 @@ import os
 
 ARTIFACTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex", "BOT_research", "artifacts"))
 CACHE_DIR     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex", "BOT_research", "precompute", "caches"))
+BROKER        = "darwinex"             # darwinex | bitget: the signals package of the scripts
+
 
 DATASET    = "IS"
 MODE       = "NPY"
@@ -22,3 +24,5 @@ SELL_AFTER = [20, 40, 100]
 TP_PCT     = [0.5, 1.0, 1.5]
 SL_PCT     = [0.5, 1.0, 1.5]
 EXCLUDE    = []             # indicators
+
+

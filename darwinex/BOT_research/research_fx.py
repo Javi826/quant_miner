@@ -14,12 +14,11 @@ from setup.config_core import settings
 from research import artifacts as ra
 from research.stages import screen, grids, combos
 from research.stages.screen import ScreenStageConfig
-from research.stages.grids import GridsStageConfig
 from research.stages.combos import CombosStageConfig
 
 logger = logging.getLogger("BOT_research.research")
 
-LOG_LEVELS = {                      
+LOG_LEVELS = {
     "screen": logging.INFO,         # DEBUG: screen ── redundancy tables, TOP_I and the TOP symbols
     "grids":  logging.INFO,         # grids  ── every symbol and terna, as the backtest
     "combos": logging.INFO,         # combos ── every combo, as the backtest
@@ -28,19 +27,14 @@ LOG_LEVELS = {
 # CONFIG
 # =============================================================================
 STAGES = ["screen", "grids", "combos"]     # in order, no gaps: the stage before the first one is read from its checkpoint
-STAGES = ["combos"] 
 SCREEN = ScreenStageConfig(
-    group_n = 5,
-    top_i   = 8,
-)
-GRIDS = GridsStageConfig(
-    rank_by        = "SYMBOLS",   # SYMBOLS | RULES
-    symbols_deploy = "all",       # all | terna
+    luck_max = 0.20,
+    top_i    = 8,
 )
 COMBOS = CombosStageConfig(
     plus_minus         = 0.2,
-    combo_sizes        = [10],
-    n_samples_per_size = {1: None, 10: 500},    # None = exhaustive
+    combo_sizes        = [1, 2],
+    n_samples_per_size = {1: None, 2: 190},     # None = exhaustive
 )
 
 # =============================================================================
@@ -48,7 +42,7 @@ COMBOS = CombosStageConfig(
 # =============================================================================
 STAGE_BY_NAME = {
     "screen": (screen, SCREEN),
-    "grids":  (grids,  GRIDS),
+    "grids":  (grids,  None),       # no config
     "combos": (combos, COMBOS),
 }
 NAMES = list(STAGE_BY_NAME)
@@ -72,14 +66,9 @@ def check_checkpoint() -> None:
     if previous == "screen":
         for tf in cr.TIMEFRAMES:
             sel  = ra.load_grids_input(tf, settings.BACKTEST_MODE)["selection"]
-            diff = _differences(sel, {"group_n": SCREEN.group_n, "top_i": SCREEN.top_i})
+            diff = _differences(sel, {"luck_max": SCREEN.luck_max, "top_i": SCREEN.top_i})
             if diff:
                 logger.warning(f"⚠  screen checkpoint {tf} was built with another config ── {' | '.join(diff)}")
-    elif previous == "grids":
-        sel  = ra.load_combos_input(settings.BACKTEST_MODE, cr.TIMEFRAMES)["selection"]
-        diff = _differences(sel, {"rank_by": GRIDS.rank_by, "symbols_deploy": GRIDS.symbols_deploy})
-        if diff:
-            logger.warning(f"⚠  grids checkpoint was built with another config ── {' | '.join(diff)}")
 
 # =============================================================================
 # MAIN
@@ -92,7 +81,12 @@ def main() -> dict:
         module, cfg = STAGE_BY_NAME[name]
         module.LOG_LEVEL = LOG_LEVELS[name]
         t0  = time.time()
-        out = module.run(cfg) if name == "screen" else module.run(cfg, out)
+        if name == "screen":
+            out = module.run(cfg)
+        elif name == "grids":
+            out = module.run(out)
+        else:
+            out = module.run(cfg, out)
         logger.info(f"🏁 {name.upper()} done in {_elapsed(time.time() - t0)}")
     return out
 
@@ -112,7 +106,8 @@ def log_run_config() -> None:
                 + (f" (input: {NAMES[_first - 1]} checkpoint)" if _first > 0 else ""))
     for name in NAMES:
         mark = "🟢" if name in STAGES else "⚪"
-        logger.info(f"  {name.upper():<{LBL_W}}: {mark} {STAGE_BY_NAME[name][1]}")
+        cfg  = STAGE_BY_NAME[name][1]
+        logger.info(f"  {name.upper():<{LBL_W}}: {mark} {'no config' if cfg is None else cfg}")
     logger.info(f"{SEP}")
 
 if __name__ == "__main__":

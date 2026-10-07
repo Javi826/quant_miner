@@ -3,6 +3,8 @@ import logging
 
 import numpy as np
 
+from .screen_engine import null_floor
+
 logger = logging.getLogger(__name__)
 
 SEP        = "=" * 124
@@ -11,9 +13,9 @@ MODES      = ("YPY", "NPY")
 NPY_KEYS   = {"mean1": ("mean_npy1", "n_npy1"), "mean2": ("mean_npy2", "n_npy2")}
 BASE_KEYS  = {"mean1": "base1", "mean2": "base2"}      # unconditional mean of the target of every pick
 
-def validate_selection(group_n, n_symbols, j_th, x_th, min_cover, max_cover, mode="YPY", top_i=None):
-    if not (0 < group_n <= n_symbols):          # the whole selection depends on it
-        raise ValueError(f"GROUP_N must be in [1, {n_symbols}]: {group_n}")
+def validate_selection(luck_max, j_th, x_th, min_cover, max_cover, mode="YPY", top_i=None):
+    if not (0.0 < luck_max <= 1.0):             # the whole selection depends on it
+        raise ValueError(f"LUCK_MAX must be in (0, 1]: {luck_max}")
     if not (0.0 < j_th <= 1.0):
         raise ValueError(f"J_TH must be in (0, 1]: {j_th}")
     if not (0.0 < x_th <= 1.0):
@@ -76,6 +78,40 @@ def evaluate2(r, null_pct):
             "med": np.maximum(med2_A, med2_B)}
 
 
+# --- GROUP_N: the first one where few of the candidates that pass would pass with no edge ---------------------
+# Per GROUP_N g: pass, the candidates passing in >= g symbols; by_luck, how many would with no edge (the null rows of
+# every candidate against its floor at the pass rate per symbol measured on the real data; a pair takes the worse of
+# its two nulls); luck = by_luck / pass. One GROUP_N for the alones and one for the pairs: the first g with
+# luck <= LUCK_MAX (None if none: no candidate of that kind passes).
+
+
+def _luck_of(null, gns, pct):
+    """Share of the null rows passing in >= g symbols, for every g of gns, against the floor at pct."""
+    floor = null_floor(null, pct)
+    with np.errstate(invalid="ignore"):
+        n_null = (null > floor).sum(axis=1)                                   # passes of every null row
+    return (n_null[:, None] >= gns).mean(axis=0)
+
+
+def calibrate_group_n(t_real, nulls, res, null_pct, luck_max, n_sym):
+    """GROUP_N of one kind. t_real: the real T of every candidate; nulls: its null(s); res: its evaluate1 / evaluate2."""
+    gns = np.arange(1, n_sym + 1)
+    n_hit = sum(int(q["pass"].sum()) for q in res)
+    n_comp = sum(int(np.isfinite(t).sum()) for t in t_real)
+    rate = min(n_hit / n_comp if n_comp else 0.0, 1.0 - null_pct / 100.0)
+    pct = 100.0 * (1.0 - rate)
+    n_pass = np.zeros(len(gns), dtype=np.int64)
+    by_luck = np.zeros(len(gns))
+    for q, ns in zip(res, nulls):
+        by_luck += np.max([_luck_of(np.asarray(x, dtype=np.float64), gns, pct) for x in ns], axis=0)
+        n_pass += q["n_pass"] >= gns
+    with np.errstate(invalid="ignore", divide="ignore"):
+        luck = np.where(n_pass > 0, by_luck / n_pass, np.nan)
+        ok = np.flatnonzero(luck <= luck_max)
+    return {"group_n": int(gns[ok[0]]) if ok.size else None, "rate": rate, "gns": gns, "pass": n_pass,
+            "by_luck": by_luck, "luck": luck}
+
+
 def _nan_low(v):
 
     return v if np.isfinite(v) else -np.inf
@@ -98,9 +134,10 @@ def _rank_key(o):
 
 
 def select(names, res1, res2, group_n, min_cover, max_cover, measure):
+    """group_n: {"alone": GROUP_N of the alones, "pair": GROUP_N of the pairs}, None: that kind does not pass."""
 
-    def ok(q):
-        return q["n_pass"] >= group_n
+    def ok(q, kind):
+        return group_n[kind] is not None and q["n_pass"] >= group_n[kind]
 
     def option(q, via, cand):
         cv, rl = measure(cand)
@@ -115,10 +152,10 @@ def select(names, res1, res2, group_n, min_cover, max_cover, measure):
     best = {}
     for nm in names:
         opts = []
-        if ok(res1[nm]):
+        if ok(res1[nm], "alone"):
             opts.append(option(res1[nm], "alone", ("alone", nm)))
         for p in pairs_of.get(nm, []):
-            if ok(res2[p]):
+            if ok(res2[p], "pair"):
                 opts.append(option(res2[p], p, ("pair", p)))
         opts = [o for o in opts if o is not None]
         if opts:
@@ -379,19 +416,16 @@ def survivors(st_alone, st_pairs):
 
 
 # --- Rules of the final list ------------------------------------------------------
-RULE_DEPTHS = (2, 3)    # MAX_DEPTH of rule_generator for the rule count of the final list
-
-
-def rule_counts(pool, names, depths=RULE_DEPTHS):
-    """{MAX_DEPTH: rules} as rule_generator (both sides): 1..MAX_DEPTH conditions, at most one per indicator, and
-    every indicator gives instances x thresholds x ops conditions (as build_flat_specs)."""
+def rule_counts(pool, names, max_depth):
+    """Rules as rule_generator with this MAX_DEPTH (both sides): 1..max_depth conditions, at most one per indicator,
+    and every indicator gives instances x thresholds x ops conditions (as build_flat_specs)."""
     sizes = [len(pool.by_ind[nm]) * len(pool.registry[nm]["thresholds"])
              * len(pool.registry[nm].get("ops", (">", "<"))) for nm in names]
-    e = [1] + [0] * max(depths)                              # e[k]: combinations of k indicators, one condition each
+    e = [1] + [0] * max_depth                                # e[k]: combinations of k indicators, one condition each
     for v in sizes:
-        for k in range(max(depths), 0, -1):
+        for k in range(max_depth, 0, -1):
             e[k] += e[k - 1] * v
-    return {d: 2 * sum(e[1:d + 1]) for d in depths}
+    return 2 * sum(e[1:])
 
 
 # =============================================================================
@@ -456,6 +490,27 @@ def _rescuer(nm, st_alone, st_pairs):
         if st["by"] is None and nm in p:
             return f"pair {pair_name(*p)}"
     return None
+
+
+def _report_calibration(calib, luck_max, null_pct):
+    """GROUP_N calibration (DEBUG): pass, by_luck and luck per GROUP_N of the alones and the pairs, ✅ the one used."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    rates = ", ".join(f"{kind}s {c['rate']:.1%}" for kind, c in calib.items())
+    logger.debug(f"\n{SEP}\nGROUP_N CALIBRATION (LUCK_MAX={luck_max:.0%}) ── pass rate per symbol: {rates} "
+                 f"(nominal {1.0 - null_pct / 100.0:.0%})\n{SEP}")
+    logger.debug(f"{'GROUP_N':>7}" + "".join(f"  │{kind.upper() + 'S':<7}{'pass':>6}{'by_luck':>9}{'luck':>6}   "
+                                          for kind in calib))
+    for j, g in enumerate(next(iter(calib.values()))["gns"]):
+        cells = []
+        for c in calib.values():
+            luck = c["luck"][j]
+            txt = f"{luck:.0%}" if np.isfinite(luck) else "-"
+            cells.append(f"  │{'':<7}{c['pass'][j]:>6}{c['by_luck'][j]:>9.1f}{txt:>6} "
+                         f"{'✅' if g == c['group_n'] else '  '}")
+        logger.debug(f"{g:>7}" + "".join(cells))
+    logger.debug("pass: candidates passing in >= GROUP_N symbols. by_luck: how many would with no edge. "
+                 "luck = by_luck / pass. ✅: the GROUP_N used, the first with luck <= LUCK_MAX")
 
 
 def _report_selected(pool, names, best, mode):
@@ -571,18 +626,18 @@ def _top_candidates(order, st_alone, st_pairs, top_i):
     return out
 
 
-def _report_top(pool, pruned, top, top_i):
-    """TOP_I (DEBUG): the indicators in the TOP and out of it, and the rules of the final list. Returns the rules,
-    {MAX_DEPTH: rules}."""
+def _report_top(pool, pruned, top, top_i, max_depth):
+    """TOP_I (DEBUG): the indicators in the TOP and out of it, and the rules of the final list at this MAX_DEPTH.
+    Returns the rules."""
     if top_i is not None:
         logger.debug(f"\n{SEP}\nTOP_I={top_i} ({len(top)} of {len(pruned)}, in ranking order; a pair is never split)"
                      f"\n{SEP}")
         cut = [nm for nm in pruned if nm not in top]
         _log_names(f"In the TOP ({len(top)}):", top)
         _log_names(f"Out by TOP_I ({len(cut)}):", cut)
-    rules = rule_counts(pool, top)
+    rules = rule_counts(pool, top, max_depth)
     logger.debug(f"\nRules of the {'TOP' if top_i is not None else 'PRUNED'} (rule_generator, both sides): "
-                 + " | ".join(f"MAX_DEPTH={d}: {_fmt_int(v)}" for d, v in rules.items()))
+                 f"MAX_DEPTH={max_depth}: {_fmt_int(rules)}")
     return rules
 
 
@@ -593,9 +648,15 @@ def _check_bins(bins, pool, raw):
                          f"{None if bins is None else tuple(bins.shape)}")
 
 
-def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, max_cover, mode="YPY", top_i=None):
-    """Selection, redundancy and TOP_I from the raw results. bins: build_bins of the pool on the same data."""
-    validate_selection(group_n, len(raw["symbols"]), j_th, x_th, min_cover, max_cover, mode, top_i)
+def report_selection(raw, pool, bins, null_pct, luck_max, j_th, x_th, min_cover, max_cover, mode="YPY", top_i=None,
+                     *, max_depth):
+    """Selection, redundancy and TOP_I from the raw results. bins: build_bins of the pool on the same data. The
+    GROUP_N of the alones and of the pairs: calibrate_group_n with luck_max (on the whole nulls of the cache).
+    max_depth: MAX_DEPTH of rule_generator, for the rules of the TOP. Returns the TOP, its SYMBOL_POOL, its rules
+    and the GROUP_N."""
+    validate_selection(luck_max, j_th, x_th, min_cover, max_cover, mode, top_i)
+    if not (isinstance(max_depth, (int, np.integer)) and max_depth >= 1):
+        raise ValueError(f"MAX_DEPTH must be an integer >= 1: {max_depth}")
     raw_mode = raw.get("mode", "YPY")                       # caches from before the modes are YPY
     if mode != raw_mode:
         raise ValueError(f"MODE={mode} but these raw results were computed in {raw_mode}")
@@ -605,6 +666,16 @@ def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, 
     names, n = raw["names"], raw["n"]
     res1 = {nm: evaluate1(raw["p1"][nm], null_pct) for nm in names}
     res2 = {p: evaluate2(raw["p2"][p], null_pct) for p in raw["pairs"]}
+    n_sym = len(raw["symbols"])
+    calib = {
+        "alone": calibrate_group_n([raw["p1"][nm]["T1"] for nm in names], [[raw["p1"][nm]["null1"]] for nm in names],
+                                   [res1[nm] for nm in names], null_pct, luck_max, n_sym),
+        "pair":  calibrate_group_n([raw["p2"][p]["T2"] for p in raw["pairs"]],
+                                   [[raw["p2"][p]["null2_A"], raw["p2"][p]["null2_B"]] for p in raw["pairs"]],
+                                   [res2[p] for p in raw["pairs"]], null_pct, luck_max, n_sym),
+    }
+    group_n = {kind: c["group_n"] for kind, c in calib.items()}
+    _report_calibration(calib, luck_max, null_pct)
     sym = {}
 
     def res_of(c):
@@ -649,7 +720,7 @@ def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, 
                              j_th, x_th, mode)
     pruned = _report_pruned(selected, best, st_alone, st_pairs, survivors(st_alone, st_pairs))
     top = top_list(order, st_alone, st_pairs, top_i)
-    rules = _report_top(pool, pruned, top, top_i)
+    rules = _report_top(pool, pruned, top, top_i, max_depth)
 
     # the TOP's candidates (a pair once) and, for every indicator of the TOP, the one it entered through
     top_cands = _top_candidates(order, st_alone, st_pairs, top_i)
@@ -660,9 +731,7 @@ def report_selection(raw, pool, bins, null_pct, group_n, j_th, x_th, min_cover, 
     if list(entry) != top:
         raise RuntimeError("_top_candidates is out of sync with top_list")
     top_symbols = _report_symbols(raw["symbols"], [sym_of(entry[nm])[1] for nm in top])
-    passes = {nm: [str(raw["symbols"][k]) for k in np.flatnonzero(sym_of(entry[nm])[1])] for nm in top}   # per TOP indicator
-    return {"selected": selected, "pruned": pruned, "top": top, "symbols": top_symbols, "rules": rules,
-            "passes": passes}
+    return {"top": top, "symbols": top_symbols, "rules": rules, "group_n": group_n}
 
 def exclude_indicators(raw, exclude):
     """Raw results without the excluded indicators and every pair with them: the same as computing without them."""

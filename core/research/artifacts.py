@@ -27,10 +27,9 @@ CFGS = {sa: ScreenConfig(tp_pct=cr.TP_PCT, sl_pct=cr.SL_PCT, sell_after=[sa], co
 # =============================================================================
 # PATHS
 # =============================================================================
-CACHE_DIR  = cr.CACHE_DIR                                       # written by precompute/caches, read by groupn and screen
+CACHE_DIR  = cr.CACHE_DIR                                       # written by precompute/caches, read by screen
 GRIDS_DIR  = os.path.join(cr.ARTIFACTS_DIR, "screen_grids")     # written by the screen stage, read by grids
 COMBOS_DIR = os.path.join(cr.ARTIFACTS_DIR, "screen_combos")    # written by the grids stage, read by combos
-FULL_KEY   = "null2_full"       # in a cache: the pairs whose phase 2 nulls are complete (caches completes them)
 
 
 def _write_json(path: str, doc: dict) -> dict:
@@ -78,11 +77,6 @@ def cache_file(sa: int, tf: str) -> tuple:
 def load_raw(sa: int, names, tf: str):
     path, key = cache_file(sa, tf)
     return load_cache(path, key, names)
-
-
-def missing_nulls(raw: dict) -> list:
-    full = raw.get(FULL_KEY, set())
-    return [p for p in raw["pairs"] if p not in full]
 
 
 # =============================================================================

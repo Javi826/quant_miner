@@ -1,7 +1,6 @@
 # quant_miner/darwinex/BOT_sweep/sweep_research_fx.py 
 import os
 import sys
-import copy
 import json
 import time
 import logging
@@ -12,14 +11,13 @@ from datetime import datetime
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..",".."))       # quant_miner
 sys.path.append(_ROOT)
 sys.path.append(os.path.join(_ROOT, "core"))
-sys.path.append(os.path.join(_ROOT, "darwinex"))
-
 from setup import config_research as cr
+sys.path.append(os.path.join(_ROOT, cr.BROKER))
+
 from setup.config_core import settings
 from research import artifacts as ra
 from research.stages import screen, grids, combos
 from research.stages.screen import ScreenStageConfig
-from research.stages.grids import GridsStageConfig
 from research.stages.combos import CombosStageConfig
 
 logger = logging.getLogger("BOT_sweep.research")
@@ -34,17 +32,13 @@ LOG_LEVELS = {
 # CONFIG ── every list is swept: one json per point of the cartesian product
 # =============================================================================
 SWEEP_SCREEN = {                                # ScreenStageConfig fields
-    "group_n": [3,4,5,6],
-    "top_i":   [5,6,7,8],
+    "luck_max": [0.1,0.2,0.4,0.6,0.8],                          # less luck_max: higher GROUP_N
+    "top_i":    [4,5,6,7,8],
 }
-SWEEP_GRIDS = {                                 # GridsStageConfig fields
-    "rank_by":        ["SYMBOLS"],     # SYMBOLS | RULES
-    "symbols_deploy": ["all"],         # all | terna
-}
-COMBOS = CombosStageConfig(                     # fixed for the whole sweep
+COMBOS = CombosStageConfig(                     # fixed for the whole sweep, as research_fx
     plus_minus         = 0.2,
     combo_sizes        = [1, 2],
-    n_samples_per_size = {1: None, 99: 99},    # None = exhaustive
+    n_samples_per_size = {1: None, 2: 190},    # None = exhaustive
 )
 
 CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "sweep", "configs")    # read by sweep_backtest_fx
@@ -93,13 +87,13 @@ def _config_path(params: dict) -> str:
     return os.path.join(CONFIGS_DIR, f"{name}.json")
 
 
-def _save_config(params: dict, screen_cfg, grids_cfg, result: dict) -> str:
+def _save_config(params: dict, screen_cfg, result: dict) -> str:
     doc = {
         "created":       datetime.now().isoformat(timespec="seconds"),
         "params":        params,
         "dataset":       cr.DATASET,
         "backtest_mode": str(settings.BACKTEST_MODE),
-        "stages":        {"screen": str(screen_cfg), "grids": str(grids_cfg), "combos": str(COMBOS)},
+        "stages":        {"screen": str(screen_cfg), "combos": str(COMBOS)},           # grids has no config
         "SYMBOL_COMBOS_BY_TIMEFRAME":       {tf: r["combos"]     for tf, r in result.items()},
         "PARAM_GRID_BY_TIMEFRAME":          {tf: r["param_grid"] for tf, r in result.items()},
         "SELECTED_INDICATORS_BY_TIMEFRAME": {tf: r["indicators"] for tf, r in result.items()},
@@ -115,11 +109,16 @@ def _save_config(params: dict, screen_cfg, grids_cfg, result: dict) -> str:
 # =============================================================================
 # STAGES
 # =============================================================================
-def _run_stage(name: str, cfg, inputs=None):
+def _run_stage(name: str, cfg=None, inputs=None):
     module = STAGE_BY_NAME[name]
     module.LOG_LEVEL = LOG_LEVELS[name]
     t0  = time.time()
-    out = module.run(cfg) if name == "screen" else module.run(cfg, inputs)
+    if name == "screen":
+        out = module.run(cfg)
+    elif name == "grids":
+        out = module.run(inputs)                # no config
+    else:
+        out = module.run(cfg, inputs)
     logger.info(f"🏁 {name.upper()} done in {_elapsed(time.time() - t0)}")
     return out
 
@@ -141,24 +140,21 @@ def _run_combos(grids_out: dict) -> dict:
 # MAIN
 # =============================================================================
 def main() -> None:
-    screen_points = _points(SWEEP_SCREEN, ScreenStageConfig)
-    grids_points  = _points(SWEEP_GRIDS, GridsStageConfig)
-    n_total       = len(screen_points) * len(grids_points)
-    n_done        = sum(os.path.exists(_config_path({**s, **g})) for s, _ in screen_points for g, _ in grids_points)
+    points  = _points(SWEEP_SCREEN, ScreenStageConfig)
+    n_total = len(points)
+    n_done  = sum(os.path.exists(_config_path(p)) for p, _ in points)
     log_sweep_config(n_total, n_done)
 
     with no_persist():
-        for s_params, screen_cfg in screen_points:
-            pending = [(g, cfg) for g, cfg in grids_points if not os.path.exists(_config_path({**s_params, **g}))]
-            if not pending:
+        for params, screen_cfg in points:
+            if os.path.exists(_config_path(params)):
                 continue
-            screen_out = _run_stage("screen", screen_cfg)                                  # once per screen point
-            for g_params, grids_cfg in pending:
-                grids_out = _run_stage("grids", grids_cfg, copy.deepcopy(screen_out))      # a copy: grids may modify its input
-                result    = _run_combos(grids_out)                                         # only the timeframes with a grids winner
-                path      = _save_config({**s_params, **g_params}, screen_cfg, grids_cfg, result)
-                n_done   += 1
-                logger.info(f"\n💾 CONFIG {n_done}/{n_total} ── {os.path.basename(path)}")
+            screen_out = _run_stage("screen", screen_cfg)
+            grids_out  = _run_stage("grids", inputs=screen_out)
+            result     = _run_combos(grids_out)                                    # only the timeframes with a grids winner
+            path       = _save_config(params, screen_cfg, result)
+            n_done    += 1
+            logger.info(f"\n💾 CONFIG {n_done}/{n_total} ── {os.path.basename(path)}")
 
 
 def _elapsed(seconds: float) -> str:
@@ -172,7 +168,7 @@ def log_sweep_config(n_total: int, n_done: int) -> None:
     logger.info(f"{SEP}")
     logger.info(f"  {'DATASET':<{LBL_W}}: {cr.DATASET} ── {cr.TIMEFRAMES} ── {len(cr.SYMBOLS)} symbols")
     logger.info(f"  {'SCREEN':<{LBL_W}}: {SWEEP_SCREEN}")
-    logger.info(f"  {'GRIDS':<{LBL_W}}: {SWEEP_GRIDS}")
+    logger.info(f"  {'GRIDS':<{LBL_W}}: no config (ranked by rules)")
     logger.info(f"  {'COMBOS':<{LBL_W}}: {COMBOS}")
     logger.info(f"  {'CONFIGS':<{LBL_W}}: {n_total} ── done: {n_done} ── pending: {n_total - n_done}")
     logger.info(f"  {'OUTPUT':<{LBL_W}}: {CONFIGS_DIR}")

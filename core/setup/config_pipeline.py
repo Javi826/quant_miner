@@ -11,10 +11,10 @@ STEPM_OOS_BLOCK_SIZE = 10
 # =============================================================================
 # WFO — wfo.py
 # =============================================================================
-WFO_NET_GAIN_TH  = 1
-WFO_DD_TH        = 1
-WFO_R2_TH        = 0.1
-WFO_WFR_TH       = 0.1
+WFO_NET_GAIN_TH  = 10
+WFO_DD_TH        = 30
+WFO_R2_TH        = 0.5
+WFO_WFR_TH       = 0.5
 WFO_TRAIN_MONTHS = 12
 WFO_TEST_MONTHS  = 3
 
