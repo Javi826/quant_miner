@@ -1,9 +1,11 @@
 #core/utils/batch_metrics.py
+import math
 import logging
 import numpy as np
 import pandas as pd
 from pandas.tseries.offsets import CustomBusinessDay
 from setup.config_core import settings
+from utils import metrics_core
 logger = logging.getLogger("BOT_batch.utils.batch_metrics")
 
 
@@ -78,29 +80,38 @@ def _r_squared_linear_trend(y: np.ndarray) -> float:
 
     return float(1.0 - ss_res / ss_tot)
 
+# =============================================================================
+# SHARPE
+# =============================================================================
+def sharpe_from_mean_std(daily_mean: float, daily_std: float) -> float:
+
+    # math.sqrt and math.isfinite give the same values as their numpy versions on floats, without the ufunc overhead
+    if not daily_std > 0:
+        return np.nan
+    sharpe = round(float(daily_mean / daily_std * math.sqrt(settings.DAYS_PER_YEAR)), 3)
+    if math.isfinite(sharpe) and abs(sharpe) > SHARPE_ABS_CAP:
+        return np.nan
+    return sharpe
+
 def sharpe_from_daily_values(daily_values: np.ndarray) -> float:
 
-    n          = daily_values.size
-    daily_mean = np.add.reduce(daily_values, axis=None) / n
-    dev        = daily_values - daily_mean
-    np.multiply(dev, dev, out=dev)
-    daily_std  = np.sqrt(np.add.reduce(dev, axis=None) / n)
-    sharpe = (round(float(daily_mean / daily_std * np.sqrt(settings.DAYS_PER_YEAR)), 3)
-              if daily_std > 0 else np.nan)
-    if sharpe is not None and np.isfinite(sharpe) and abs(sharpe) > SHARPE_ABS_CAP:
-        sharpe = np.nan
-    return sharpe
+    daily_mean, daily_std = metrics_core.mean_std(daily_values)
+    return sharpe_from_mean_std(daily_mean, daily_std)
+
+def sharpes_from_daily_rows(daily: np.ndarray, day_start: np.ndarray, n_days: np.ndarray) -> list:
+
+    # Sharpe of daily[r, day_start[r]:day_start[r] + n_days[r]] per row, NaN where n_days <= 0
+    means, stds = metrics_core.mean_std_rows(daily, day_start, n_days)
+    return [sharpe_from_mean_std(mean, std) if n > 0 else np.nan
+            for mean, std, n in zip(means.tolist(), stds.tolist(), n_days.tolist())]
 
 # =============================================================================
 # SKEW / KURTOSIS
 # =============================================================================
 def skew_kurtosis_from_daily_values(daily_values: np.ndarray) -> tuple:
 
-    deviations = daily_values - daily_values.mean()
-    dev_sq = deviations * deviations
-    m2 = np.mean(dev_sq)
-    m3 = np.mean(dev_sq * deviations)
-    m4 = np.mean(dev_sq * dev_sq)
+    # numpy scalars keep the original power and division semantics
+    _, m2, m3, m4 = (np.float64(v) for v in metrics_core.central_moments(daily_values))
     return float(m3 / (m2 ** 1.5)), float(m4 / (m2 ** 2))
 
 def daily_values_from_sell_days(sell_days_ns: np.ndarray, profits: np.ndarray) -> tuple:
@@ -119,11 +130,20 @@ def daily_values_from_sell_days(sell_days_ns: np.ndarray, profits: np.ndarray) -
 
 def equity_from_daily_values(daily_values: np.ndarray, capital: float) -> tuple:
 
-    eq       = capital + np.cumsum(daily_values)
-    cm       = np.maximum.accumulate(eq)
-    max_dd   = ((eq - cm) / cm * 100).min()
-    net_gain = (eq[-1] - capital) / capital * 100
-    return eq, max_dd, net_gain
+    eq, max_dd = metrics_core.equity_drawdown(daily_values, capital)
+    net_gain   = (eq[-1] - capital) / capital * 100
+    return eq, np.float64(max_dd), net_gain
+
+def _rounded_net_gain_dd(net_gain: float, max_dd: float) -> tuple:
+
+    return round(float(net_gain), 2), round(float(max_dd), 2)
+
+def net_gain_dd_pct_from_trades(sell_times: np.ndarray, profits: np.ndarray, capital: float) -> tuple:
+
+    # Net_Gain_pct and Max_DD_pct of compute_metrics, without the trade-log DataFrame
+    daily_values, _, _    = daily_values_from_sell_days(sell_times, profits)
+    _, max_dd, net_gain   = equity_from_daily_values(daily_values, capital)
+    return _rounded_net_gain_dd(net_gain, max_dd)
 
 # =============================================================================
 # COMPUTE METRICS
@@ -147,11 +167,13 @@ def compute_metrics(
     daily_values, n_days, start_day = daily_values_from_sell_days(
         tl["sell_time"].values, profits,
     )
-    date_index    = pd.bdate_range(start=start_day, periods=n_days, freq=CustomBusinessDay(weekmask=settings.WEEKMASK))
     eq, max_dd, net_gain = equity_from_daily_values(daily_values, capital)
+    net_gain_pct, max_dd_pct = _rounded_net_gain_dd(net_gain, max_dd)
     profit_abs    = round(float(eq[-1] - capital), 2)
     calmar        = round(float(net_gain / abs(max_dd)), 3) if max_dd < 0 else np.nan
     if include_weekly:
+        # the business-day calendar is only needed by the weekly metrics (building it is the slow part)
+        date_index    = pd.bdate_range(start=start_day, periods=n_days, freq=CustomBusinessDay(weekmask=settings.WEEKMASK))
         eq_series     = pd.Series(eq, index=date_index)
         weekly        = eq_series.resample("W").last().pct_change().dropna()
         weekly_pct    = (weekly > 0).mean() * 100
@@ -189,8 +211,8 @@ def compute_metrics(
         r2 = np.nan
     return {
         "Curve":         name,
-        "Net_Gain_pct":  round(float(net_gain), 2),
-        "Max_DD_pct":    round(float(max_dd), 2),
+        "Net_Gain_pct":  net_gain_pct,
+        "Max_DD_pct":    max_dd_pct,
         "Win_Rate":      win_rate,
         "R_Squared":     r2,
         "Profit_Factor": pf,

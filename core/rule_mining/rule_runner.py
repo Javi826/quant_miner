@@ -7,6 +7,7 @@ from pipeline.stepM_is import pipe_stepm
 from pipeline.stepM_oos import pipe_stepm_oos
 from pipeline.correlation import pipe_correlation_oos
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
+from pipeline.spec_table import build_spec_table
 from utils.plotting import plot_rule_mining_filter_comparison, plot_rule_mining_portfolio_comparison
 from setup.config_backtest import INITIAL_BALANCE
 from runs.run_portfolio import find_best_portfolio_combination_wfo
@@ -108,10 +109,17 @@ def run_rule_mining_pipeline(
         logger.info(f"─ RULE MINING ── {combo_key} {combo['symbols']} ── rules: {format(len(rules), ',').replace(',', '.')}")
         logger.info(f"{'─' * 70}\033[0m")
 
-        rules = pipe_signal_cleaning_jaccard(
+        spec_table = build_spec_table(
             rules     = rules,
             ohlcv_arr = ohlcv_arr_is_by_combo[combo_key],
             timeframe = timeframe,
+        )
+
+        rules = pipe_signal_cleaning_jaccard(
+            rules      = rules,
+            ohlcv_arr  = ohlcv_arr_is_by_combo[combo_key],
+            timeframe  = timeframe,
+            spec_table = spec_table,
         )
 
         raw_results, n_combos, matrix_arr, col_names = pipe_backtesting(
@@ -120,6 +128,7 @@ def run_rule_mining_pipeline(
             param_grid   = param_grid[timeframe],
             order_amount = order_amount,
             timeframe    = timeframe,
+            spec_table   = spec_table,
         )
 
         mbias_results = pipe_stepm(
@@ -129,7 +138,7 @@ def run_rule_mining_pipeline(
             timeframe   = timeframe,
         )
 
-        del raw_results, matrix_arr
+        del raw_results, matrix_arr, spec_table
 
         all_mbias_results.extend([{**r, **_empty_wfo_fields()} for r in mbias_results])
 

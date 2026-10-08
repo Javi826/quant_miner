@@ -1,1 +1,0 @@
-source ~/projects/quant/env_quant/bin/activate && cd ~/projects/quant/quant_miner/core/backtesters && python3 setup.py build_ext --inplace

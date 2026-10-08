@@ -9,7 +9,6 @@ from tqdm import tqdm
 from tqdm_joblib import tqdm_joblib
 from utils.paralelization import arrays_to_shared_memory, arrays_from_shared_memory
 from setup.config_backtest import INITIAL_BALANCE
-from utils.batch_metrics import compute_metrics
 logger = logging.getLogger("BOT_batch.engines.wfo_WF")
 
 WARMUP_BARS       = 100
@@ -18,15 +17,6 @@ MIN_COOLDOWN_BARS = 100
 # =============================================================================
 # PARAM ROUNDING HELPERS
 # =============================================================================
-
-def _decimals_for_values(values) -> int:
-
-    max_decimals = 0
-    for v in values:
-        s = f"{float(v):.10f}".rstrip("0")
-        if "." in s:
-            max_decimals = max(max_decimals, len(s.split(".")[1]))
-    return max_decimals
 
 def _snap_to_grid(value: float, grid_values: list):
 
@@ -108,10 +98,12 @@ def walk_forward_optimization(
     ema_alpha,
     n_jobs=-1,
     show_progress=False,
-    collect_train_trades_fn=None,
+    train_stats_fn=None,
     collect_test_trades_fn=None,
     inherit_entry_block=False,
 ):
+    # train_stats_fn(params, base_arrays, train_start_ts) -> (n_trades, Net_Gain_pct) of the effective params on train
+    # collect_test_trades_fn(params, base_arrays, entry_from_ts=...) -> test trade log DataFrame
     if evaluate_fn is None:
         raise ValueError("You must pass an evaluate_fn(params, base_arrays) function")
 
@@ -134,7 +126,6 @@ def walk_forward_optimization(
     test_symbols_list  = []
 
     # Trade accumulators per window
-    train_trades_list   = []
     test_trades_list    = []
     test_n_trades_list  = []
     train_criteria_list = [] 
@@ -258,17 +249,9 @@ def walk_forward_optimization(
         test_criterion       = np.nan
         train_criterion      = np.nan
 
-        df_train = None
-        if collect_train_trades_fn is not None and base_arrays:
-            df_train = collect_train_trades_fn(effective_params, base_arrays)
-            if df_train is not None and not df_train.empty:
-                n_before = len(df_train)
-
-                truncated_mask    = df_train["exit_reason"] == "END_OF_DATA"
-                below_warmup_mask = df_train["buy_time"] < pd.Timestamp(train_start_ts)
-                df_train = df_train[~truncated_mask & ~below_warmup_mask].copy()
-                n_after = len(df_train)
-                #logger.debug(f"WFO window {window_idx} ── train trades={n_before}->{n_after}")
+        train_n_trades, train_net_gain = 0, np.nan
+        if train_stats_fn is not None and base_arrays:
+            train_n_trades, train_net_gain = train_stats_fn(effective_params, base_arrays, train_start_ts)
 
         df_test = None
         if collect_test_trades_fn is not None and base_arrays_test:
@@ -284,21 +267,16 @@ def walk_forward_optimization(
                 ].copy()
         prev_last_exit = None
 
-        train_has_trades = df_train is not None and not df_train.empty
+        train_has_trades = train_n_trades > 0
         test_has_trades  = df_test is not None and not df_test.empty
 
         if train_has_trades and test_has_trades:
-            df_train["wfo_window"] = window_idx
-            train_trades_list.append(df_train)
-
             df_test["wfo_window"] = window_idx
             test_trades_list.append(df_test)
             prev_last_exit = df_test["sell_time"].max()
             window_test_n_trades = len(df_test)
             test_criterion       = float(df_test["profit"].sum()) / INITIAL_BALANCE * 100
-
-            m_train         = compute_metrics(df_train, capital=INITIAL_BALANCE, name="", include_weekly=False)
-            train_criterion = m_train["Net_Gain_pct"]
+            train_criterion      = train_net_gain
         else:
             logger.debug(
                 f"WFO window {window_idx} ── dropped from train/test WFR pool "
@@ -365,17 +343,17 @@ def walk_forward_optimization(
     df_results = pd.concat([df_results, pd.DataFrame([summary_row])], ignore_index=True)
 
 
-    sep_row = {col: "·" * min(8, len(str(col))) for col in df_results.columns}
-    sep_row["train_start"] = "·" * 10
-    df_display   = pd.concat([df_results.iloc[:-1], pd.DataFrame([sep_row]), df_results.iloc[[-1]]], ignore_index=True)
-    display_cols = [c for c in df_display.columns if not c.startswith("_") and c not in ("tr_syms", "ts_syms")]
-    logger.debug(f"WFO Final summary — parameters, criterion, and train/test dates per window:\n{df_display[display_cols].to_string()}\n{'─'*115}")
+    if logger.isEnabledFor(logging.DEBUG):
+        sep_row = {col: "·" * min(8, len(str(col))) for col in df_results.columns}
+        sep_row["train_start"] = "·" * 10
+        df_display   = pd.concat([df_results.iloc[:-1], pd.DataFrame([sep_row]), df_results.iloc[[-1]]], ignore_index=True)
+        display_cols = [c for c in df_display.columns if not c.startswith("_") and c not in ("tr_syms", "ts_syms")]
+        logger.debug(f"WFO Final summary — parameters, criterion, and train/test dates per window:\n{df_display[display_cols].to_string()}\n{'─'*115}")
 
     # -----------------------------------------------------------
-    # Concatenate per-window trade logs
+    # Concatenate per-window test trade logs
     # -----------------------------------------------------------
-    wfo_train_trades = pd.concat(train_trades_list, ignore_index=True) if train_trades_list else pd.DataFrame()
-    wfo_test_trades  = pd.concat(test_trades_list,  ignore_index=True) if test_trades_list  else pd.DataFrame()
+    wfo_test_trades = pd.concat(test_trades_list, ignore_index=True) if test_trades_list else pd.DataFrame()
 
     valid_train_criteria  = [c for c in train_criteria_list if np.isfinite(c)]
     train_net_gain_avg    = float(np.mean(valid_train_criteria)) if valid_train_criteria else 0.0
@@ -383,4 +361,4 @@ def walk_forward_optimization(
     valid_test_criteria   = [c for c in best_criteria_list if np.isfinite(c)]
     test_net_gain_avg     = float(np.mean(valid_test_criteria)) if valid_test_criteria else 0.0
 
-    return final_params, df_results, wfo_train_trades, wfo_test_trades, window_idx, train_net_gain_avg, test_net_gain_avg
+    return final_params, df_results, wfo_test_trades, window_idx, train_net_gain_avg, test_net_gain_avg

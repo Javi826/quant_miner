@@ -1,0 +1,1 @@
+source ~/projects/quant/env_quant/bin/activate && python3 ~/projects/quant/quant_miner/core/build_cython/build_cython.py build_ext --inplace

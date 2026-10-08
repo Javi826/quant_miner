@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 import numpy as np
 import cupy as cp
 import cupyx
@@ -39,6 +40,7 @@ PARTITION_ROW_CHUNK  = 50          # bootstrap replicas processed per np.partiti
 BOOTSTRAP_CHUNK_SIZE = 8192        # columns processed per GEMM call in the bootstrap moment computation
 RANDOM_SEED          = 42
 FDP_TOPM_WORKERS     = max(1, min(os.cpu_count() or 1, 16))  # threads for the suffix k-th queries on the top-M index
+WEIGHT_CACHE_SIZE    = 8           # bootstrap weight matrices kept per process (grids repeats n_obs and block per terna)
 # =============================================================================
 # GPU CONFIG (CuPy, streaming top-M) — VRAM is bounded by n_bootstrap x (M + staging), not by N
 # =============================================================================
@@ -84,23 +86,26 @@ def _build_bootstrap_weight_matrix(
     n_replicas: int,
 ) -> np.ndarray:
 
-    diff = np.zeros((n_replicas, n_obs + 1), dtype=np.int32)
-    row_idx = np.arange(n_replicas)
+    # +1 at every block start and -1 at every block end, counted with bincount over (replica, day) flat indices
+    width   = n_obs + 1
+    lengths = np.full(starts_full.shape[1] + 1, block_size, dtype=np.int64)
+    lengths[-1] = len_last
+    starts  = np.concatenate((starts_full, starts_last[:, None]), axis=1).astype(np.int64)
+    starts += np.arange(n_replicas, dtype=np.int64)[:, None] * width
+    n_flat  = n_replicas * width
+    diff    = np.bincount(starts.ravel(), minlength=n_flat) - np.bincount((starts + lengths).ravel(), minlength=n_flat)
 
-    n_blocks_full = starts_full.shape[1]
-    if n_blocks_full > 0:
-        rows_full   = np.repeat(row_idx, n_blocks_full)
-        starts_flat = starts_full.ravel()
-        ends_flat   = starts_flat + block_size
-        np.add.at(diff, (rows_full, starts_flat), 1)
-        np.add.at(diff, (rows_full, ends_flat), -1)
-
-    ends_last = starts_last + len_last
-    np.add.at(diff, (row_idx, starts_last), 1)
-    np.add.at(diff, (row_idx, ends_last), -1)
-
-    weights = np.cumsum(diff[:, :n_obs], axis=1)
+    weights = np.cumsum(diff.reshape(n_replicas, width)[:, :n_obs], axis=1)
     return weights.astype(np.float32)
+
+@lru_cache(maxsize=WEIGHT_CACHE_SIZE)
+def _bootstrap_weights(n_obs: int, block_size: int, n_bootstrap: int, seed: int) -> tuple:
+    # a fresh generator per call, as before the cache: the matrix depends only on these four arguments
+    rng = np.random.default_rng(seed)
+    starts_full, starts_last, len_last, n_blocks_needed = _generate_block_starts(n_obs, block_size, n_bootstrap, rng)
+    weights = _build_bootstrap_weight_matrix(starts_full, starts_last, block_size, len_last, n_obs, n_bootstrap)
+    weights.flags.writeable = False
+    return weights, len_last, n_blocks_needed
 
 # =============================================================================
 # PARALLEL REAL SHARPE (CPU, bit-exact): identical numpy calls on the same
@@ -200,7 +205,7 @@ def _check_streaming_vram(n_bootstrap: int, n_obs: int, n_cols: int, m: int, g: 
     chunk_w = min(BOOTSTRAP_CHUNK_SIZE, max(n_cols, 1))
     need_b = (
         n_bootstrap * n_obs * 4                                  # bootstrap weight matrix
-        + n_obs * BOOTSTRAP_CHUNK_SIZE * 4                       # device buffer of one input chunk
+        + n_obs * chunk_w * 4                                    # device buffer of one input chunk
         + n_bootstrap * chunk_w * GPU_CHUNK_BYTES_PER_ELEM       # bootstrap chunk temporaries
         + n_bootstrap * (g + m) * 8                              # staging + running top-M keys
         + n_cols * 8 * 2                                         # real Sharpe + sigma
@@ -289,6 +294,7 @@ class _StreamingBootstrap:
     def _run(self, m: int, capture: bool, desc: str) -> dict:
         n_boot, n_obs, n_cols = self.n_bootstrap, self.n_obs, self.n_cols
         chunk_w = BOOTSTRAP_CHUNK_SIZE
+        buf_w   = min(chunk_w, max(n_cols, 1))      # widest chunk actually streamed: sizes the pinned and device buffers
         m_alloc = min(int(m), n_cols)
         g       = max(1, min(GPU_TOPM_STAGING_COLS, n_cols))
         _check_streaming_vram(n_boot, n_obs, n_cols, m_alloc, g, self.progress_label)
@@ -296,7 +302,7 @@ class _StreamingBootstrap:
         bounds    = [(s, min(s + chunk_w, n_cols)) for s in range(0, n_cols, chunk_w)]
         raw_host  = np.empty((n_boot, n_cols), dtype=np.float32) if capture else None
         stud_host = np.empty((n_boot, n_cols), dtype=np.float32) if capture else None
-        pinned    = [cupyx.empty_pinned(n_obs * chunk_w, dtype=np.float32) for _ in range(2)]
+        pinned    = [cupyx.empty_pinned(n_obs * buf_w, dtype=np.float32) for _ in range(2)]
         staged    = [None, None]
         stream    = cp.cuda.Stream(non_blocking=True)
 
@@ -304,7 +310,7 @@ class _StreamingBootstrap:
             w_gpu     = cp.asarray(self.weight_matrix)
             real_gpu  = cp.asarray(self.real_sharpe)
             sigma_gpu = cp.empty(n_cols, dtype=cp.float64)
-            x_flat    = cp.empty(n_obs * chunk_w, dtype=cp.float32)
+            x_flat    = cp.empty(n_obs * buf_w, dtype=cp.float32)
             nan_found = cp.zeros((), dtype=cp.bool_)
             topm      = _TopMAccumulator(n_boot, m_alloc, g)
 
@@ -378,10 +384,15 @@ class _SuffixKthIndex:
         c = int(counts.max()) if n_rows else 0
         self.xj   = np.full((n_rows, c), m, dtype=np.int32)
         self.xpos = np.full((n_rows, c), n_cols, dtype=np.int32)
-        for r in range(n_rows):
-            j = np.flatnonzero(excl[r])
-            self.xj[r, :j.size]   = j
-            self.xpos[r, :j.size] = self.pos[r, j]
+        if n_rows and bool((counts == m).all()):
+            # every top-M entry is excluded (top-M covers all the columns): same arrays without the per-row loop
+            self.xj[:]   = np.arange(m, dtype=np.int32)
+            self.xpos[:] = self.pos
+        else:
+            for r in range(n_rows):
+                j = np.flatnonzero(excl[r])
+                self.xj[r, :j.size]   = j
+                self.xpos[r, :j.size] = self.pos[r, j]
         self.c = c
 
     def kth_largest_suffix(self, s: int, k_eff: int) -> np.ndarray:
@@ -537,17 +548,10 @@ def compute_bootstrap_null(
 
     n_obs, n_cols = matrix_arr.shape
 
-    rng = np.random.default_rng(seed)
-    starts_full, starts_last, len_last, n_blocks_needed = _generate_block_starts(
-        n_obs, block_size, n_bootstrap, rng,
-    )
+    weight_matrix, len_last, n_blocks_needed = _bootstrap_weights(n_obs, int(block_size), int(n_bootstrap), int(seed))
 
     if debug:
         print_stepm_block_starts_debug(progress_label, n_blocks_needed, block_size, len_last, n_obs, n_cols)
-
-    weight_matrix = _build_bootstrap_weight_matrix(
-        starts_full, starts_last, block_size, len_last, n_obs, n_bootstrap,
-    )
 
     engine = _StreamingBootstrap(matrix_arr, real_sharpe, weight_matrix, progress_label, workers)
     run    = engine.run(topm_size, capture=debug, desc=desc or f"STEPM BOOTSTRAP {progress_label}".strip())
@@ -894,6 +898,41 @@ def _best_col_idx_by_rule(kept_columns: np.ndarray, stepm_pvals: np.ndarray, z_s
     return dict(zip(ids.keys(), order[first].tolist()))
 
 
+def _finite_or_none(values: np.ndarray) -> list:
+    return [v if f else None for v, f in zip(values.tolist(), np.isfinite(values).tolist())]
+
+
+def _stepm_rule_results(raw_results: list, best_idx_by_rule: dict, kept_columns: np.ndarray, stepm_pvals: np.ndarray,
+                        real_sharpe: np.ndarray, z_stat: np.ndarray) -> list:
+    # one vectorized gather per field; a rule without a kept column gets NaN, reported as None
+    n       = len(raw_results)
+    idx     = np.fromiter((best_idx_by_rule.get(r["rule_id"], -1) for r in raw_results), dtype=np.int64, count=n)
+    has_col = idx >= 0
+    safe    = np.where(has_col, idx, 0)
+
+    def gather(values: np.ndarray) -> np.ndarray:
+        return np.where(has_col, np.asarray(values, dtype=np.float64)[safe], np.nan)
+
+    stepm_p = gather(stepm_pvals)
+    passed  = (np.isfinite(stepm_p) & (stepm_p <= STEPM_ALPHA)).tolist()
+    names   = {i: kept_columns[i] for i in set(idx[has_col].tolist())}
+    combo   = {i: str(name).rsplit("__", 1)[1] if name else None for i, name in names.items()}
+    fields  = zip(idx.tolist(), passed, _finite_or_none(stepm_p), _finite_or_none(gather(real_sharpe)),
+                  _finite_or_none(gather(z_stat)))
+    return [
+        {
+            **r,
+            "best_combo_id": combo[i] if i >= 0 else None,
+            "passed_stepm":  ok,
+            "passed_mbias":  ok,
+            "stepm_p":       p,
+            "sharpe":        sharpe,
+            "z_stat":        z,
+        }
+        for r, (i, ok, p, sharpe, z) in zip(raw_results, fields)
+    ]
+
+
 def empty_stepm_fields() -> dict:
     # placeholder StepM fields for rules that were never evaluated (pipe skipped)
     return {
@@ -982,27 +1021,8 @@ def pipe_stepm(
 
     best_idx_by_rule = _best_col_idx_by_rule(kept_columns, stepm_pvals, z_stat)
 
-    n_passed = 0
-    results  = []
-    for r in raw_results:
-        idx           = best_idx_by_rule.get(r["rule_id"])
-        col_name      = kept_columns[idx] if idx is not None else None
-        best_combo_id = str(col_name).rsplit("__", 1)[1] if col_name else None
-        stepm_p       = stepm_pvals[idx] if idx is not None else float("nan")
-        sharpe_val    = real_sharpe[idx] if idx is not None else float("nan")
-        z_val         = z_stat[idx] if idx is not None else float("nan")
-        passed        = bool(np.isfinite(stepm_p) and stepm_p <= STEPM_ALPHA)
-        n_passed     += int(passed)
-
-        results.append({
-            **r,
-            "best_combo_id": best_combo_id,
-            "passed_stepm":  passed,
-            "passed_mbias":  passed,
-            "stepm_p":       float(stepm_p) if np.isfinite(stepm_p) else None,
-            "sharpe":        float(sharpe_val) if np.isfinite(sharpe_val) else None,
-            "z_stat":        float(z_val) if np.isfinite(z_val) else None,
-        })
+    results  = _stepm_rule_results(raw_results, best_idx_by_rule, kept_columns, stepm_pvals, real_sharpe, z_stat)
+    n_passed = sum(r["passed_stepm"] for r in results)
 
     n_cols_rejected = int((stepm_pvals <= STEPM_ALPHA).sum())
     gamma_implied   = k_fwe / n_cols_rejected if n_cols_rejected else float("inf")

@@ -5,7 +5,7 @@ import pandas as pd
 from utils.batch_metrics import compute_metrics
 logger = logging.getLogger("BOT_batch.pipeline.correlation")
 
-CORRELATION_OOS_TH = 0.70   # post-WFO (OOS) greedy threshold
+CORRELATION_OOS_TH = 0.20   # post-WFO (OOS) greedy threshold
 # =============================================================================
 # PRIVATE HELPERS
 # =============================================================================

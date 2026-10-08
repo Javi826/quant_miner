@@ -6,22 +6,21 @@ import itertools
 import importlib
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+from typing import NamedTuple
 from tqdm import tqdm
 from joblib import Parallel, delayed, effective_n_jobs
 from multiprocessing.shared_memory import SharedMemory
 from setup.config_backtest import INITIAL_BALANCE, COMISION
 from setup.config_core import settings
-from utils.batch_metrics import sharpe_from_daily_values, skew_kurtosis_from_daily_values, equity_from_daily_values, _to_trading_days, _trading_days_between, _trading_day_table
+from utils.batch_metrics import sharpes_from_daily_rows, skew_kurtosis_from_daily_values, equity_from_daily_values, _to_trading_days, _trading_days_between, _trading_day_table
 from utils.paralelization import arrays_to_shared_memory, arrays_from_shared_memory
-from signals.indicators_bank import ConditionBank
-from signals.signal_builder import build_signal_fn
+from pipeline.spec_table import SpecTable, build_spec_table, rule_spec_index
 _bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
-backtest_grid         = getattr(_bt, "backtest_grid", None)
-build_rule_events     = getattr(_bt, "build_rule_events", None)
-market_arrays         = getattr(_bt, "market_arrays", None)
-prepare_static_arrays = _bt.prepare_static_arrays
+backtest_grid                = getattr(_bt, "backtest_grid", None)
+build_rule_events_from_words = getattr(_bt, "build_rule_events_from_words", None)
+market_arrays                = getattr(_bt, "market_arrays", None)
+prepare_static_arrays        = _bt.prepare_static_arrays
 logger = logging.getLogger("BOT_batch.pipeline.backtest_runner")
-DTYPE  = np.float32
 # =============================================================================
 # BACKTEST EXECUTION CONFIG
 # =============================================================================
@@ -75,12 +74,11 @@ def _trading_calendar(ohlcv_arr: dict, global_start_day: np.datetime64) -> tuple
     return trading_index, int(table_first), int(trading_index[start_int - table_first])
 
 
-def _build_signals_by_sid(ohlcv_arr: dict, signal_fn: callable, condition_banks: dict, symbols_by_sid: tuple) -> tuple:
-    signals = []
-    for sym in symbols_by_sid:
-        bank = condition_banks.get(sym) if condition_banks else None
-        signals.append(np.ascontiguousarray(signal_fn(ohlcv_arr[sym], live_trading=False, bank=bank), dtype=DTYPE))
-    return tuple(signals)
+def check_spec_table_layout(symbols: tuple, n_bars: np.ndarray, static_bundle: dict) -> None:
+    if tuple(symbols) != tuple(static_bundle["symbols_by_sid"]):
+        raise ValueError(f"spec table symbols {tuple(symbols)} differ from the backtest symbols {static_bundle['symbols_by_sid']}")
+    if not np.array_equal(np.asarray(n_bars), static_bundle["sym_len"]):
+        raise ValueError("spec table bar counts differ from the backtest symbol lengths")
 
 
 def _winner_metrics_from_daily_values(daily_values: np.ndarray, n_days: int, sharpe: float, duration_is: float) -> dict:
@@ -116,7 +114,16 @@ def _empty_winner_metrics() -> dict:
 # =============================================================================
 # WORKER
 # =============================================================================
+_SPEC_TABLE_KEY = "spec_table"
 _WORKER_CTX: dict = {"key": None, "ctx": None}
+
+
+class _WorkerCtx(NamedTuple):
+    static_bundle: dict
+    spec_words: np.ndarray
+    word_offsets: np.ndarray
+    shm_handles: list
+    cached: bool
 
 
 def _static_bundle_cache_key(shm_metadata: dict):
@@ -130,38 +137,48 @@ def _static_bundle_cache_key(shm_metadata: dict):
         return None
 
 
-def _get_worker_ctx(shm_metadata: dict) -> tuple:
-    # (ohlcv_arr, static_bundle, condition_banks, shm_handles, cached)
-    cache_key = _static_bundle_cache_key(shm_metadata)
+def _get_worker_ctx(shm_metadata: dict, table_metadata: dict) -> _WorkerCtx:
+    ohlcv_key = _static_bundle_cache_key(shm_metadata)
+    table_key = _static_bundle_cache_key(table_metadata)
+    cache_key = None if ohlcv_key is None or table_key is None else (ohlcv_key, table_key)
     if cache_key is not None and _WORKER_CTX["ctx"] is not None and _WORKER_CTX["key"] == cache_key:
         return _WORKER_CTX["ctx"]
 
-    ohlcv_arr, shm_handles = arrays_from_shared_memory(shm_metadata)
-    static_bundle   = prepare_static_arrays(ohlcv_arr)
+    ohlcv_arr, shm_handles     = arrays_from_shared_memory(shm_metadata)
+    table_arrays, table_handles = arrays_from_shared_memory(table_metadata)
+    table         = table_arrays[_SPEC_TABLE_KEY]
+    static_bundle = prepare_static_arrays(ohlcv_arr)
     static_bundle["calendar"] = _trading_calendar(ohlcv_arr, _global_day_grid(ohlcv_arr)[0])
-    condition_banks = {sym: ConditionBank(arr) for sym, arr in ohlcv_arr.items()}
+    check_spec_table_layout(table["symbols"], table["n_bars"], static_bundle)
 
+    ctx = _WorkerCtx(
+        static_bundle = static_bundle,
+        spec_words    = table["words"],
+        word_offsets  = table["word_offsets"],
+        shm_handles   = shm_handles + table_handles,
+        cached        = cache_key is not None,
+    )
+    del ohlcv_arr, table, table_arrays
     if cache_key is None:
-        return ohlcv_arr, static_bundle, condition_banks, shm_handles, False
+        return ctx
 
     old_ctx = _WORKER_CTX["ctx"]
     _WORKER_CTX["key"], _WORKER_CTX["ctx"] = None, None
     if old_ctx is not None:
-        old_handles = old_ctx[3]
+        old_handles = old_ctx.shm_handles
         del old_ctx
         for shm in old_handles:
             shm.close()
 
-    ctx = (ohlcv_arr, static_bundle, condition_banks, shm_handles, True)
     _WORKER_CTX["key"], _WORKER_CTX["ctx"] = cache_key, ctx
     return ctx
 
 
 def _run_full_period_for_rule(
     rule_idx: int,
-    specs: list,
-    side: str,
-    ctx: tuple,
+    spec_idx: np.ndarray,
+    is_short: bool,
+    ctx: _WorkerCtx,
     engine_grid: tuple,
     combo_ids: list,
     order_amount: float,
@@ -170,13 +187,12 @@ def _run_full_period_for_rule(
     n_days_range: int,
 ) -> tuple:
 
-    ohlcv_arr, static_bundle, condition_banks = ctx[0], ctx[1], ctx[2]
+    static_bundle = ctx.static_bundle
     n_combos = len(combo_ids)
 
-    signal_fn = build_signal_fn(specs, side)
-    signals   = _build_signals_by_sid(ohlcv_arr, signal_fn, condition_banks, static_bundle["symbols_by_sid"])
-    signal_events, ev_short, timeline = build_rule_events(
-        signals, static_bundle["ts_int_2d"], static_bundle["sym_len"],
+    signal_events, ev_short, timeline = build_rule_events_from_words(
+        ctx.spec_words, ctx.word_offsets, spec_idx, is_short,
+        static_bundle["ts_int_2d"], static_bundle["sym_len"],
         static_bundle["tick_pos_2d"], static_bundle["all_timestamps_int"], static_bundle["idx_workspace"],
     )
     if signal_events.shape[0] < BACKTEST_MIN_TRADES:
@@ -191,6 +207,7 @@ def _run_full_period_for_rule(
 
     col_base = rule_idx * n_combos
     neg_inf  = -np.inf
+    sharpes  = sharpes_from_daily_rows(daily, day_start, n_days)
 
     best_rank   = None
     best_idx    = 0
@@ -206,7 +223,7 @@ def _run_full_period_for_rule(
             stop         = start + int(n_days[combo_idx])
             daily_values = daily[combo_idx, start:stop]
 
-            sharpe_metric = sharpe_from_daily_values(daily_values)
+            sharpe_metric = sharpes[combo_idx]
             rank  = sharpe_metric if math.isfinite(sharpe_metric) else neg_inf
             valid = True
 
@@ -235,6 +252,7 @@ def _run_full_period_for_rule(
 def _run_rules_block_shm(
     block: tuple,
     shm_metadata: dict,
+    table_metadata: dict,
     engine_grid: tuple,
     combo_ids: list,
     order_amount: float,
@@ -242,21 +260,21 @@ def _run_rules_block_shm(
     n_days_range: int,
 ) -> tuple:
     # Returns (rule results, valid column indices in segment order, non-zero day mask).
-    rule_start, payloads = block
-    n_block  = len(payloads)
+    rule_start, block_spec_idx, block_is_short = block
+    n_block  = block_spec_idx.shape[0]
     n_combos = len(combo_ids)
 
-    ctx = _get_worker_ctx(shm_metadata)
+    ctx = _get_worker_ctx(shm_metadata, table_metadata)
     seg = SharedMemory(name=seg_name, create=False)
     try:
         seg_rows = np.ndarray((n_block * n_combos, n_days_range), dtype=np.float32, buffer=seg.buf)
         seg_cols = []
         results = [
             _run_full_period_for_rule(
-                rule_start + offset, specs, side, ctx,
+                rule_start + offset, block_spec_idx[offset], bool(block_is_short[offset]), ctx,
                 engine_grid, combo_ids, order_amount, seg_rows, seg_cols, n_days_range,
             )
-            for offset, (specs, side) in enumerate(payloads)
+            for offset in range(n_block)
         ]
         n_valid  = len(seg_cols)
         day_mask = np.zeros(n_days_range, dtype=bool)
@@ -266,8 +284,8 @@ def _run_rules_block_shm(
         return results, np.asarray(seg_cols, dtype=np.int64), day_mask
     finally:
         seg.close()
-        if not ctx[4]:
-            handles = ctx[3]
+        if not ctx.cached:
+            handles = ctx.shm_handles
             del ctx
             for shm in handles:
                 shm.close()
@@ -318,9 +336,12 @@ def run_full_period_search(
     order_amount: int,
     n_days_range: int,
     progress_label: str = "",
+    spec_table: SpecTable = None,
 ) -> tuple:
 
     desc = f"BACKTEST FULL   {progress_label}".strip()
+    if spec_table is None:
+        spec_table = build_spec_table(rules, ohlcv_arr, progress_label, show_progress=False)
 
     combos      = _combo_grid(param_grid)
     n_combos    = len(combos)
@@ -332,23 +353,26 @@ def run_full_period_search(
 
     n_workers      = max(1, effective_n_jobs(BACKTEST_N_JOBS))
     rules_per_task = max(1, min(BACKTEST_MAX_RULES_PER_TASK, -(-n_rules // (n_workers * BACKTEST_TASKS_PER_WORKER))))
-    payloads = [(r["specs"], r["side"]) for r in rules]
-    blocks   = [(i, payloads[i:i + rules_per_task]) for i in range(0, n_rules, rules_per_task)]
+    spec_idx, sides = rule_spec_index(rules, spec_table.index_by_identity)
+    is_short = sides != "long"   # signal_fn: "long" -> +1, any other side -> -1
+    blocks   = [(i, spec_idx[i:i + rules_per_task], is_short[i:i + rules_per_task]) for i in range(0, n_rules, rules_per_task)]
 
     pending   = []
     results   = []
     seg_cols  = []
     day_mask  = np.zeros(n_days_range, dtype=bool)
     try:
-        for _, payload_block in blocks:
-            pending.append(_create_segment(len(payload_block) * n_combos * row_size))
+        for _, block_spec_idx, _ in blocks:
+            pending.append(_create_segment(block_spec_idx.shape[0] * n_combos * row_size))
 
         shm_list, ohlcv_metadata = arrays_to_shared_memory(ohlcv_arr)
         try:
+            table_shm, table_metadata = arrays_to_shared_memory({_SPEC_TABLE_KEY: spec_table.shared_arrays()})
+            shm_list += table_shm
             with tqdm(total=n_rules, desc=desc, dynamic_ncols=True) as pbar:
                 for block_results, block_cols, block_mask in Parallel(n_jobs=BACKTEST_N_JOBS, batch_size=1, pre_dispatch="all", return_as="generator")(
                     delayed(_run_rules_block_shm)(
-                        block, ohlcv_metadata, engine_grid, combo_ids, float(order_amount),
+                        block, ohlcv_metadata, table_metadata, engine_grid, combo_ids, float(order_amount),
                         seg_name, n_days_range,
                     )
                     for block, seg_name in zip(blocks, pending)
@@ -395,6 +419,7 @@ def pipe_backtesting(
     param_grid: dict,
     order_amount: int,
     timeframe: str = "",
+    spec_table: SpecTable = None,
 ) -> tuple:
 
     n_combos = 1
@@ -408,6 +433,8 @@ def pipe_backtesting(
 
     if backtest_grid is None:
         raise NotImplementedError(f"Backtester ZX_compute_BT_{settings.BACKTEST_MODE} does not implement the grid API (backtest_grid)")
+    if build_rule_events_from_words is None:
+        raise NotImplementedError(f"Backtester ZX_compute_BT_{settings.BACKTEST_MODE} does not implement build_rule_events_from_words")
 
     if not rules:
         return [], n_combos, np.empty((0, 0), dtype=np.float32), []
@@ -419,6 +446,7 @@ def pipe_backtesting(
         order_amount     = order_amount,
         n_days_range     = n_days_range,
         progress_label   = timeframe,
+        spec_table       = spec_table,
     )
 
     raw_results = [

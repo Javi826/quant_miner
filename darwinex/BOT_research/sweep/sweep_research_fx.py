@@ -32,13 +32,13 @@ LOG_LEVELS = {
 # CONFIG ── every list is swept: one json per point of the cartesian product
 # =============================================================================
 SWEEP_SCREEN = {                                # ScreenStageConfig fields
-    "luck_max": [0.1,0.2,0.4,0.6,0.8],                          # less luck_max: higher GROUP_N
+    "luck_max": [0.1,0.2,0.3,0.4,0.5,0.6],                          # less luck_max: higher GROUP_N
     "top_i":    [4,5,6,7,8],
 }
 COMBOS = CombosStageConfig(                     # fixed for the whole sweep, as research_fx
     plus_minus         = 0.2,
     combo_sizes        = [1, 2],
-    n_samples_per_size = {1: None, 2: 190},    # None = exhaustive
+    n_samples_per_size = {1: None, 2: 190},     # None = exhaustive
 )
 
 CONFIGS_DIR = os.path.join(os.path.dirname(__file__), "sweep", "configs")    # read by sweep_backtest_fx

@@ -5,9 +5,9 @@ import os
 # RESEARCH ── what defines the caches and the research stages of a market
 # =============================================================================
 
-ARTIFACTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex", "BOT_research", "artifacts"))
-CACHE_DIR     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "darwinex", "BOT_research", "precompute", "caches"))
 BROKER        = "darwinex"             # darwinex | bitget: the signals package of the scripts
+ARTIFACTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", BROKER, "BOT_research", "artifacts"))
+CACHE_DIR     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", BROKER, "BOT_research", "precompute", "caches"))
 
 
 DATASET    = "IS"

@@ -25,7 +25,8 @@ from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
 from rule_mining.rule_runner import build_rule_templates, build_rule_dicts
 from utils.ohlcv_utils import prepare_ohlcv_arrays, get_bars_per_day
 from setup.config_backtest import ORDER_AMOUNT
-from pipeline import signal_cleaning, backtest_runner, stepM_is
+from pipeline import signal_cleaning, backtest_runner, stepM_is, spec_table
+from pipeline.spec_table import build_spec_table
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from pipeline.stepM_is import pipe_stepm, STEPM_ALPHA
 from setup.config_core import settings
@@ -81,7 +82,7 @@ def _generate_combos(pool: list, size: int, n_samples: int | None, seed: int) ->
 # =============================================================================
 @contextmanager
 def pipeline_bars(show: bool):
-    mods = (signal_cleaning, backtest_runner, stepM_is)
+    mods = (signal_cleaning, backtest_runner, stepM_is, spec_table)
     orig = [m.tqdm for m in mods]
     if not show:
         for m, t in zip(mods, orig):
@@ -128,12 +129,14 @@ def _run_backtest_universe(
     apply_signal_cleaning: bool = False,
 ) -> tuple:
     """Run the brute-force backtest once; shared by any diagnostic that needs the same matrix."""
+    spec_table_combo = build_spec_table(rules=rules, ohlcv_arr=ohlcv_arr, timeframe=timeframe)
     if apply_signal_cleaning:
         bar.set_postfix_str(f"{name} ── Jaccard")
         rules = pipe_signal_cleaning_jaccard(
-            rules     = rules,
-            ohlcv_arr = ohlcv_arr,
-            timeframe = timeframe,
+            rules      = rules,
+            ohlcv_arr  = ohlcv_arr,
+            timeframe  = timeframe,
+            spec_table = spec_table_combo,
         )
 
     bar.set_postfix_str(f"{name} ── backtest")
@@ -146,6 +149,7 @@ def _run_backtest_universe(
             param_grid   = param_grid,
             order_amount = order_amount,
             timeframe    = timeframe,
+            spec_table   = spec_table_combo,
         )
     finally:
         backtest_runner.BACKTEST_N_JOBS = original_n_jobs

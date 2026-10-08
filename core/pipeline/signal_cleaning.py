@@ -2,10 +2,8 @@
 import logging
 import numpy as np
 import cupy as cp
-from joblib import Parallel, delayed
 from tqdm import tqdm
-from signals.indicators_bank import ConditionBank
-from signals.signal_builder import build_signal_fn
+from pipeline.spec_table import SPEC_TABLE_N_JOBS, SpecTable, build_spec_table, rule_spec_index
 
 logger = logging.getLogger("BOT_batch.pipeline.signal_cleaning")
 #==============================================================================
@@ -15,77 +13,13 @@ JACCARD_SIMILARITY_TH  = 0.82
 #------------------------------------------------------------------------------
 
 
-SIGNAL_MASK_N_JOBS     = -1
 JACCARD_TILE           = 32     # output tile side; must stay in sync with the CUDA kernel
-JACCARD_TILE_WORDS     = 8      # uint64 words staged in shared memory per tile pass
+JACCARD_TILE_WORDS     = 16      # uint64 words staged in shared memory per tile pass
 JACCARD_PRUNE_MARGIN   = 1e-4   # safety margin on the |A| window for pruning (only widens it)
-JACCARD_BATCH_SIZE     = 1000
+JACCARD_BATCH_SIZE     = 2000
 GPU_INITIAL_CAPACITY   = 20_000 # initial survivors buffer capacity, doubled on overflow
 SPEC_GATHER_BLOCK      = 256    # threads per block in the rule gather-AND kernel
 JACCARD_EXIT_CHECK     = 16     # tile passes between early-exit checks inside a candidate x survivor block
-
-
-def _spec_identity(spec: dict) -> tuple:
-
-    return (spec["key"], spec["op"], spec["threshold"])
-
-
-def _collect_unique_specs(all_rules: list) -> tuple:
-
-    unique_specs = []
-    index_by_identity = {}
-    for rule in all_rules:
-        for spec in rule["specs"]:
-            identity = _spec_identity(spec)
-            if identity not in index_by_identity:
-                index_by_identity[identity] = len(unique_specs)
-                unique_specs.append(spec)
-    return unique_specs, index_by_identity
-
-
-def _compute_spec_signals_symbol(unique_specs: list, arr: dict) -> np.ndarray:
-
-    bank = ConditionBank(arr)
-    rows = np.empty((len(unique_specs), bank.n), dtype=bool)
-    for i, spec in enumerate(unique_specs):
-        signal = build_signal_fn([spec], "long")(arr, live_trading=False, bank=bank)
-        rows[i] = signal.astype(bool)
-    return rows
-
-
-def _build_spec_word_table(unique_specs: list, ohlcv_arr: dict, n_jobs: int, timeframe: str = "") -> tuple:
-
-    symbols = list(ohlcv_arr.keys())
-
-    rows_by_symbol = list(tqdm(
-        Parallel(n_jobs=n_jobs, backend="loky", return_as="generator")(
-            delayed(_compute_spec_signals_symbol)(unique_specs, ohlcv_arr[sym])
-            for sym in symbols
-        ),
-        desc=f"SIGNAL MASK     {timeframe}",
-        total=len(symbols),
-        dynamic_ncols=True,
-    ))
-
-    packed = np.packbits(np.concatenate(rows_by_symbol, axis=1), axis=1)
-    n_bytes = packed.shape[1]
-
-    word_padding = (-n_bytes) % np.dtype(np.uint64).itemsize
-    if word_padding:
-        packed = np.pad(packed, ((0, 0), (0, word_padding)))
-
-    words = np.ascontiguousarray(packed).view(np.uint64)
-    return words, n_bytes
-
-
-def _rule_spec_index(rules: list, index_by_identity: dict) -> tuple:
-
-    rule_rows = [[index_by_identity[_spec_identity(spec)] for spec in rule["specs"]] for rule in rules]
-    max_specs = max(len(rows) for rows in rule_rows)
-    # AND is idempotent: padding with the rule's first spec leaves its signal unchanged.
-    spec_idx = np.array([rows + [rows[0]] * (max_specs - len(rows)) for rows in rule_rows], dtype=np.int32)
-    sides    = np.array([rule["side"] for rule in rules])
-    return spec_idx, sides
 
 # =============================================================================
 # JACCARD SIMILARITY FILTER (GPU, bit-packed) — standalone, near-duplicate
@@ -571,17 +505,17 @@ def pipe_signal_cleaning_jaccard(
     timeframe: str = "",
     threshold: float = JACCARD_SIMILARITY_TH,
     batch_size: int = JACCARD_BATCH_SIZE,
-    n_jobs: int = SIGNAL_MASK_N_JOBS,
+    n_jobs: int = SPEC_TABLE_N_JOBS,
+    spec_table: SpecTable = None,
 ) -> list:
 
     _all_ts_dbg = np.concatenate([arr["ts"] for arr in ohlcv_arr.values()])
     logger.debug(f"JACCARD INPUT   {timeframe}: date range [{_all_ts_dbg.min()} .. {_all_ts_dbg.max()}] over {len(ohlcv_arr)} symbol(s)")
 
-    unique_specs, index_by_identity = _collect_unique_specs(rules)
-    spec_words, _ = _build_spec_word_table(unique_specs, ohlcv_arr, n_jobs, timeframe)
-    spec_idx, sides = _rule_spec_index(rules, index_by_identity)
-    spec_words_gpu = cp.asarray(spec_words)
-    del spec_words
+    if spec_table is None:
+        spec_table = build_spec_table(rules, ohlcv_arr, timeframe, n_jobs)
+    spec_idx, sides = rule_spec_index(rules, spec_table.index_by_identity)
+    spec_words_gpu = cp.asarray(spec_table.words)
 
     kept_positions = []
     for side in np.unique(sides):

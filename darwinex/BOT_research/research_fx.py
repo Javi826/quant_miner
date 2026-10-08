@@ -7,9 +7,9 @@ import logging
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))       # quant_miner
 sys.path.append(_ROOT)
 sys.path.append(os.path.join(_ROOT, "core"))
-sys.path.append(os.path.join(_ROOT, "darwinex"))
-
 from setup import config_research as cr
+sys.path.append(os.path.join(_ROOT, cr.BROKER))
+
 from setup.config_core import settings
 from research import artifacts as ra
 from research.stages import screen, grids, combos
@@ -28,8 +28,8 @@ LOG_LEVELS = {
 # =============================================================================
 STAGES = ["screen", "grids", "combos"]     # in order, no gaps: the stage before the first one is read from its checkpoint
 SCREEN = ScreenStageConfig(
-    luck_max = 0.20,
-    top_i    = 8,
+    luck_max = 0.70,
+    top_i    = 3,
 )
 COMBOS = CombosStageConfig(
     plus_minus         = 0.2,

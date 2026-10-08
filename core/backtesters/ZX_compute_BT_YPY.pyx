@@ -14,6 +14,10 @@ from libc.math cimport HUGE_VAL
 from libc.stdlib cimport malloc, free
 from libc.string cimport memcpy
 from libc.stdint cimport uint64_t
+
+cdef extern from *:
+    int __builtin_ctzll(unsigned long long x) nogil
+
 logging.basicConfig(level=logging.INFO)
 from setup.config_backtest import INITIAL_BALANCE, COMISION, LEVERAGE
 warnings.filterwarnings("ignore")
@@ -393,6 +397,155 @@ def build_rule_events(
         return signal_events, ev_short, timeline_arr[:n_timeline]
     finally:
         free(sig_ptr)
+        free(heads)
+        free(ends)
+
+
+# ============================================================
+# Rule events from the spec mask table
+#
+#   spec_words[s, w]: bit b of word w is bar 64 * (w - word_offsets[sid]) + b of symbol sid for spec s,
+#   already shifted one bar like the signal of a one-spec rule in backtest mode.
+#   A rule's signal is the AND of the rows of its specs, so its events are the set bits of that AND.
+# The output (events, short flags, timeline) matches build_rule_events for the equivalent signal arrays.
+# ============================================================
+cdef inline long _collect_and_bits(
+    const uint64_t** rows, int n_rows, Py_ssize_t w0, Py_ssize_t w1, uint64_t tail_mask, int* out, long k
+) noexcept nogil:
+    # Appends to out[k:] the bar index of every bit set in the AND of the rows over words [w0, w1).
+    cdef Py_ssize_t w
+    cdef int r
+    cdef uint64_t acc
+    for w in range(w0, w1):
+        acc = rows[0][w]
+        for r in range(1, n_rows):
+            acc &= rows[r][w]
+        if w == w1 - 1:
+            acc &= tail_mask
+        while acc:
+            out[k] = <int>((w - w0) * 64 + __builtin_ctzll(acc))
+            k   += 1
+            acc &= acc - 1
+    return k
+
+
+cdef inline uint64_t _tail_mask(long n_bars) noexcept nogil:
+    # valid bits of the last word of a symbol with n_bars bars
+    cdef long rem = n_bars & 63
+    if rem == 0:
+        return <uint64_t>0xFFFFFFFFFFFFFFFFULL
+    return ((<uint64_t>1) << rem) - 1
+
+
+def build_rule_events_from_words(
+    const uint64_t[:, ::1] spec_words,
+    const long[::1] word_offsets,
+    const int[::1] spec_idx,
+    bint is_short,
+    const long[:, ::1] ts_int_2d,
+    const long[::1] sym_len,
+    const long[:, ::1] tick_pos_2d,
+    const long[::1] all_timestamps_int,
+    int[::1] idx_workspace,
+):
+    # Events of one rule sorted by (timestamp, sid) plus the compressed timeline.
+    # spec_idx: rows of the rule's specs in spec_words (repeating a row is harmless: AND is idempotent).
+    # idx_workspace must hold at least sum(sym_len) entries; it is reused across calls.
+    cdef Py_ssize_t n_syms  = sym_len.shape[0]
+    cdef Py_ssize_t n_ticks = all_timestamps_int.shape[0]
+    cdef Py_ssize_t n_specs = spec_words.shape[0]
+    cdef int n_rows = <int>spec_idx.shape[0]
+    cdef Py_ssize_t sid, i, k, n, best_sid, n_events, n_timeline
+    cdef long best_t, t, bar_idx, tick, last_tick
+    cdef long[:, ::1] ev_mv
+    cdef long[::1] timeline_mv
+
+    if n_rows == 0:
+        raise ValueError("a rule needs at least one spec")
+    if word_offsets.shape[0] != n_syms + 1:
+        raise ValueError(f"word_offsets must have {n_syms + 1} entries, got {word_offsets.shape[0]}")
+    if word_offsets[n_syms] != spec_words.shape[1]:
+        raise ValueError(f"word_offsets end at {word_offsets[n_syms]}, spec_words has {spec_words.shape[1]} words")
+    n = 0
+    for sid in range(n_syms):
+        if word_offsets[sid + 1] - word_offsets[sid] != (sym_len[sid] + 63) // 64:
+            raise ValueError(f"symbol {sid}: {word_offsets[sid + 1] - word_offsets[sid]} words for {sym_len[sid]} bars")
+        n += sym_len[sid]
+    for i in range(n_rows):
+        if spec_idx[i] < 0 or spec_idx[i] >= n_specs:
+            raise ValueError(f"spec index {spec_idx[i]} out of range [0, {n_specs})")
+    if idx_workspace.shape[0] < n:
+        raise ValueError(f"idx_workspace too small: {idx_workspace.shape[0]} < {n}")
+
+    cdef const uint64_t** rows = <const uint64_t**>malloc(n_rows * sizeof(uint64_t*))
+    cdef long* heads           = <long*>malloc((n_syms + 1) * sizeof(long))
+    cdef long* ends            = <long*>malloc((n_syms + 1) * sizeof(long))
+    cdef int* ws
+    if rows == NULL or heads == NULL or ends == NULL:
+        free(rows); free(heads); free(ends)
+        raise MemoryError()
+
+    try:
+        n_events = 0
+        if n > 0:
+            for i in range(n_rows):
+                rows[i] = &spec_words[spec_idx[i], 0]
+            ws = &idx_workspace[0]
+            with nogil:
+                k = 0
+                for sid in range(n_syms):
+                    heads[sid] = k
+                    if sym_len[sid] > 0:
+                        k = _collect_and_bits(rows, n_rows, word_offsets[sid], word_offsets[sid + 1],
+                                              _tail_mask(sym_len[sid]), ws, k)
+                    ends[sid] = k
+                n_events = k
+
+        signal_events = np.empty((n_events, 3), dtype=np.int64)
+        ev_short      = np.full(n_events, 1 if is_short else 0, dtype=np.int8)
+        if n_events == 0:
+            return signal_events, ev_short, np.asarray(all_timestamps_int)
+
+        timeline_arr = np.empty(2 * n_events + 1, dtype=np.int64)
+        ev_mv        = signal_events
+        timeline_mv  = timeline_arr
+
+        with nogil:
+            n_timeline = 0
+            last_tick  = -1
+            for k in range(n_events):
+                best_sid = -1
+                best_t   = 0
+                for sid in range(n_syms):
+                    if heads[sid] < ends[sid]:
+                        t = ts_int_2d[sid, ws[heads[sid]]]
+                        if best_sid < 0 or t < best_t:
+                            best_sid = sid
+                            best_t   = t
+                bar_idx = ws[heads[best_sid]]
+                heads[best_sid] += 1
+
+                ev_mv[k, 0] = best_t
+                ev_mv[k, 1] = best_sid
+                ev_mv[k, 2] = bar_idx
+
+                tick = tick_pos_2d[best_sid, bar_idx]
+                if tick > 0 and tick - 1 > last_tick:
+                    timeline_mv[n_timeline] = all_timestamps_int[tick - 1]
+                    n_timeline += 1
+                    last_tick = tick - 1
+                if tick > last_tick:
+                    timeline_mv[n_timeline] = all_timestamps_int[tick]
+                    n_timeline += 1
+                    last_tick = tick
+
+            if n_ticks - 1 > last_tick:
+                timeline_mv[n_timeline] = all_timestamps_int[n_ticks - 1]
+                n_timeline += 1
+
+        return signal_events, ev_short, timeline_arr[:n_timeline]
+    finally:
+        free(rows)
         free(heads)
         free(ends)
 
@@ -856,28 +1009,6 @@ def run_backtest_from_prepared(prepared_data, sell_after, tp_pct, sl_pct, order_
     }
 
 
-def run_backtest_from_prepared_light(prepared_data, sell_after, tp_pct, sl_pct, order_amount):
-    log = _simulate_prepared(prepared_data, sell_after, tp_pct, sl_pct, order_amount, False)
-
-    trade_log = pd.DataFrame({
-        'buy_time':    log["buy_time"].astype('datetime64[ns]'),
-        'sell_time':   log["sell_time"].astype('datetime64[ns]'),
-        'profit':      log["profit"],
-        'exit_reason': EXIT_REASON_NAMES[log["exit_reason"]],
-    })
-
-    return {
-        "__PORTFOLIO__": {
-            'trade_log': trade_log,
-        }
-    }
-
-
-def run_grid_backtest(ohlcv_arrays, sell_after, tp_pct, sl_pct, order_amount):
-    return run_backtest_from_prepared(
-        prepare_backtest_data(ohlcv_arrays),
-        sell_after   = sell_after,
-        tp_pct       = tp_pct,
-        sl_pct       = sl_pct,
-        order_amount = order_amount,
-    )
+def trade_log_from_prepared(prepared_data, sell_after, tp_pct, sl_pct, order_amount):
+    # Raw trade log without a DataFrame: buy_time and sell_time (int64 ns), profit, exit_reason (EXIT_REASON_NAMES index)
+    return _simulate_prepared(prepared_data, sell_after, tp_pct, sl_pct, order_amount, False)

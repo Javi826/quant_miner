@@ -44,7 +44,9 @@ import backtesting_fx as fx  # fija sys.path, logging y la configuración; su bl
 
 import pipeline.backtest_runner as br
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
+from pipeline.spec_table import build_spec_table, rule_spec_index
 from rule_mining.rule_runner import build_rule_templates, build_rule_dicts
+from utils.batch_metrics import sharpes_from_daily_rows
 
 _wall = time.perf_counter_ns   # etapas y pasadas reales: siempre reloj de pared
 _ns   = time.perf_counter_ns   # fases por regla: pasa a thread_time_ns con --cpu-time
@@ -57,14 +59,10 @@ METRIC_KEYS = list(br._empty_winner_metrics().keys()) + ["best_combo_id"]
 CTX_PHASES = [
     ("prepare_static_arrays",             "ctx.prepare_static_arrays"),
     ("Calendario de trading",             "ctx.calendar"),
-    ("ConditionBank (todos)",             "ctx.condition_banks"),
     ("day_2d (1a llamada market_arrays)", "ctx.day_2d"),
 ]
 RULE_PHASES = [
-    ("Señales: build_signal_fn",          "rule.signal_build_fn"),
-    ("Señales: evaluación (builder)",     "rule.signal_eval"),
-    ("Señales: cast a float32",           "rule.signal_cast"),
-    ("Eventos (build_rule_events)",       "rule.events"),
+    ("Eventos (tabla de specs)",          "rule.events"),
     ("Motor (backtest_grid)",             "rule.engine"),
     ("Post: sharpe",                      "rule.post_sharpe"),
     ("Post: escritura al segmento",       "rule.post_segment"),
@@ -72,11 +70,11 @@ RULE_PHASES = [
     ("Métricas del ganador",              "rule.winner"),
 ]
 BLOCK_PHASES = [
+    ("Índices de specs",                  "block.spec_index"),
     ("Creación de segmentos",             "block.create_segments"),
     ("Máscara de días",                   "block.day_mask"),
     ("Gather final",                      "final.gather"),
 ]
-SIGNAL_KEYS = ("rule.signal_build_fn", "rule.signal_eval", "rule.signal_cast")
 
 
 # =============================================================================
@@ -128,9 +126,13 @@ def _build_rules(combo, ohlcv_arr, stages) -> tuple:
     n_generated = len(rules)
 
     t0 = _wall()
-    rules = pipe_signal_cleaning_jaccard(rules=rules, ohlcv_arr=ohlcv_arr, timeframe=timeframe)
+    spec_table = build_spec_table(rules=rules, ohlcv_arr=ohlcv_arr, timeframe=timeframe)
+    stages["Tabla de specs"] = _wall() - t0
+
+    t0 = _wall()
+    rules = pipe_signal_cleaning_jaccard(rules=rules, ohlcv_arr=ohlcv_arr, timeframe=timeframe, spec_table=spec_table)
     stages["Limpieza Jaccard"] = _wall() - t0
-    return rules, n_generated
+    return rules, n_generated, spec_table
 
 
 def _sample_rules(rules, n, contiguous):
@@ -167,7 +169,7 @@ def _velas_desc(ohlcv_arr) -> str:
 # =============================================================================
 # SINGLE-PROCESS REPLICA OF run_full_period_search (timed by phase)
 # =============================================================================
-def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, min_of):
+def _profile_replica(rules, ohlcv_arr, spec_table, param_grid, order_amount, n_days_range, min_of):
     acc, cnt, info = defaultdict(int), defaultdict(int), {}
 
     combos      = br._combo_grid(param_grid)
@@ -185,42 +187,31 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
     t1 = _ns()
     static_bundle["calendar"] = br._trading_calendar(ohlcv_arr, br._global_day_grid(ohlcv_arr)[0])
     t2 = _ns()
-    condition_banks = {sym: br.ConditionBank(arr) for sym, arr in ohlcv_arr.items()}
-    t3 = _ns()
     br.market_arrays(static_bundle)  # la primera llamada construye y cachea day_2d
-    t4 = _ns()
+    t3 = _ns()
     acc["ctx.prepare_static_arrays"] += t1 - t0
     acc["ctx.calendar"]              += t2 - t1
-    acc["ctx.condition_banks"]       += t3 - t2
-    acc["ctx.day_2d"]                += t4 - t3
+    acc["ctx.day_2d"]                += t3 - t2
     cnt["ticks"] = int(static_bundle["all_timestamps_int"].shape[0])
-    symbols_by_sid = static_bundle["symbols_by_sid"]
+    br.check_spec_table_layout(spec_table.symbols, spec_table.n_bars, static_bundle)
+    info["spec_table"] = (spec_table.n_specs, int(spec_table.words.shape[1]), spec_table.words.nbytes)
 
-    def run_rule(rule_idx, rule, seg_rows, seg_cols):
+    t0 = _ns()
+    spec_idx, sides = rule_spec_index(rules, spec_table.index_by_identity)
+    is_short = sides != "long"
+    acc["block.spec_index"] += _ns() - t0
+
+    def run_rule(rule_idx, seg_rows, seg_cols):
         # Copia literal de _run_full_period_for_rule con un cronómetro por fase. Devuelve (resultado, fases, contadores).
         ph, st = {}, {}
 
         t0 = _ns()
-        signal_fn = br.build_signal_fn(rule["specs"], rule["side"])
-        t1 = _ns()
-        raw = [signal_fn(ohlcv_arr[sym], live_trading=False, bank=condition_banks.get(sym)) for sym in symbols_by_sid]
-        t2 = _ns()
-        signals = tuple(np.ascontiguousarray(s, dtype=br.DTYPE) for s in raw)
-        t3 = _ns()
-        signal_events, ev_short, timeline = br.build_rule_events(
-            signals, static_bundle["ts_int_2d"], static_bundle["sym_len"],
+        signal_events, ev_short, timeline = br.build_rule_events_from_words(
+            spec_table.words, spec_table.word_offsets, spec_idx[rule_idx], bool(is_short[rule_idx]),
+            static_bundle["ts_int_2d"], static_bundle["sym_len"],
             static_bundle["tick_pos_2d"], static_bundle["all_timestamps_int"], static_bundle["idx_workspace"],
         )
-        t4 = _ns()
-        ph["rule.signal_build_fn"] = t1 - t0
-        ph["rule.signal_eval"]     = t2 - t1
-        ph["rule.signal_cast"]     = t3 - t2
-        ph["rule.events"]          = t4 - t3
-
-        if "signal_dtype" not in info:
-            s0 = np.asarray(raw[0])
-            info["signal_dtype"]       = str(s0.dtype)
-            info["signal_cast_copies"] = not (s0.dtype == br.DTYPE and s0.flags.c_contiguous)
+        ph["rule.events"] = _ns() - t0
 
         n_events     = int(signal_events.shape[0])
         st["events"] = n_events
@@ -246,9 +237,10 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
         st["trades"]       = int(n_trades.sum())
 
         t_loop0  = _ns()
-        t_sharpe = 0
         t_seg    = 0
         col_base = rule_idx * n_combos
+        sharpes  = sharpes_from_daily_rows(daily, day_start, n_days)
+        t_sharpe = _ns() - t_loop0
 
         best_rank   = None
         best_idx    = 0
@@ -264,9 +256,7 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
                 stop         = start + int(n_days[combo_idx])
                 daily_values = daily[combo_idx, start:stop]
 
-                ts0 = _ns()
-                sharpe_metric = br.sharpe_from_daily_values(daily_values)
-                t_sharpe += _ns() - ts0
+                sharpe_metric = sharpes[combo_idx]
                 rank  = sharpe_metric if math.isfinite(sharpe_metric) else neg_inf
                 valid = True
                 st["combos_valid"] = st.get("combos_valid", 0) + 1
@@ -300,14 +290,14 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
         ph["rule.winner"] = _ns() - t0
         return (rule_idx, {**winner_metrics, "best_combo_id": combo_ids[best_idx]}), ph, st
 
-    def timed_rule(rule_idx, rule, seg_rows, seg_cols):
+    def timed_rule(rule_idx, seg_rows, seg_cols):
         # Con --min-of K la regla corre K veces: mismo resultado, mínimo por fase. El segmento se reescribe con
         # los mismos valores en las mismas filas, así que la salida no cambia.
         n0   = len(seg_cols)
         best = None
         for _ in range(max(1, min_of)):
             del seg_cols[n0:]
-            result, ph, st = run_rule(rule_idx, rule, seg_rows, seg_cols)
+            result, ph, st = run_rule(rule_idx, seg_rows, seg_cols)
             best = ph if best is None else {k: min(best[k], v) for k, v in ph.items()}
         for k, v in best.items():
             acc[k] += v
@@ -319,7 +309,7 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
         return result
 
     # Calentamiento con la primera regla, descartado
-    run_rule(0, rules[0], None, None)
+    run_rule(0, None, None)
 
     # Bloques y segmentos, dimensionados como en run_full_period_search
     n_rules        = len(rules)
@@ -344,8 +334,8 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
             try:
                 seg_rows = np.ndarray((len(block_rules) * n_combos, n_days_range), dtype=np.float32, buffer=seg.buf)
                 seg_cols = []
-                for offset, rule in enumerate(block_rules):
-                    results.append(timed_rule(rule_start + offset, rule, seg_rows, seg_cols))
+                for offset in range(len(block_rules)):
+                    results.append(timed_rule(rule_start + offset, seg_rows, seg_cols))
 
                 t0 = _ns()
                 n_valid    = len(seg_cols)
@@ -391,7 +381,7 @@ def _profile_replica(rules, ohlcv_arr, param_grid, order_amount, n_days_range, m
 # =============================================================================
 # REAL PASSES (joblib)
 # =============================================================================
-def _real_passes(sample, ohlcv_arr, param_grid, timeframe, n_repeat) -> list:
+def _real_passes(sample, ohlcv_arr, spec_table, param_grid, timeframe, n_repeat) -> list:
     # Cada elemento: (wall_ns, metrics, matrix, col_names). La primera pasada paga spawn e imports de los workers.
     passes = []
     for _ in range(max(1, n_repeat)):
@@ -402,6 +392,7 @@ def _real_passes(sample, ohlcv_arr, param_grid, timeframe, n_repeat) -> list:
             param_grid   = param_grid,
             order_amount = fx.ORDER_AMOUNT,
             timeframe    = timeframe,
+            spec_table   = spec_table,
         )
         wall    = _wall() - t0
         metrics = {r["rule_id"]: {k: r[k] for k in METRIC_KEYS} for r in raw_results}
@@ -505,8 +496,8 @@ def _print_report(info, stages, acc, cnt, passes) -> None:
     print(f" Grid                   : {n_combos} combos {info['param_grid']}")
     print(f" Workers                : {n_workers}")
     print(f" Cronómetro de fases    : {info['clock']}" + (f" | mínimo de {info['min_of']} repeticiones por regla" if info["min_of"] > 1 else ""))
-    print(f" Señal del builder      : dtype {info.get('signal_dtype')} | el cast a float32 "
-          f"{'copia' if info.get('signal_cast_copies') else 'no copia'}")
+    n_specs, n_words, n_bytes = info["spec_table"]
+    print(f" Tabla de specs         : {n_specs:,} specs x {n_words:,} palabras de 64 bits ({n_bytes / 2**20:,.1f} MB)")
     print(f" Contexto del worker    : "
           f"{'cacheable entre tareas' if info['ctx_cacheable'] else 'NO cacheable, se reconstruye en cada tarea'}")
 
@@ -583,7 +574,7 @@ def _summarize_combos(args) -> None:
     for combo in fx.build_combos():
         stages     = {}
         ohlcv_arr  = _load_ohlcv(combo)
-        rules, n_generated = _build_rules(combo, ohlcv_arr, stages)
+        rules, n_generated, spec_table = _build_rules(combo, ohlcv_arr, stages)
         sample     = _sample_rules(rules, args.n_rules, args.contiguous)
         param_grid = fx.PARAM_GRID_BY_TIMEFRAME[combo["timeframe"]]
         row = {
@@ -594,46 +585,49 @@ def _summarize_combos(args) -> None:
             "n_combos":  _n_combos(param_grid),
             "n_gen":     n_generated,
             "n_rules":   len(rules),
+            "table_s":   stages["Tabla de specs"] / 1e9,
             "jaccard_s": stages["Limpieza Jaccard"] / 1e9,
-            "ms_rule":   0.0, "cpu_s": 0.0, "signal": 0.0, "events": 0.0, "engine": 0.0,
+            "ms_rule":   0.0, "cpu_s": 0.0, "events": 0.0, "engine": 0.0, "post": 0.0,
             "ev_rule":   0.0, "tr_combo": 0.0,
         }
         if sample:
             _, n_days_range = br._global_day_grid(ohlcv_arr)
             _, _, _, _, acc, cnt, _ = _profile_replica(
-                sample, ohlcv_arr, param_grid, float(fx.ORDER_AMOUNT), n_days_range, args.min_of,
+                sample, ohlcv_arr, spec_table, param_grid, float(fx.ORDER_AMOUNT), n_days_range, args.min_of,
             )
             n_sample = len(sample)
             rule_ns  = sum(acc[k] for _, k in RULE_PHASES) or 1
             row.update({
                 "ms_rule":  rule_ns / 1e6 / n_sample,
                 "cpu_s":    rule_ns / 1e9 / n_sample * len(rules),
-                "signal":   100.0 * sum(acc[k] for k in SIGNAL_KEYS) / rule_ns,
                 "events":   100.0 * acc["rule.events"] / rule_ns,
                 "engine":   100.0 * acc["rule.engine"] / rule_ns,
+                "post":     100.0 * (rule_ns - acc["rule.events"] - acc["rule.engine"]) / rule_ns,
                 "ev_rule":  cnt["events"] / n_sample,
                 "tr_combo": cnt["trades"] / max(cnt["rules_engine"] * row["n_combos"], 1),
             })
         rows.append(row)
-        del ohlcv_arr, rules, sample
+        del ohlcv_arr, rules, sample, spec_table
         gc.collect()
 
     rows.sort(key=lambda r: r["cpu_s"], reverse=True)
     total_cpu = sum(r["cpu_s"] for r in rows) or 1.0
     total_jac = sum(r["jaccard_s"] for r in rows)
+    total_tab = sum(r["table_s"] for r in rows)
 
     print(f"\n{LINE}")
     print(f" RESUMEN POR COMBO | modo {fx.settings.BACKTEST_MODE} | muestra {args.n_rules} reglas/combo, un solo proceso | {n_workers} workers")
     print(LINE)
     hdr = (f" {'combo':<12}{'tf':<5}{'símb':>5}{'velas':>8}{'combos':>7}{'reglas gen':>11}{'jaccard':>8}"
-           f"{'ev/regla':>9}{'tr/combo':>9}{'ms/regla':>9}{'CPU s':>8}{'% tot':>7}{'señal':>7}{'event':>7}{'motor':>7}{'jacc s':>8}")
+           f"{'ev/regla':>9}{'tr/combo':>9}{'ms/regla':>9}{'CPU s':>8}{'% tot':>7}{'event':>7}{'motor':>7}{'post':>7}{'tabla s':>8}{'jacc s':>8}")
     print(hdr)
     for r in rows:
         print(f" {r['combo']:<12}{r['tf']:<5}{r['syms']:>5}{r['velas']:>8,}{r['n_combos']:>7}{r['n_gen']:>11,}{r['n_rules']:>8,}"
               f"{r['ev_rule']:>9,.0f}{r['tr_combo']:>9,.0f}{r['ms_rule']:>9.2f}{r['cpu_s']:>8.1f}{100.0 * r['cpu_s'] / total_cpu:>6.0f}%"
-              f"{r['signal']:>6.0f}%{r['events']:>6.0f}%{r['engine']:>6.0f}%{r['jaccard_s']:>8.1f}")
+              f"{r['events']:>6.0f}%{r['engine']:>6.0f}%{r['post']:>6.0f}%{r['table_s']:>8.1f}{r['jaccard_s']:>8.1f}")
     print(f"\n CPU total del backtest (un core)    : {total_cpu:,.1f} s | ideal con {n_workers} workers: {total_cpu / n_workers:,.1f} s")
-    print(f" Jaccard, suma de todos los combos   : {total_jac:,.1f} s (el primero incluye el spawn de workers)")
+    print(f" Tabla de specs, suma de los combos  : {total_tab:,.1f} s (el primero incluye el spawn de workers)")
+    print(f" Jaccard, suma de todos los combos   : {total_jac:,.1f} s")
     if rows and rows[0]["cpu_s"] > 0:
         top = rows[0]
         print(f"\n Combo que más pesa: {top['combo']} ({100.0 * top['cpu_s'] / total_cpu:.0f}% del CPU del backtest)")
@@ -655,6 +649,8 @@ def main() -> None:
         return
     if br.backtest_grid is None:
         raise SystemExit(f"ZX_compute_BT_{fx.settings.BACKTEST_MODE} no implementa backtest_grid")
+    if br.build_rule_events_from_words is None:
+        raise SystemExit(f"ZX_compute_BT_{fx.settings.BACKTEST_MODE} no implementa build_rule_events_from_words")
     if args.all_combos:
         _summarize_combos(args)
         return
@@ -669,17 +665,17 @@ def main() -> None:
     timeframe  = combo["timeframe"]
     param_grid = fx.PARAM_GRID_BY_TIMEFRAME[timeframe]
 
-    rules, n_generated = _build_rules(combo, ohlcv_arr, stages)
+    rules, n_generated, spec_table = _build_rules(combo, ohlcv_arr, stages)
     sample = _sample_rules(rules, args.n_rules, args.contiguous)
     if not sample:
         raise SystemExit("No quedan reglas tras la limpieza Jaccard")
     _, n_days_range = br._global_day_grid(ohlcv_arr)
 
     rep_metrics, rep_matrix, rep_cols, n_combos, acc, cnt, rep_info = _profile_replica(
-        sample, ohlcv_arr, param_grid, float(fx.ORDER_AMOUNT), n_days_range, args.min_of,
+        sample, ohlcv_arr, spec_table, param_grid, float(fx.ORDER_AMOUNT), n_days_range, args.min_of,
     )
 
-    passes = [] if args.no_full else _real_passes(sample, ohlcv_arr, param_grid, timeframe, args.repeat)
+    passes = [] if args.no_full else _real_passes(sample, ohlcv_arr, spec_table, param_grid, timeframe, args.repeat)
 
     syms = combo["symbols"]
     info = {

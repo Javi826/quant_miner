@@ -8,9 +8,9 @@ from dataclasses import replace
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))       # quant_miner
 sys.path.append(_ROOT)
 sys.path.append(os.path.join(_ROOT, "core"))
-sys.path.append(os.path.join(_ROOT, "darwinex"))
-
 from setup import config_research as cr    # what defines the caches (dataset, symbols, grid, NULL_PCT, MODE)
+sys.path.append(os.path.join(_ROOT, cr.BROKER))
+
 from research import artifacts as ra
 
 from indicators.indicators_pool import CANDIDATE_REGISTRY, GROUP_NAMES, build_flat_instances, instance_key

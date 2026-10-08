@@ -1,24 +1,25 @@
-# core/pipeline/wfo.py MEW
+# core/pipeline/wfo.py
 import os
 import logging
-import numpy as np
-import pandas as pd
+import importlib
 import itertools
 from functools import partial
+import numpy as np
+import pandas as pd
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from setup.config_backtest import INITIAL_BALANCE
-import importlib
 from setup.config_core import settings
+from setup.config_pipeline import WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH, WFO_TRAIN_MONTHS, WFO_TEST_MONTHS
 from pipeline.backtest_runner import _combo_id
-_bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
-prepare_backtest_data            = _bt.prepare_backtest_data
-run_backtest_from_prepared       = _bt.run_backtest_from_prepared
-run_backtest_from_prepared_light = _bt.run_backtest_from_prepared_light
 from engines.wfo_WF import walk_forward_optimization
 from utils.ohlcv_utils import get_bars_per_year
-from utils.batch_metrics import compute_metrics
-from setup.config_pipeline import WFO_NET_GAIN_TH, WFO_DD_TH, WFO_R2_TH, WFO_WFR_TH, WFO_TRAIN_MONTHS, WFO_TEST_MONTHS
+from utils.batch_metrics import compute_metrics, net_gain_dd_pct_from_trades
+_bt = importlib.import_module(f"backtesters.ZX_compute_BT_{settings.BACKTEST_MODE}")
+prepare_backtest_data      = _bt.prepare_backtest_data
+run_backtest_from_prepared = _bt.run_backtest_from_prepared
+trade_log_from_prepared    = _bt.trade_log_from_prepared
+_END_OF_DATA               = int(np.flatnonzero(_bt.EXIT_REASON_NAMES == "END_OF_DATA")[0])
 DTYPE  = np.float32
 logger = logging.getLogger("BOT_batch.pipeline.wfo")
 # =============================================================================
@@ -121,20 +122,44 @@ def _get_prepared_data(
     _prepared_cache[cache_key] = prepared
     return prepared
 
-def compute_metric(results: dict) -> float:
+# =============================================================================
+# TRAIN WINDOW EVALUATION — engine trade log arrays, no DataFrame
+# =============================================================================
 
-    trade_log = results.get("__PORTFOLIO__", {}).get("trade_log")
-    if trade_log is None or trade_log.empty:
+def _train_window_trades(
+    params: dict,
+    base_arrays: dict,
+    train_start_ts,
+    signal_fn: callable,
+    signal_params_keys: list,
+    order_amount: int,
+    _signal_cache: dict = None,
+    _prepared_cache: dict = None,
+) -> tuple:
+    # (sell times, profits) of the trades entered from train_start_ts on and not closed by the end of the data
+    ohlcv_arrays  = build_ohlcv_with_signal(base_arrays, signal_fn, signal_params_keys, params, _signal_cache=_signal_cache)
+    prepared_data = _get_prepared_data(base_arrays, ohlcv_arrays, _prepared_cache=_prepared_cache)
+    log = trade_log_from_prepared(
+        prepared_data,
+        sell_after   = params["SELL_AFTER"],
+        tp_pct       = params["TP_PCT"],
+        sl_pct       = params["SL_PCT"],
+        order_amount = order_amount,
+    )
+    keep = (log["exit_reason"] != _END_OF_DATA) & (log["buy_time"] >= pd.Timestamp(train_start_ts).value)
+    return log["sell_time"][keep].view("datetime64[ns]"), log["profit"][keep]
+
+def _window_metric(sell_times: np.ndarray, profits: np.ndarray) -> float:
+
+    if profits.size == 0:
         return 0.0
-
-    m            = compute_metrics(trade_log, capital=INITIAL_BALANCE, name="", include_weekly=False, include_skew_kurtosis=False, include_r2=False)
-    net_gain_pct = m["Net_Gain_pct"]
+    net_gain_pct, max_dd_pct = net_gain_dd_pct_from_trades(sell_times, profits, INITIAL_BALANCE)
 
     if METRIC_MODE == "NET_GAIN_PCT":
         return net_gain_pct
 
     if METRIC_MODE == "CALMAR":
-        max_dd_pct = abs(m["Max_DD_pct"])
+        max_dd_pct = abs(max_dd_pct)
         return net_gain_pct / max_dd_pct if max_dd_pct > 0 else net_gain_pct
 
     raise ValueError(f"Unknown METRIC_MODE: {METRIC_MODE}")
@@ -149,29 +174,31 @@ def _evaluate_fn(
     _signal_cache: dict = None,
     _prepared_cache: dict = None,
 ) -> tuple:
-    
-    
-    """Single param combination evaluation for one WFO train window."""
-    ohlcv_arrays = build_ohlcv_with_signal(
-        base_arrays, signal_fn, signal_params_keys, params, _signal_cache=_signal_cache
+    # (criterion, params) of one param combination on one WFO train window
+    sell_times, profits = _train_window_trades(
+        params, base_arrays, train_start_ts, signal_fn, signal_params_keys, order_amount,
+        _signal_cache=_signal_cache, _prepared_cache=_prepared_cache,
     )
-    prepared_data = _get_prepared_data(base_arrays, ohlcv_arrays, _prepared_cache=_prepared_cache)
-    results = run_backtest_from_prepared_light(
-        prepared_data,
-        sell_after   = params["SELL_AFTER"],
-        tp_pct       = params["TP_PCT"],
-        sl_pct       = params["SL_PCT"],
-        order_amount = order_amount,
+    return _window_metric(sell_times, profits), params
+
+def _train_stats_fn(
+    params: dict,
+    base_arrays: dict,
+    train_start_ts,
+    signal_fn: callable,
+    signal_params_keys: list,
+    order_amount: int,
+    _signal_cache: dict = None,
+    _prepared_cache: dict = None,
+) -> tuple:
+    # (number of trades, Net_Gain_pct) of the window's effective params on its train window
+    sell_times, profits = _train_window_trades(
+        params, base_arrays, train_start_ts, signal_fn, signal_params_keys, order_amount,
+        _signal_cache=_signal_cache, _prepared_cache=_prepared_cache,
     )
-
-    trade_log = results["__PORTFOLIO__"]["trade_log"]
-    if not trade_log.empty:
-        truncated_mask    = trade_log["exit_reason"] == "END_OF_DATA"
-        below_warmup_mask = trade_log["buy_time"] < pd.Timestamp(train_start_ts)
-        trade_log = trade_log[~truncated_mask & ~below_warmup_mask]
-        results   = {"__PORTFOLIO__": {"trade_log": trade_log}}
-
-    return compute_metric(results), params
+    if profits.size == 0:
+        return 0, np.nan
+    return int(profits.size), net_gain_dd_pct_from_trades(sell_times, profits, INITIAL_BALANCE)[0]
 
 def _collect_trades_fn(
     params: dict,
@@ -182,7 +209,7 @@ def _collect_trades_fn(
     _prepared_cache: dict = None,
     entry_from_ts = None,
 ) -> pd.DataFrame:
-    """Run backtest with best_params on a window and return the trade log."""
+    # full trade log of params on a window; entries before entry_from_ts are masked out of the signal
     ohlcv_arrays  = build_ohlcv_with_signal(base_arrays, signal_fn, signal_params_keys, params)
 
     if entry_from_ts is not None:
@@ -260,25 +287,22 @@ def run_wfo_rule(
     wfr_th: float,
     n_jobs: int = -1,
     show_progress: bool = False,
-    collect_test_fn_override: callable = None,
 ) -> tuple:
 
     param_ranges = dict(zip(param_names, lists_for_grid))
 
     length_train_set, pct_train_set, _ = wfo_window_lengths(timeframe)
-    _signal_cache   = {}
     _prepared_cache = {}
 
-    evaluate_fn = partial(
-        _evaluate_fn,
-        signal_fn          = signal_fn,
-        signal_params_keys = signal_params_keys,
-        order_amount       = order_amount,
-        _signal_cache      = _signal_cache,
-        _prepared_cache    = _prepared_cache,
-    )
-
-    collect_train_fn = partial(
+    # grid evaluation and train stats share both caches: the train window's signals and prepared data are built once
+    train_kwargs = {
+        "signal_fn":          signal_fn,
+        "signal_params_keys": signal_params_keys,
+        "order_amount":       order_amount,
+        "_signal_cache":      {},
+        "_prepared_cache":    _prepared_cache,
+    }
+    collect_test_fn = partial(
         _collect_trades_fn,
         signal_fn          = signal_fn,
         signal_params_keys = signal_params_keys,
@@ -286,21 +310,19 @@ def run_wfo_rule(
         _prepared_cache    = _prepared_cache,
     )
 
-    collect_test_fn = collect_test_fn_override if collect_test_fn_override is not None else collect_train_fn
-
-    best_params, df_results, wfo_train_trades, wfo_test_trades, n_windows, train_net_gain_avg, test_net_gain_avg = walk_forward_optimization(
-        ohlcv_arr               = ohlcv_arr,
-        param_ranges            = param_ranges,
-        length_train_set        = length_train_set,
-        pct_train_set           = pct_train_set,
-        anchored                = ANCHORED,
-        evaluate_fn             = evaluate_fn,
-        ema_alpha               = EMA_ALPHA,
-        n_jobs                  = n_jobs,
-        show_progress           = show_progress,
-        collect_train_trades_fn = collect_train_fn,
-        collect_test_trades_fn  = collect_test_fn,
-        inherit_entry_block     = settings.BACKTEST_MODE == "NPY",
+    best_params, df_results, wfo_test_trades, n_windows, train_net_gain_avg, test_net_gain_avg = walk_forward_optimization(
+        ohlcv_arr              = ohlcv_arr,
+        param_ranges           = param_ranges,
+        length_train_set       = length_train_set,
+        pct_train_set          = pct_train_set,
+        anchored               = ANCHORED,
+        evaluate_fn            = partial(_evaluate_fn, **train_kwargs),
+        ema_alpha              = EMA_ALPHA,
+        n_jobs                 = n_jobs,
+        show_progress          = show_progress,
+        train_stats_fn         = partial(_train_stats_fn, **train_kwargs),
+        collect_test_trades_fn = collect_test_fn,
+        inherit_entry_block    = settings.BACKTEST_MODE == "NPY",
     )
 
     logger.debug(
@@ -351,7 +373,7 @@ def _run_wfo_for_rule(
     save_trades: bool,
     brief_trades_folder: str,
 ) -> dict:
-    """Runs WFO for a single rule; returns the rule dict merged with WFO result fields."""
+    # WFO of one rule: the rule dict merged with the WFO result fields
     logging.basicConfig(level=log_level, format="%(message)s", force=True)
     logging.getLogger("joblib").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
@@ -385,8 +407,8 @@ def _run_wfo_for_rule(
             index=False,
         )
 
-    metrics = None
-    if wfo_test_trades is not None and not wfo_test_trades.empty:
+    # the approval already computed these metrics unless a window had no trades
+    if metrics is None and wfo_test_trades is not None and not wfo_test_trades.empty:
         metrics = compute_metrics(wfo_test_trades, capital=INITIAL_BALANCE, name="", include_weekly=False, include_skew_kurtosis=False)
 
     logger.debug(f"[{idx + 1}/{total}] {rule['side']:<5} {rule['label']} -> "

@@ -15,7 +15,8 @@ from setup.config_core import settings
 from utils.ohlcv_utils import prepare_ohlcv_arrays, get_bars_per_day
 from rule_mining.rule_generator import MAX_DEPTH as RULE_MAX_DEPTH
 from rule_mining.rule_runner import build_rule_templates, build_rule_dicts
-from pipeline import signal_cleaning, backtest_runner, stepM_is
+from pipeline import signal_cleaning, backtest_runner, stepM_is, spec_table
+from pipeline.spec_table import build_spec_table
 from pipeline.signal_cleaning import pipe_signal_cleaning_jaccard
 from pipeline.backtest_runner import pipe_backtesting, _combo_grid, _combo_id
 from pipeline.stepM_is import pipe_stepm, STEPM_ALPHA
@@ -54,7 +55,7 @@ def load_symbol(timeframe: str, sym: str) -> tuple:
 @contextmanager
 def pipeline_bars(show: bool):
 
-    mods = (signal_cleaning, backtest_runner, stepM_is)
+    mods = (signal_cleaning, backtest_runner, stepM_is, spec_table)
     orig = [m.tqdm for m in mods]
     if not show:
         for m, t in zip(mods, orig):
@@ -93,10 +94,12 @@ def sweep_symbol(timeframe: str, combo_key: str, sym: str, arr: dict, rule_templ
     logger.debug(f"{'─' * 70}\033[0m")
 
     bar.set_postfix_str(f"{sym} ── Jaccard")
-    rules = pipe_signal_cleaning_jaccard(rules=rules, ohlcv_arr=arr, timeframe=timeframe)
+    spec_table_sym = build_spec_table(rules=rules, ohlcv_arr=arr, timeframe=timeframe)
+    rules = pipe_signal_cleaning_jaccard(rules=rules, ohlcv_arr=arr, timeframe=timeframe, spec_table=spec_table_sym)
     bar.set_postfix_str(f"{sym} ── backtest")
     raw_results, _, matrix_arr, col_names = pipe_backtesting(
         rules=rules, ohlcv_arr=arr, param_grid=param_grid, order_amount=ORDER_AMOUNT, timeframe=timeframe,
+        spec_table=spec_table_sym,
     )
     suffix = [c.rsplit("__", 1)[1] for c in col_names]
     ternas = _combo_grid(param_grid)

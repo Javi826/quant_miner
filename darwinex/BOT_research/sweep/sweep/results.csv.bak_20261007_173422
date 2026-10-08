@@ -1,9 +1,0 @@
-config,luck_max,top_i,rank_by,symbols_deploy,timeframes,mbias_candidates,mbias_passed,wfo_candidates,wfo_passed,corr_candidates,corr_passed,wfo_pct,elapsed_s
-luck_max-0.2_top_i-2_rank_by-SYMBOLS_symbols_deploy-all,0.2,2,SYMBOLS,all,"1H,4H",3132,17,17,11,11,7,64.71,7
-luck_max-0.2_top_i-3_rank_by-SYMBOLS_symbols_deploy-all,0.2,3,SYMBOLS,all,"1H,4H",622164,179,179,36,36,30,20.11,159
-luck_max-0.2_top_i-4_rank_by-SYMBOLS_symbols_deploy-all,0.2,4,SYMBOLS,all,"1H,4H",1201086,201,201,34,34,28,16.92,255
-luck_max-0.2_top_i-5_rank_by-SYMBOLS_symbols_deploy-all,0.2,5,SYMBOLS,all,"1H,4H",1427720,331,331,66,66,57,19.94,310
-luck_max-0.2_top_i-6_rank_by-SYMBOLS_symbols_deploy-all,0.2,6,SYMBOLS,all,"1H,4H",4947268,1272,1272,312,312,151,24.53,1095
-luck_max-0.2_top_i-2_rank_by-RULES_symbols_deploy-all,0.2,2,RULES,all,"1H,4H",3132,17,17,11,11,7,64.71,8
-luck_max-0.2_top_i-3_rank_by-RULES_symbols_deploy-all,0.2,3,RULES,all,"1H,4H",622514,572,572,186,186,88,32.52,189
-luck_max-0.2_top_i-4_rank_by-RULES_symbols_deploy-all,0.2,4,RULES,all,"1H,4H",1404528,661,661,211,211,105,31.92,293
